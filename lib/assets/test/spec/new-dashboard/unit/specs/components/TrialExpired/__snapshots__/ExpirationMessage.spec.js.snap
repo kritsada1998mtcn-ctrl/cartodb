@@ -11,9 +11,7 @@ exports[`ExpirationMessage.vue should render correctly with trial expired date 1
       TrialExpired.ExpirationMessage.description.phrase1.withDate
     </p>
     <p class="warning-description text is-body is-txtDarkBlue">TrialExpired.ExpirationMessage.description.phrase2</p>
-    <div class="buttons-container"><a class="button upgrade-button is-caption">
-        TrialExpired.ExpirationMessage.actions.addPayments
-      </a> <a class="button button--ghost is-txtDarkBlue is-caption">
+    <div class="buttons-container"><a class="button button--ghost is-txtDarkBlue is-caption">
         TrialExpired.ExpirationMessage.actions.deleteAccount
       </a></div>
   </div>
@@ -31,9 +29,7 @@ exports[`ExpirationMessage.vue should render correctly without trial expired dat
       TrialExpired.ExpirationMessage.description.phrase1.noDate
     </p>
     <p class="warning-description text is-body is-txtDarkBlue">TrialExpired.ExpirationMessage.description.phrase2</p>
-    <div class="buttons-container"><a class="button upgrade-button is-caption">
-        TrialExpired.ExpirationMessage.actions.addPayments
-      </a> <a class="button button--ghost is-txtDarkBlue is-caption">
+    <div class="buttons-container"><a class="button button--ghost is-txtDarkBlue is-caption">
         TrialExpired.ExpirationMessage.actions.deleteAccount
       </a></div>
   </div>

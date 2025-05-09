@@ -14,9 +14,6 @@
          v-html="$t('TrialExpired.ExpirationMessage.description.phrase2', { expirationDays: this.expirationDays } )">
       </p>
       <div class="buttons-container">
-        <a :href="addPaymentsURL" class="button upgrade-button is-caption">
-          {{ $t('TrialExpired.ExpirationMessage.actions.addPayments') }}
-        </a>
         <a @click="deleteAccount" class="button button--ghost is-txtDarkBlue is-caption">
           {{ $t('TrialExpired.ExpirationMessage.actions.deleteAccount') }}
         </a>

@@ -2,9 +2,10 @@ Development
 -----------
 
 ### NOTICES
-- None yet 
+- None yet
 
 ### Features
+* Remove the "Add payment method" button from the trial expired message [16454](https://github.com/CartoDB/cartodb/pull/16454)
 * Display GeoParquet link in Catalog [16453](https://github.com/CartoDB/cartodb/pull/16453)
 * Display notifications about the new CARTO platform release [16352](https://github.com/CartoDB/cartodb/pull/16352)
 * Upgrade to deck.gl 8.5.6 [16338](https://github.com/CartoDB/cartodb/pull/16338)
