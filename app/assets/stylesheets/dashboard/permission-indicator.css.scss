@@ -4,15 +4,15 @@
 @import "../variables/mixins";
 @import "../variables/sizes";
 
-$c: #E2DFDF; 
+$c: #E2DFDF;
 
 .PermissionIndicator {
-  padding:0 10px;
-  border:1px solid $c;
-  border-radius: 28px;
-  color:$c;
-  font-size: $sFontSize-smaller;
-  line-height: $sLineHeight-smaller;
-  font-weight: $sFontWeight-normal;
   min-width: 25px;
+  padding: 0 10px;
+  border: 1px solid $c;
+  border-radius: 4px;
+  color: $c;
+  font-size: $sFontSize-smaller;
+  font-weight: $sFontWeight-normal;
+  line-height: $sLineHeight-smaller;
 }

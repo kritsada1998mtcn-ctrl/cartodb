@@ -1,11 +1,21 @@
-# coding: UTF-8
+# coding: utf-8
 
 require 'ostruct'
 require_relative '../spec_helper'
 require_relative 'user_shared_examples'
+require_relative '../../services/dataservices-metrics/lib/isolines_usage_metrics'
+require_relative '../../services/dataservices-metrics/lib/observatory_snapshot_usage_metrics'
+require_relative '../../services/dataservices-metrics/lib/observatory_general_usage_metrics'
+require 'factories/organizations_contexts'
+require_relative '../../app/model_factories/layer_factory'
+require_dependency 'cartodb/redis_vizjson_cache'
+require 'helpers/rate_limits_helper'
+require 'helpers/unique_names_helper'
+require 'helpers/account_types_helper'
+require 'factories/users_helper'
+require 'factories/database_configuration_contexts'
 
 describe 'refactored behaviour' do
-
   it_behaves_like 'user models' do
     def get_twitter_imports_count_by_user_id(user_id)
       get_user_by_id(user_id).get_twitter_imports_count
@@ -14,17 +24,24 @@ describe 'refactored behaviour' do
     def get_user_by_id(user_id)
       ::User.where(id: user_id).first
     end
-  end
 
+    def create_user
+      FactoryGirl.create(:valid_user)
+    end
+  end
 end
 
 describe User do
+  include UniqueNamesHelper
+  include AccountTypesHelper
+  include RateLimitsHelper
+
   before(:each) do
     CartoDB::UserModule::DBService.any_instance.stubs(:enable_remote_db_user).returns(true)
   end
 
   before(:all) do
-    stub_named_maps_calls
+    bypass_named_maps
 
     @user_password = 'admin123'
     puts "\n[rspec][user_spec] Creating test user databases..."
@@ -38,98 +55,18 @@ describe User do
   end
 
   before(:each) do
-    stub_named_maps_calls
+    bypass_named_maps
     CartoDB::Varnish.any_instance.stubs(:send_command).returns(true)
     CartoDB::UserModule::DBService.any_instance.stubs(:enable_remote_db_user).returns(true)
+    Table.any_instance.stubs(:update_cdb_tablemetadata)
   end
 
   after(:all) do
-    stub_named_maps_calls
+    bypass_named_maps
     @user.destroy
     @user2.destroy
-  end
-
-  it "Should properly report ability to change (or not) email & password when proceeds" do
-    @user.google_sign_in = false
-    password_change_date = @user.last_password_change_date
-    Carto::Ldap::Manager.any_instance.stubs(:configuration_present?).returns(false)
-
-    @user.can_change_email?.should eq true
-    @user.can_change_password?.should eq true
-
-    @user.google_sign_in = true
-    @user.can_change_email?.should eq false
-
-    @user.last_password_change_date = nil
-    @user.can_change_email?.should eq false
-
-    Carto::Ldap::Manager.any_instance.stubs(:configuration_present?).returns(true)
-    @user.can_change_email?.should eq false
-
-    @user.last_password_change_date = password_change_date
-    @user.google_sign_in = false
-    @user.can_change_email?.should eq false
-
-    @user.can_change_password?.should eq false
-
-  end
-
-  it "should set a default database_host" do
-    @user.database_host.should eq ::Rails::Sequel.configuration.environment_for(Rails.env)['host']
-  end
-
-  it "should set a default api_key" do
-    @user.reload.api_key.should_not be_blank
-  end
-
-  it "should set created_at" do
-    @user.created_at.should_not be_nil
-  end
-
-  it "should update updated_at" do
-    expect { @user.save }.to change(@user, :updated_at)
-  end
-
-  it "should set up a user after create" do
-    @new_user = new_user
-    @new_user.save
-    @new_user.reload
-    @new_user.should_not be_new
-    @new_user.database_name.should_not be_nil
-    @new_user.in_database.test_connection.should == true
-    @new_user.destroy
-  end
-
-  it "should have a crypted password" do
-    @user.crypted_password.should_not be_blank
-    @user.crypted_password.should_not == 'admin123'
-  end
-
-  it "should authenticate if given email and password are correct" do
-    response_user = ::User.authenticate('admin@example.com', 'admin123')
-    response_user.id.should eq @user.id
-    response_user.email.should eq @user.email
-
-    ::User.authenticate('admin@example.com', 'admin321').should be_nil
-    ::User.authenticate('', '').should be_nil
-  end
-
-  it "should authenticate with case-insensitive email and username" do
-    response_user = ::User.authenticate('admin@example.com', 'admin123')
-    response_user.id.should eq @user.id
-    response_user.email.should eq @user.email
-
-    response_user_2 = ::User.authenticate('aDMin@eXaMpLe.Com', 'admin123')
-    response_user_2.id.should eq @user.id
-    response_user_2.email.should eq @user.email
-
-    response_user_3 = ::User.authenticate('admin', 'admin123')
-    response_user_3.id.should eq @user.id
-    response_user_3.email.should eq @user.email
-
-    response_user_4 = ::User.authenticate('ADMIN', 'admin123')
-    response_user_4.id.should eq @user.id
-    response_user_4.email.should eq @user.email
+    @account_type.destroy if @account_type
+    @account_type_org.destroy if @account_type_org
   end
 
   it "should only allow legal usernames" do
@@ -150,8 +87,8 @@ describe User do
   end
 
   it "should not allow a username in use by an organization" do
-    create_org('testusername', 10.megabytes, 1)
-    @user.username = 'testusername'
+    org = create_org('testusername', 10.megabytes, 1)
+    @user.username = org.name
     @user.valid?.should be_false
     @user.username = 'wadus'
     @user.valid?.should be_true
@@ -159,18 +96,17 @@ describe User do
 
   describe 'organization checks' do
     it "should not be valid if his organization doesn't have more seats" do
-
       organization = create_org('testorg', 10.megabytes, 1)
-      user1 = create_user email: 'user1@testorg.com', username: 'user1', password: 'user11'
+      user1 = create_user email: 'user1@testorg.com',
+                          username: 'user1',
+                          password: 'user11',
+                          account_type: 'ORGANIZATION USER'
       user1.organization = organization
       user1.save
       organization.owner_id = user1.id
       organization.save
       organization.reload
       user1.reload
-
-      # Don't remove this line or the spec will fail (magic):
-      puts "Organization users: #{organization.users.count}"
 
       user2 = new_user
       user2.organization = organization
@@ -212,6 +148,57 @@ describe User do
       organization.destroy
     end
 
+    describe '#org_admin' do
+      before(:all) do
+        @organization = create_organization_with_owner
+      end
+
+      after(:all) do
+        @organization.destroy
+      end
+
+      def create_role(user)
+        # NOTE: It's hard to test the real Groups API call here, it needs a Rails server up and running
+        # Instead, we test the main step that this function does internally (creating a role)
+        user.in_database["CREATE ROLE \"#{user.database_username}_#{unique_name('role')}\""].all
+      end
+
+      it 'cannot be owner and viewer at the same time' do
+        @organization.owner.viewer = true
+        @organization.owner.should_not be_valid
+        @organization.owner.errors.keys.should include(:viewer)
+      end
+
+      it 'cannot be admin and viewer at the same time' do
+        user = ::User.new
+        user.organization = @organization
+        user.viewer = true
+        user.org_admin = true
+        user.should_not be_valid
+        user.errors.keys.should include(:viewer)
+      end
+
+      it 'should not be able to create groups without admin rights' do
+        user = FactoryGirl.create(:valid_user, organization: @organization)
+        expect { create_role(user) }.to raise_error
+      end
+
+      it 'should be able to create groups with admin rights' do
+        user = FactoryGirl.create(:valid_user, organization: @organization, org_admin: true)
+        expect { create_role(user) }.to_not raise_error
+      end
+
+      it 'should revoke admin rights on demotion' do
+        user = FactoryGirl.create(:valid_user, organization: @organization, org_admin: true)
+        expect { create_role(user) }.to_not raise_error
+
+        user.org_admin = false
+        user.save
+
+        expect { create_role(user) }.to raise_error
+      end
+    end
+
     describe 'organization email whitelisting' do
 
       before(:each) do
@@ -235,14 +222,14 @@ describe User do
       it 'user email is not valid if organization has whitelisted domains and email is not under that domain' do
         @organization.whitelisted_email_domains = [ 'organization.org' ]
         user = FactoryGirl.build(:valid_user, organization: @organization)
-        user.valid?.should == false
+        user.valid?.should eq false
         user.errors[:email].should_not be_nil
       end
 
       it 'user email is valid if organization has whitelisted domains and email is under that domain' do
         user = FactoryGirl.build(:valid_user, organization: @organization)
         @organization.whitelisted_email_domains = [ user.email.split('@')[1] ]
-        user.valid?.should == true
+        user.valid?.should eq true
         user.errors[:email].should == []
       end
     end
@@ -268,6 +255,68 @@ describe User do
       end
     end
 
+    describe 'when updating viewer state' do
+      before(:all) do
+        @organization = create_organization_with_users(quota_in_bytes: 70.megabytes)
+      end
+
+      after(:all) do
+        @organization.destroy
+      end
+
+      before(:each) do
+        @organization.viewer_seats = 10
+        @organization.seats = 10
+        @organization.save
+      end
+
+      it 'should not allow changing to viewer without seats' do
+        @organization.viewer_seats = 0
+        @organization.save
+
+        user = @organization.users.find { |u| !u.organization_owner? }
+        user.reload
+        user.viewer = true
+        expect(user).not_to be_valid
+        expect(user.errors.keys).to include(:organization)
+      end
+
+      it 'should allow changing to viewer with enough seats' do
+        user = @organization.users.find { |u| !u.organization_owner? }
+        user.reload
+        user.viewer = true
+        expect(user).to be_valid
+        expect(user.errors.keys).not_to include(:organization)
+      end
+
+      it 'should not allow changing to builder without seats' do
+        user = @organization.users.find { |u| !u.organization_owner? }
+        user.reload
+        user.viewer = true
+        user.save
+
+        @organization.seats = 1
+        @organization.save
+
+        user.reload
+        user.viewer = false
+        expect(user).not_to be_valid
+        expect(user.errors.keys).to include(:organization)
+      end
+
+      it 'should allow changing to builder with seats' do
+        user = @organization.users.find { |u| !u.organization_owner? }
+        user.reload
+        user.viewer = true
+        user.save
+
+        user.reload
+        user.viewer = false
+        expect(user).to be_valid
+        expect(user.errors.keys).not_to include(:organization)
+      end
+    end
+
     it 'should set account_type properly' do
       organization = create_organization_with_users
       organization.users.reject(&:organization_owner?).each do |u|
@@ -279,18 +328,14 @@ describe User do
     it 'should set default settings properly unless overriden' do
       organization = create_organization_with_users
       organization.users.reject(&:organization_owner?).each do |u|
-        u.max_layers.should == 6
+        u.max_layers.should eq ::User::DEFAULT_MAX_LAYERS
         u.private_tables_enabled.should be_true
         u.sync_tables_enabled.should be_true
       end
       user = FactoryGirl.build(:user, organization: organization)
       user.max_layers = 3
-      user.private_tables_enabled = false
-      user.sync_tables_enabled = false
       user.save
       user.max_layers.should == 3
-      user.private_tables_enabled.should be_false
-      user.sync_tables_enabled.should be_false
       organization.destroy
     end
 
@@ -330,8 +375,6 @@ describe User do
     it "should return proper values for non-persisted settings" do
       organization = create_organization_with_users
       organization.users.reject(&:organization_owner?).each do |u|
-        u.dedicated_support?.should be_true
-        u.remove_logo?.should be_true
         u.private_maps_enabled.should be_true
       end
       organization.destroy
@@ -342,7 +385,10 @@ describe User do
     it 'should create remote user in central if needed' do
       pending "Central API credentials not provided" unless ::User.new.sync_data_with_cartodb_central?
       organization = create_org('testorg', 500.megabytes, 1)
-      user = create_user email: 'user1@testorg.com', username: 'user1', password: 'user11'
+      user = create_user email: 'user1@testorg.com',
+                         username: 'user1',
+                         password: 'user11',
+                         account_type: 'ORGANIZATION USER'
       user.organization = organization
       user.save
       Cartodb::Central.any_instance.expects(:create_organization_user).with(organization.name, user.allowed_attributes_to_central(:create)).once
@@ -369,8 +415,8 @@ describe User do
     user.save
     user_id = user.id
     user.destroy
-    Rails::Sequel.connection["select count(*) from feature_flags_users where user_id = '#{user_id}'"].first[:count].should eq 0
-    Rails::Sequel.connection["select count(*) from feature_flags where id = '#{ff.id}'"].first[:count].should eq 1
+    SequelRails.connection["select count(*) from feature_flags_users where user_id = '#{user_id}'"].first[:count].should eq 0
+    SequelRails.connection["select count(*) from feature_flags where id = '#{ff.id}'"].first[:count].should eq 1
   end
 
   it "should have a default dashboard_viewed? false" do
@@ -407,6 +453,24 @@ describe User do
     user.valid?.should be_true
 
     user.destroy
+  end
+
+  it "should validate job_role and deprecated_job_roles" do
+    user = ::User.new
+    user.username = "adminipop"
+    user.email = "adminipop@example.com"
+    user.password = 'admin123'
+    user.password_confirmation = 'admin123'
+
+    user.job_role = "Developer"
+    user.valid?.should be_true
+
+    user.job_role = "Researcher"
+    user.valid?.should be_true
+
+    user.job_role = "whatever"
+    user.valid?.should be_false
+    user.errors[:job_role].should be_present
   end
 
   it "should validate password presence and length" do
@@ -448,6 +512,7 @@ describe User do
   end
 
   it "should invalidate all his vizjsons when his account type changes" do
+    @account_type = create_account_type_fg('WADUS')
     @user.account_type = 'WADUS'
     CartoDB::Varnish.any_instance.expects(:purge)
       .with("#{@user.database_name}.*:vizjson").times(1).returns(true)
@@ -522,76 +587,64 @@ describe User do
   end
 
   describe "avatar checks" do
-    it "should load a cartodb avatar url" do
-      user1 = create_user(email: 'ewdewfref34r43r43d32f45g5@example.com', username: 'u1', password: 'foobar')
+    let(:user1) do
+      create_user(email: 'ewdewfref34r43r43d32f45g5@example.com', username: 'u1', password: 'foobar')
+    end
+
+    after(:each) do
+      user1.destroy
+    end
+
+    it "should load a cartodb avatar url if no gravatar associated" do
       avatar_kind = Cartodb.config[:avatars]['kinds'][0]
       avatar_color = Cartodb.config[:avatars]['colors'][0]
       avatar_base_url = Cartodb.config[:avatars]['base_url']
       Random.any_instance.stubs(:rand).returns(0)
       gravatar_url = %r{gravatar.com}
       Typhoeus.stub(gravatar_url, { method: :get }).and_return(Typhoeus::Response.new(code: 404))
+      user1.stubs(:gravatar_enabled?).returns(true)
       user1.avatar_url = nil
       user1.save
       user1.reload_avatar
-      user1.avatar_url.should == "//#{avatar_base_url}/avatar_#{avatar_kind}_#{avatar_color}.png"
-      user1.destroy
+      user1.avatar_url.should == "#{avatar_base_url}/avatar_#{avatar_kind}_#{avatar_color}.png"
     end
-    it "should load a the user gravatar url" do
-      user1 = create_user(email: 'ewdewfref34r43r43d32f45g5@example.com', username: 'u1', password: 'foobar')
+
+    it "should load a cartodb avatar url if gravatar disabled" do
+      avatar_kind = Cartodb.config[:avatars]['kinds'][0]
+      avatar_color = Cartodb.config[:avatars]['colors'][0]
+      avatar_base_url = Cartodb.config[:avatars]['base_url']
+      Random.any_instance.stubs(:rand).returns(0)
       gravatar_url = %r{gravatar.com}
       Typhoeus.stub(gravatar_url, { method: :get }).and_return(Typhoeus::Response.new(code: 200))
+      user1.stubs(:gravatar_enabled?).returns(false)
+      user1.avatar_url = nil
+      user1.save
+      user1.reload_avatar
+      user1.avatar_url.should == "#{avatar_base_url}/avatar_#{avatar_kind}_#{avatar_color}.png"
+    end
+
+    it "should load a the user gravatar url" do
+      gravatar_url = %r{gravatar.com}
+      Typhoeus.stub(gravatar_url, { method: :get }).and_return(Typhoeus::Response.new(code: 200))
+      user1.stubs(:gravatar_enabled?).returns(true)
       user1.reload_avatar
       user1.avatar_url.should == "//#{user1.gravatar_user_url}"
-      user1.destroy
-    end
-  end
-
-  describe '#overquota' do
-    it "should return users over their map view quota, excluding organization users" do
-      ::User.overquota.should be_empty
-      ::User.any_instance.stubs(:get_api_calls).returns (0..30).to_a
-      ::User.any_instance.stubs(:map_view_quota).returns 10
-      ::User.overquota.map(&:id).should include(@user.id)
-      ::User.overquota.size.should == ::User.reject{|u| u.organization_id.present? }.count
     end
 
-    it "should return users near their map view quota" do
-      ::User.any_instance.stubs(:get_api_calls).returns([81])
-      ::User.any_instance.stubs(:map_view_quota).returns(100)
-      ::User.overquota.should be_empty
-      ::User.overquota(0.20).map(&:id).should include(@user.id)
-      ::User.overquota(0.20).size.should == ::User.reject{|u| u.organization_id.present? }.count
-      ::User.overquota(0.10).should be_empty
-    end
+    describe '#gravatar_enabled?' do
+      it 'should be enabled by default (every setting but false will enable it)' do
+        user = ::User.new
+        Cartodb.with_config(avatars: {}) { user.gravatar_enabled?.should be_true }
+        Cartodb.with_config(avatars: { 'gravatar_enabled' => true }) { user.gravatar_enabled?.should be_true }
+        Cartodb.with_config(avatars: { 'gravatar_enabled' => 'true' }) { user.gravatar_enabled?.should be_true }
+        Cartodb.with_config(avatars: { 'gravatar_enabled' => 'wadus' }) { user.gravatar_enabled?.should be_true }
+      end
 
-    it "should return users near their geocoding quota" do
-      ::User.any_instance.stubs(:get_api_calls).returns([0])
-      ::User.any_instance.stubs(:map_view_quota).returns(120)
-      ::User.any_instance.stubs(:get_geocoding_calls).returns(81)
-      ::User.any_instance.stubs(:geocoding_quota).returns(100)
-      ::User.overquota.should be_empty
-      ::User.overquota(0.20).map(&:id).should include(@user.id)
-      ::User.overquota(0.20).size.should == ::User.reject{|u| u.organization_id.present? }.count
-      ::User.overquota(0.10).should be_empty
-    end
-
-    it "should return users near their twitter quota" do
-      ::User.any_instance.stubs(:get_api_calls).returns([0])
-      ::User.any_instance.stubs(:map_view_quota).returns(120)
-      ::User.any_instance.stubs(:get_geocoding_calls).returns(0)
-      ::User.any_instance.stubs(:geocoding_quota).returns(100)
-      ::User.any_instance.stubs(:get_twitter_imports_count).returns(81)
-      ::User.any_instance.stubs(:twitter_datasource_quota).returns(100)
-      ::User.overquota.should be_empty
-      ::User.overquota(0.20).map(&:id).should include(@user.id)
-      ::User.overquota(0.20).size.should == ::User.reject{|u| u.organization_id.present? }.count
-      ::User.overquota(0.10).should be_empty
-    end
-
-    it "should not return organization users" do
-      ::User.any_instance.stubs(:organization_id).returns("organization-id")
-      ::User.any_instance.stubs(:organization).returns(Organization.new)
-      ::User.overquota.should be_empty
+      it 'can be disabled' do
+        user = ::User.new
+        Cartodb.with_config(avatars: { 'gravatar_enabled' => false }) { user.gravatar_enabled?.should be_false }
+        Cartodb.with_config(avatars: { 'gravatar_enabled' => 'false' }) { user.gravatar_enabled?.should be_false }
+      end
     end
   end
 
@@ -613,29 +666,20 @@ describe User do
       user_without_private_maps.private_maps_enabled?.should eq false
       user_without_private_maps.destroy
     end
-
-    it 'should have private maps if he has private_tables_enabled, even if disabled' do
-      user_without_private_maps = create_user :email => 'user_opm3@example.com',  :username => 'useropm3',  :password => 'useropm3', :private_maps_enabled => false, :private_tables_enabled => true
-      user_without_private_maps.private_maps_enabled?.should eq true
-      user_without_private_maps.destroy
-    end
-
-    it 'should not have private maps if he is AMBASSADOR' do
-      user_without_private_maps = create_user :email => 'user_opm2@example.com',  :username => 'useropm2',  :password => 'useropm2', :private_maps_enabled => false
-      user_without_private_maps.stubs(:account_type).returns('AMBASSADOR')
-      user_without_private_maps.private_maps_enabled?.should eq false
-      user_without_private_maps.destroy
-    end
-
   end
 
   describe '#get_geocoding_calls' do
     before do
       delete_user_data @user
+      @user.geocoder_provider = 'heremaps'
       @user.stubs(:last_billing_cycle).returns(Date.today)
-      FactoryGirl.create(:geocoding, user: @user, kind: 'high-resolution', created_at: Time.now, processed_rows: 1)
-      FactoryGirl.create(:geocoding, user: @user, kind: 'admin0', created_at: Time.now, processed_rows: 1)
-      FactoryGirl.create(:geocoding, user: @user, kind: 'high-resolution', created_at: Time.now - 5.days, processed_rows: 1, cache_hits: 1)
+      @mock_redis = MockRedis.new
+      @usage_metrics = CartoDB::GeocoderUsageMetrics.new(@user.username, nil, @mock_redis)
+      @usage_metrics.incr(:geocoder_here, :success_responses, 1, Time.now)
+      @usage_metrics.incr(:geocoder_internal, :success_responses, 1, Time.now)
+      @usage_metrics.incr(:geocoder_here, :success_responses, 1, Time.now - 5.days)
+      @usage_metrics.incr(:geocoder_cache, :success_responses, 1, Time.now - 5.days)
+      CartoDB::GeocoderUsageMetrics.stubs(:new).returns(@usage_metrics)
     end
 
     it "should return the sum of geocoded rows for the current billing period" do
@@ -652,8 +696,99 @@ describe User do
     end
   end
 
+  describe '#get_here_isolines_calls' do
+    before do
+      delete_user_data @user
+      @user.isolines_provider = 'heremaps'
+      @mock_redis = MockRedis.new
+      @usage_metrics = CartoDB::IsolinesUsageMetrics.new(@user.username, nil, @mock_redis)
+      CartoDB::IsolinesUsageMetrics.stubs(:new).returns(@usage_metrics)
+      @user.stubs(:last_billing_cycle).returns(Date.today)
+      @user.period_end_date = (DateTime.current + 1) << 1
+      @user.save.reload
+    end
+
+    it "should return the sum of here isolines rows for the current billing period" do
+      @usage_metrics.incr(:here_isolines, :isolines_generated, 10, DateTime.current)
+      @usage_metrics.incr(:here_isolines, :isolines_generated, 100, (DateTime.current - 2))
+      @user.get_here_isolines_calls.should eq 10
+    end
+
+    it "should return the sum of here isolines rows for the specified period" do
+      @usage_metrics.incr(:here_isolines, :isolines_generated, 10, DateTime.current)
+      @usage_metrics.incr(:here_isolines, :isolines_generated, 100, (DateTime.current - 2))
+      @usage_metrics.incr(:here_isolines, :isolines_generated, 100, (DateTime.current - 7))
+      @user.get_here_isolines_calls(from: Time.now-5.days).should eq 110
+      @user.get_here_isolines_calls(from: Time.now-5.days, to: Time.now - 2.days).should eq 100
+    end
+
+    it "should return 0 when no here isolines actions" do
+      @user.get_here_isolines_calls(from: Time.now - 15.days, to: Time.now - 10.days).should eq 0
+    end
+  end
+
+  describe '#get_obs_snapshot_calls' do
+    before do
+      delete_user_data @user
+      @mock_redis = MockRedis.new
+      @usage_metrics = CartoDB::ObservatorySnapshotUsageMetrics.new(@user.username, nil, @mock_redis)
+      CartoDB::ObservatorySnapshotUsageMetrics.stubs(:new).returns(@usage_metrics)
+      @user.stubs(:last_billing_cycle).returns(Date.today)
+      @user.period_end_date = (DateTime.current + 1) << 1
+      @user.save.reload
+    end
+
+    it "should return the sum of data observatory snapshot rows for the current billing period" do
+      @usage_metrics.incr(:obs_snapshot, :success_responses, 10, DateTime.current)
+      @usage_metrics.incr(:obs_snapshot, :success_responses, 100, (DateTime.current - 2))
+      @user.get_obs_snapshot_calls.should eq 10
+    end
+
+    it "should return the sum of data observatory snapshot rows for the specified period" do
+      @usage_metrics.incr(:obs_snapshot, :success_responses, 10, DateTime.current)
+      @usage_metrics.incr(:obs_snapshot, :success_responses, 100, (DateTime.current - 2))
+      @usage_metrics.incr(:obs_snapshot, :success_responses, 100, (DateTime.current - 7))
+      @user.get_obs_snapshot_calls(from: Time.now - 5.days).should eq 110
+      @user.get_obs_snapshot_calls(from: Time.now - 5.days, to: Time.now - 2.days).should eq 100
+    end
+
+    it "should return 0 when no here isolines actions" do
+      @user.get_obs_snapshot_calls(from: Time.now - 15.days, to: Time.now - 10.days).should eq 0
+    end
+  end
+
+  describe '#get_obs_general_calls' do
+    before do
+      delete_user_data @user
+      @mock_redis = MockRedis.new
+      @usage_metrics = CartoDB::ObservatoryGeneralUsageMetrics.new(@user.username, nil, @mock_redis)
+      CartoDB::ObservatoryGeneralUsageMetrics.stubs(:new).returns(@usage_metrics)
+      @user.stubs(:last_billing_cycle).returns(Date.today)
+      @user.period_end_date = (DateTime.current + 1) << 1
+      @user.save.reload
+    end
+
+    it "should return the sum of data observatory general rows for the current billing period" do
+      @usage_metrics.incr(:obs_general, :success_responses, 10, DateTime.current)
+      @usage_metrics.incr(:obs_general, :success_responses, 100, (DateTime.current - 2))
+      @user.get_obs_general_calls.should eq 10
+    end
+
+    it "should return the sum of data observatory general rows for the specified period" do
+      @usage_metrics.incr(:obs_general, :success_responses, 10, DateTime.current)
+      @usage_metrics.incr(:obs_general, :success_responses, 100, (DateTime.current - 2))
+      @usage_metrics.incr(:obs_general, :success_responses, 100, (DateTime.current - 7))
+      @user.get_obs_general_calls(from: Time.now - 5.days).should eq 110
+      @user.get_obs_general_calls(from: Time.now - 5.days, to: Time.now - 2.days).should eq 100
+    end
+
+    it "should return 0 when no data observatory general actions" do
+      @user.get_obs_general_calls(from: Time.now - 15.days, to: Time.now - 10.days).should eq 0
+    end
+  end
+
   describe "organization user deletion" do
-    it "should transfer geocodings and tweet imports to owner" do
+    it "should transfer tweet imports to owner" do
       u1 = create_user(email: 'u1@exampleb.com', username: 'ub1', password: 'admin123')
       org = create_org('cartodbtestb', 1234567890, 5)
 
@@ -667,28 +802,26 @@ describe User do
 
       u2 = create_user(email: 'u2@exampleb.com', username: 'ub2', password: 'admin123', organization: org)
 
-      FactoryGirl.create(:geocoding, user: u2, kind: 'high-resolution', created_at: Time.now, processed_rows: 1, formatter: 'b')
+      tweet_attributes = {
+        user: u2,
+        table_id: '96a86fb7-0270-4255-a327-15410c2d49d4',
+        data_import_id: '96a86fb7-0270-4255-a327-15410c2d49d4',
+        service_item_id: '555',
+        state: ::SearchTweet::STATE_COMPLETE
+      }
 
-      st = SearchTweet.new
-      st.user = u2
-      st.table_id = '96a86fb7-0270-4255-a327-15410c2d49d4'
-      st.data_import_id = '96a86fb7-0270-4255-a327-15410c2d49d4'
-      st.service_item_id = '555'
-      st.retrieved_items = 5
-      st.state = ::SearchTweet::STATE_COMPLETE
-      st.save
+      st1 = SearchTweet.create(tweet_attributes.merge(retrieved_items: 5))
+      st2 = SearchTweet.create(tweet_attributes.merge(retrieved_items: 10))
 
       u1.reload
       u2.reload
-      u2.get_geocoding_calls.should == 1
-      u2.get_twitter_imports_count.should == 5
-      u1.get_geocoding_calls.should == 0
+
+      u2.get_twitter_imports_count.should == st1.retrieved_items + st2.retrieved_items
       u1.get_twitter_imports_count.should == 0
 
       u2.destroy
       u1.reload
-      u1.get_geocoding_calls.should == 1
-      u1.get_twitter_imports_count.should == 5
+      u1.get_twitter_imports_count.should == st1.retrieved_items + st2.retrieved_items
 
       org.destroy
     end
@@ -768,7 +901,7 @@ describe User do
   it "should create a dabase user that only can read it's own database" do
 
     connection = ::Sequel.connect(
-      ::Rails::Sequel.configuration.environment_for(Rails.env).merge(
+      ::SequelRails.configuration.environment_for(Rails.env).merge(
         'database' => @user.database_name, :logger => ::Rails.logger,
         'username' => @user.database_username, 'password' => @user.database_password
       )
@@ -778,7 +911,7 @@ describe User do
 
     connection = nil
     connection = ::Sequel.connect(
-      ::Rails::Sequel.configuration.environment_for(Rails.env).merge(
+      ::SequelRails.configuration.environment_for(Rails.env).merge(
         'database' => @user2.database_name, :logger => ::Rails.logger,
         'username' => @user.database_username, 'password' => @user.database_password
       )
@@ -793,7 +926,7 @@ describe User do
     end
 
     connection = ::Sequel.connect(
-      ::Rails::Sequel.configuration.environment_for(Rails.env).merge(
+      ::SequelRails.configuration.environment_for(Rails.env).merge(
         'database' => @user2.database_name, :logger => ::Rails.logger,
         'username' => @user2.database_username, 'password' => @user2.database_password
       )
@@ -802,7 +935,7 @@ describe User do
     connection.disconnect
 
     connection = ::Sequel.connect(
-      ::Rails::Sequel.configuration.environment_for(Rails.env).merge(
+      ::SequelRails.configuration.environment_for(Rails.env).merge(
         'database' => @user.database_name, :logger => ::Rails.logger,
         'username' => @user2.database_username, 'password' => @user2.database_password
       )
@@ -981,6 +1114,83 @@ describe User do
     user.destroy
   end
 
+  it "should have a method that generates users redis limits metadata key" do
+    @user.timeout_key.should == "limits:timeout:#{@user.username}"
+  end
+
+  it "replicates db timeout limits in redis after saving and applies them to db" do
+    @user.user_timeout = 200007
+    @user.database_timeout = 100007
+    @user.save
+    $users_metadata.HGET(@user.timeout_key, 'db').should == '200007'
+    $users_metadata.HGET(@user.timeout_key, 'db_public').should == '100007'
+    @user.in_database do |db|
+      db[%{SHOW statement_timeout}].first.should eq({ statement_timeout: '200007ms' })
+    end
+    @user.in_database(as: :public_user) do |db|
+      db[%{SHOW statement_timeout}].first.should eq({ statement_timeout: '100007ms' })
+    end
+  end
+
+  it "replicates render timeout limits in redis after saving" do
+    @user.user_render_timeout = 200001
+    @user.database_render_timeout = 100001
+    @user.save
+    $users_metadata.HGET(@user.timeout_key, 'render').should == '200001'
+    $users_metadata.HGET(@user.timeout_key, 'render_public').should == '100001'
+  end
+
+  it "should store db timeout limits in redis after creation" do
+    user = FactoryGirl.create :user, user_timeout: 200002, database_timeout: 100002
+    user.user_timeout.should == 200002
+    user.database_timeout.should == 100002
+    $users_metadata.HGET(user.timeout_key, 'db').should == '200002'
+    $users_metadata.HGET(user.timeout_key, 'db_public').should == '100002'
+    user.in_database do |db|
+      db[%{SHOW statement_timeout}].first.should eq({ statement_timeout: '200002ms' })
+    end
+    user.in_database(as: :public_user) do |db|
+      db[%{SHOW statement_timeout}].first.should eq({ statement_timeout: '100002ms' })
+    end
+    user.destroy
+  end
+
+  it "should store render timeout limits in redis after creation" do
+    user = FactoryGirl.create :user, user_render_timeout: 200003, database_render_timeout: 100003
+    user.reload
+    user.user_render_timeout.should == 200003
+    user.database_render_timeout.should == 100003
+    $users_metadata.HGET(user.timeout_key, 'render').should == '200003'
+    $users_metadata.HGET(user.timeout_key, 'render_public').should == '100003'
+    user.destroy
+  end
+
+  it "should have valid non-zero db timeout limits by default" do
+    user = FactoryGirl.create :user
+    user.user_timeout.should > 0
+    user.database_timeout.should > 0
+    $users_metadata.HGET(user.timeout_key, 'db').should == user.user_timeout.to_s
+    $users_metadata.HGET(user.timeout_key, 'db_public').should == user.database_timeout.to_s
+    user.in_database do |db|
+      result = db[%{SELECT setting FROM pg_settings WHERE name = 'statement_timeout'}]
+      result.first.should eq(setting: user.user_timeout.to_s)
+    end
+    user.in_database(as: :public_user) do |db|
+      result = db[%{SELECT setting FROM pg_settings WHERE name = 'statement_timeout'}]
+      result.first.should eq(setting: user.database_timeout.to_s)
+    end
+    user.destroy
+  end
+
+  it "should have zero render timeout limits by default" do
+    user = FactoryGirl.create :user
+    user.user_render_timeout.should eq 0
+    user.database_render_timeout.should eq 0
+    $users_metadata.HGET(user.timeout_key, 'render').should eq '0'
+    $users_metadata.HGET(user.timeout_key, 'render_public').should eq '0'
+    user.destroy
+  end
+
   it "should not regenerate the api_key after saving" do
     expect { @user.save }.to_not change { @user.api_key }
   end
@@ -988,25 +1198,32 @@ describe User do
   it "should remove its metadata from redis after deletion" do
     doomed_user = create_user :email => 'doomed@example.com', :username => 'doomed', :password => 'doomed123'
     $users_metadata.HGET(doomed_user.key, 'id').should == doomed_user.id.to_s
+    $users_metadata.HGET(doomed_user.timeout_key, 'db').should_not be_nil
+    $users_metadata.HGET(doomed_user.timeout_key, 'db_public').should_not be_nil
     key = doomed_user.key
+    timeout_key = doomed_user.timeout_key
     doomed_user.destroy
-    $users_metadata.HGET(doomed_user.key, 'id').should be_nil
+    $users_metadata.HGET(key, 'id').should be_nil
+    $users_metadata.HGET(timeout_key, 'db').should be_nil
+    $users_metadata.HGET(timeout_key, 'db_public').should be_nil
+    $users_metadata.HGET(timeout_key, 'render').should be_nil
+    $users_metadata.HGET(timeout_key, 'render_public').should be_nil
   end
 
   it "should remove its database and database user after deletion" do
     doomed_user = create_user :email => 'doomed1@example.com', :username => 'doomed1', :password => 'doomed123'
     create_table :user_id => doomed_user.id, :name => 'My first table', :privacy => UserTable::PRIVACY_PUBLIC
     doomed_user.reload
-    Rails::Sequel.connection["select count(*) from pg_catalog.pg_database where datname = '#{doomed_user.database_name}'"]
+    SequelRails.connection["select count(*) from pg_catalog.pg_database where datname = '#{doomed_user.database_name}'"]
       .first[:count].should == 1
-    Rails::Sequel.connection["select count(*) from pg_catalog.pg_user where usename = '#{doomed_user.database_username}'"]
+    SequelRails.connection["select count(*) from pg_catalog.pg_user where usename = '#{doomed_user.database_username}'"]
       .first[:count].should == 1
 
     doomed_user.destroy
 
-    Rails::Sequel.connection["select count(*) from pg_catalog.pg_database where datname = '#{doomed_user.database_name}'"]
+    SequelRails.connection["select count(*) from pg_catalog.pg_database where datname = '#{doomed_user.database_name}'"]
       .first[:count].should == 0
-    Rails::Sequel.connection["select count(*) from pg_catalog.pg_user where usename = '#{doomed_user.database_username}'"]
+    SequelRails.connection["select count(*) from pg_catalog.pg_user where usename = '#{doomed_user.database_username}'"]
       .first[:count].should == 0
   end
 
@@ -1018,28 +1235,24 @@ describe User do
   end
 
   it "should remove its user tables, layers and data imports after deletion" do
-    doomed_user = create_user :email => 'doomed2@example.com', :username => 'doomed2', :password => 'doomed123'
-    data_import = DataImport.create(:user_id     => doomed_user.id,
-                      :data_source => '/../db/fake_data/clubbing.csv').run_import!
-    doomed_user.add_layer Layer.create(:kind => 'carto')
-    table_id  = data_import.table_id
-    uuid      = UserTable.where(id: table_id).first.table_visualization.id
+    doomed_user = create_user(email: 'doomed2@example.com', username: 'doomed2', password: 'doomed123')
+    data_import = DataImport.create(user_id: doomed_user.id, data_source: fake_data_path('clubbing.csv')).run_import!
+    doomed_user.add_layer Layer.create(kind: 'carto')
+    table_id = data_import.table_id
+    uuid = UserTable.where(id: table_id).first.table_visualization.id
 
     CartoDB::Varnish.any_instance.expects(:purge)
-      .with("#{doomed_user.database_name}.*")
-      .returns(true)
+                    .with("#{doomed_user.database_name}.*")
+                    .returns(true)
     CartoDB::Varnish.any_instance.expects(:purge)
-      .with("^#{doomed_user.database_name}:(.*public(\\\\\")?\\.clubbing.*)|(table)$")
-      .returns(true)
-    CartoDB::Varnish.any_instance.expects(:purge)
-      .with(".*#{uuid}:vizjson")
-      .times(2 + 5)
-      .returns(true)
+                    .with(".*#{uuid}:vizjson")
+                    .at_least_once
+                    .returns(true)
 
     doomed_user.destroy
 
-    DataImport.where(:user_id => doomed_user.id).count.should == 0
-    UserTable.where(:user_id => doomed_user.id).count.should == 0
+    DataImport.where(user_id: doomed_user.id).count.should == 0
+    UserTable.where(user_id: doomed_user.id).count.should == 0
     Layer.db["SELECT * from layers_users WHERE user_id = '#{doomed_user.id}'"].count.should == 0
   end
 
@@ -1111,6 +1324,26 @@ describe User do
       @user.hard_geocoding_limit.should be_false
     end
 
+    it 'returns true when for enterprise accounts unless it has been manually set to false' do
+      ['ENTERPRISE', 'ENTERPRISE LUMP-SUM', 'Enterprise Medium Lumpsum AWS'].each do |account_type|
+        @user.stubs(:account_type).returns(account_type)
+
+        @user.soft_geocoding_limit = nil
+
+        @user.soft_geocoding_limit?.should be_false
+        @user.soft_geocoding_limit.should be_false
+        @user.hard_geocoding_limit?.should be_true
+        @user.hard_geocoding_limit.should be_true
+
+        @user.soft_geocoding_limit = true
+
+        @user.soft_geocoding_limit?.should be_true
+        @user.soft_geocoding_limit.should be_true
+        @user.hard_geocoding_limit?.should be_false
+        @user.hard_geocoding_limit.should be_false
+      end
+    end
+
     it 'returns false when the plan is CORONELLI or MERCATOR unless it has been manually set to true' do
       @user.stubs(:account_type).returns('CORONELLI')
       @user.hard_geocoding_limit?.should be_false
@@ -1126,162 +1359,116 @@ describe User do
     end
   end
 
-  describe '#link_ghost_tables' do
+  describe '#hard_here_isolines_limit?' do
+
     before(:each) do
-      @user.in_database.run('drop table if exists ghost_table')
-      @user.in_database.run('drop table if exists non_ghost_table')
-      @user.in_database.run('drop table if exists ghost_table_renamed')
-      @user.reload
-      @user.table_quota = 100
-      @user.save
+      @user_account = create_user
     end
 
-    it "should correctly count real tables" do
-      @user.in_database.run('create table ghost_table (cartodb_id integer, the_geom geometry, the_geom_webmercator geometry, updated_at date, created_at date)')
-      @user.in_database.run('create table non_ghost_table (test integer)')
-      @user.real_tables.map { |c| c[:relname] }.should =~ ["ghost_table", "non_ghost_table"]
-      @user.real_tables.size.should == 2
+    it 'returns true with every plan unless it has been manually set to false' do
+      @user_account[:soft_here_isolines_limit].should be_nil
+      @user_account.stubs(:account_type).returns('AMBASSADOR')
+      @user_account.soft_here_isolines_limit?.should be_false
+      @user_account.soft_here_isolines_limit.should be_false
+      @user_account.hard_here_isolines_limit?.should be_true
+      @user_account.hard_here_isolines_limit.should be_true
+
+      @user_account.stubs(:account_type).returns('FREE')
+      @user_account.soft_here_isolines_limit?.should be_false
+      @user_account.soft_here_isolines_limit.should be_false
+      @user_account.hard_here_isolines_limit?.should be_true
+      @user_account.hard_here_isolines_limit.should be_true
+
+      @user_account.hard_here_isolines_limit = false
+      @user_account[:soft_here_isolines_limit].should_not be_nil
+
+      @user_account.stubs(:account_type).returns('AMBASSADOR')
+      @user_account.soft_here_isolines_limit?.should be_true
+      @user_account.soft_here_isolines_limit.should be_true
+      @user_account.hard_here_isolines_limit?.should be_false
+      @user_account.hard_here_isolines_limit.should be_false
+
+      @user_account.stubs(:account_type).returns('FREE')
+      @user_account.soft_here_isolines_limit?.should be_true
+      @user_account.soft_here_isolines_limit.should be_true
+      @user_account.hard_here_isolines_limit?.should be_false
+      @user_account.hard_here_isolines_limit.should be_false
     end
 
-    it "should return cartodbfied tables" do
-      @user.in_database.run('create table ghost_table (cartodb_id integer, the_geom geometry, the_geom_webmercator geometry, updated_at date, created_at date)')
+  end
 
-      @user.in_database.run(%Q{
-        CREATE OR REPLACE FUNCTION test_quota_per_row()
-          RETURNS trigger
-          AS $$
-          BEGIN
-            RETURN NULL;
-          END;
-          $$
-          LANGUAGE plpgsql;
-      })
-      @user.in_database.run( %Q{
-        CREATE TRIGGER test_quota_per_row BEFORE INSERT ON ghost_table EXECUTE PROCEDURE test_quota_per_row()
-      })
+  describe '#hard_obs_snapshot_limit?' do
 
-      @user.in_database.run('create table non_ghost_table (test integer)')
-      tables = @user.search_for_cartodbfied_tables
-      tables.should =~ ['ghost_table']
+    before(:each) do
+      @user_account = create_user
     end
 
-    it "should link a table in the database" do
-      tables = @user.tables.all.map(&:name)
-      @user.in_database.run('create table ghost_table (cartodb_id integer, the_geom geometry, the_geom_webmercator geometry, updated_at date, created_at date)')
+    it 'returns true with every plan unless it has been manually set to false' do
+      @user_account[:soft_obs_snapshot_limit].should be_nil
+      @user_account.stubs(:account_type).returns('AMBASSADOR')
+      @user_account.soft_obs_snapshot_limit?.should be_false
+      @user_account.soft_obs_snapshot_limit.should be_false
+      @user_account.hard_obs_snapshot_limit?.should be_true
+      @user_account.hard_obs_snapshot_limit.should be_true
 
-      @user.in_database.run(%Q{
-        CREATE OR REPLACE FUNCTION test_quota_per_row()
-          RETURNS trigger
-          AS $$
-          BEGIN
-            RETURN NULL;
-          END;
-          $$
-          LANGUAGE plpgsql;
-      })
-      @user.in_database.run( %Q{
-        CREATE TRIGGER test_quota_per_row BEFORE INSERT ON ghost_table EXECUTE PROCEDURE test_quota_per_row()
-      })
+      @user_account.stubs(:account_type).returns('FREE')
+      @user_account.soft_obs_snapshot_limit?.should be_false
+      @user_account.soft_obs_snapshot_limit.should be_false
+      @user_account.hard_obs_snapshot_limit?.should be_true
+      @user_account.hard_obs_snapshot_limit.should be_true
 
-      @user.link_ghost_tables
-      new_tables = @user.tables.all.map(&:name)
-      new_tables.should include('ghost_table')
+      @user_account.hard_obs_snapshot_limit = false
+      @user_account[:soft_obs_snapshot_limit].should_not be_nil
+
+      @user_account.stubs(:account_type).returns('AMBASSADOR')
+      @user_account.soft_obs_snapshot_limit?.should be_true
+      @user_account.soft_obs_snapshot_limit.should be_true
+      @user_account.hard_obs_snapshot_limit?.should be_false
+      @user_account.hard_obs_snapshot_limit.should be_false
+
+      @user_account.stubs(:account_type).returns('FREE')
+      @user_account.soft_obs_snapshot_limit?.should be_true
+      @user_account.soft_obs_snapshot_limit.should be_true
+      @user_account.hard_obs_snapshot_limit?.should be_false
+      @user_account.hard_obs_snapshot_limit.should be_false
     end
 
-    it "should link a renamed table in the database" do
-      tables = @user.tables.all.map(&:name)
-      @user.in_database.run('create table ghost_table_2 (cartodb_id integer, the_geom geometry, the_geom_webmercator geometry, updated_at date, created_at date)')
+  end
 
-      @user.in_database.run(%Q{
-        CREATE OR REPLACE FUNCTION test_quota_per_row()
-          RETURNS trigger
-          AS $$
-          BEGIN
-            RETURN NULL;
-          END;
-          $$
-          LANGUAGE plpgsql;
-      })
-      @user.in_database.run( %Q{
-        CREATE TRIGGER test_quota_per_row BEFORE INSERT ON ghost_table_2 EXECUTE PROCEDURE test_quota_per_row()
-      })
+  describe '#hard_obs_general_limit?' do
 
-      @user.link_ghost_tables
-      @user.in_database.run('alter table ghost_table_2 rename to ghost_table_renamed')
-      @user.link_ghost_tables
-      new_tables = @user.tables.all.map(&:name)
-      new_tables.should include('ghost_table_renamed')
-      new_tables.should_not include('ghost_table_2')
-      # check visualization name
-      table = @user.tables.find(:name => 'ghost_table_renamed').first
-      table.table_visualization.name.should == 'ghost_table_renamed'
-
-
+    before(:each) do
+      @user_account = create_user
     end
 
-    it "should remove reference to a removed table in the database" do
-      tables = @user.tables.all.map(&:name)
-      @user.in_database.run('create table ghost_table (cartodb_id integer, the_geom geometry, the_geom_webmercator geometry, updated_at date, created_at date)')
-      @user.link_ghost_tables
-      @user.in_database.run('drop table ghost_table')
-      @user.link_ghost_tables
-      new_tables = @user.tables.all.map(&:name)
-      new_tables.should_not include('ghost_table')
-    end
+    it 'returns true with every plan unless it has been manually set to false' do
+      @user_account[:soft_obs_general_limit].should be_nil
+      @user_account.stubs(:account_type).returns('AMBASSADOR')
+      @user_account.soft_obs_general_limit?.should be_false
+      @user_account.soft_obs_general_limit.should be_false
+      @user_account.hard_obs_general_limit?.should be_true
+      @user_account.hard_obs_general_limit.should be_true
 
-    # not sure what the following tests mean or why they were
-    # created
-    xit "should link a table with null table_id" do
-      table = create_table :user_id => @user.id, :name => 'My table'
-      initial_count = @user.tables.count
-      table_id = table.table_id
-      table.this.update table_id: nil
-      @user.link_ghost_tables
-      table.reload
-      table.table_id.should == table_id
-      @user.tables.count.should == initial_count
-    end
+      @user_account.stubs(:account_type).returns('FREE')
+      @user_account.soft_obs_general_limit?.should be_false
+      @user_account.soft_obs_general_limit.should be_false
+      @user_account.hard_obs_general_limit?.should be_true
+      @user_account.hard_obs_general_limit.should be_true
 
-    xit "should link a table with wrong table_id" do
-      table = create_table :user_id => @user.id, :name => 'My table 2'
-      initial_count = @user.tables.count
-      table_id = table.table_id
-      table.this.update table_id: 1
-      @user.link_ghost_tables
-      table.reload
-      table.table_id.should == table_id
-      @user.tables.count.should == initial_count
-    end
+      @user_account.hard_obs_general_limit = false
+      @user_account[:soft_obs_general_limit].should_not be_nil
 
-    it "should remove a table that does not exist on the user database" do
-      initial_count = @user.tables.count
-      table = create_table :user_id => @user.id, :name => 'My table 3'
-      puts "dropping", table.name
-      @user.in_database.drop_table(table.name)
-      @user.tables.where(name: table.name).first.should_not be_nil
-      @user.link_ghost_tables
-      @user.tables.where(name: table.name).first.should be_nil
-    end
+      @user_account.stubs(:account_type).returns('AMBASSADOR')
+      @user_account.soft_obs_general_limit?.should be_true
+      @user_account.soft_obs_general_limit.should be_true
+      @user_account.hard_obs_general_limit?.should be_false
+      @user_account.hard_obs_general_limit.should be_false
 
-    it "should link a table that requires quoting, e.g: name with capitals" do
-      initial_count = @user.tables.count
-      @user.in_database.run %Q{CREATE TABLE "MyTableWithCapitals" (cartodb_id integer, the_geom geometry, the_geom_webmercator geometry)}
-      @user.in_database.run(%Q{
-        CREATE OR REPLACE FUNCTION test_quota_per_row()
-          RETURNS trigger
-          AS $$
-          BEGIN
-            RETURN NULL;
-          END;
-          $$
-          LANGUAGE plpgsql;
-      })
-      @user.in_database.run %Q{CREATE TRIGGER test_quota_per_row BEFORE INSERT ON "MyTableWithCapitals" EXECUTE PROCEDURE test_quota_per_row()}
-
-      @user.link_ghost_tables
-
-      # TODO: the table won't be cartodbfy'ed and registered until we support CamelCase identifiers.
-      @user.tables.count.should == initial_count
+      @user_account.stubs(:account_type).returns('FREE')
+      @user_account.soft_obs_general_limit?.should be_true
+      @user_account.soft_obs_general_limit.should be_true
+      @user_account.hard_obs_general_limit?.should be_false
+      @user_account.hard_obs_general_limit.should be_false
     end
 
   end
@@ -1290,7 +1477,7 @@ describe User do
     it 'Checks that shared tables include not only owned ones' do
       require_relative '../../app/models/visualization/collection'
       CartoDB::Varnish.any_instance.stubs(:send_command).returns(true)
-      CartoDB::NamedMapsWrapper::NamedMaps.any_instance.stubs(:get => nil, :create => true, :update => true)
+      bypass_named_maps
       # No need to really touch the DB for the permissions
       Table::any_instance.stubs(:add_read_permission).returns(nil)
 
@@ -1316,17 +1503,12 @@ describe User do
       table4.save.reload
 
       # Only owned tables
-      user_tables = @user.tables_including_shared
+      user_tables = tables_including_shared(@user)
       user_tables.count.should eq 2
 
       # Grant permission
       user2_vis  = CartoDB::Visualization::Collection.new.fetch(user_id: @user2.id, name: table3.name).first
-      permission = CartoDB::Permission.new(
-        owner_id:       @user2.id,
-        owner_username: @user2.username,
-        entity_id:      user2_vis.id,
-        entity_type:    CartoDB::Permission::ENTITY_TYPE_VISUALIZATION
-      )
+      permission = user2_vis.permission
       permission.acl = [
         {
           type: CartoDB::Permission::TYPE_USER,
@@ -1340,7 +1522,7 @@ describe User do
       permission.save
 
       # Now owned + shared...
-      user_tables = @user.tables_including_shared
+      user_tables = tables_including_shared(@user)
       user_tables.count.should eq 3
 
       contains_shared_table = false
@@ -1357,6 +1539,103 @@ describe User do
 
       @user.tables.all.each { |t| t.destroy }
       @user2.tables.all.each { |t| t.destroy }
+    end
+  end
+
+  describe '#destroy' do
+    it 'deletes database role' do
+      u1 = create_user(email: 'ddr@example.com', username: 'ddr', password: 'admin123')
+      role = u1.database_username
+      db = u1.in_database
+      db_service = u1.db_service
+
+      db_service.role_exists?(db, role).should == true
+
+      u1.destroy
+
+      expect do
+      db_service.role_exists?(db, role).should == false
+      end.to raise_error(/role "#{role}" does not exist/)
+      db.disconnect
+    end
+
+    it 'deletes api keys' do
+      user = create_user(email: 'ddr@example.com', username: 'ddr', password: 'admin123')
+      api_key = FactoryGirl.create(:api_key_apis, user_id: user.id)
+
+      user.destroy
+      expect(Carto::ApiKey.exists?(api_key.id)).to be_false
+      expect($users_metadata.exists(api_key.send(:redis_key))).to be_false
+    end
+
+    describe "on organizations" do
+      include_context 'organization with users helper'
+
+      it 'deletes database role' do
+        role = @org_user_1.database_username
+        db = @org_user_1.in_database
+        db_service = @org_user_1.db_service
+
+        db_service.role_exists?(db, role).should == true
+
+        @org_user_1.destroy
+
+        expect do
+          db_service.role_exists?(db, role).should == false
+        end.to raise_error(/role "#{role}" does not exist/)
+        db.disconnect
+      end
+
+      it 'deletes temporary analysis tables' do
+        db = @org_user_2.in_database
+        db.run('CREATE TABLE analysis_cd60938c7b_2ad1345b134ed3cd363c6de651283be9bd65094e (a int)')
+        db.run(%{INSERT INTO cdb_analysis_catalog (username, cache_tables, node_id, analysis_def)
+                 VALUES ('#{@org_user_2.username}', '{analysis_cd60938c7b_2ad1345b134ed3cd363c6de651283be9bd65094e}', 'a0', '{}')})
+        @org_user_2.destroy
+
+        db = @org_user_owner.in_database
+        db["SELECT COUNT(*) FROM cdb_analysis_catalog WHERE username='#{@org_user_2.username}'"].first[:count].should eq 0
+      end
+
+      describe 'User#destroy' do
+        include TableSharing
+
+        it 'blocks deletion with shared entities' do
+          @not_to_be_deleted = TestUserFactory.new.create_test_user(unique_name('user'), @organization)
+          table = create_random_table(@not_to_be_deleted)
+          share_table_with_user(table, @org_user_owner)
+
+          expect { @not_to_be_deleted.destroy }.to raise_error(/Cannot delete user, has shared entities/)
+
+          ::User[@not_to_be_deleted.id].should be
+        end
+
+        it 'deletes api keys and associated roles' do
+          user = TestUserFactory.new.create_test_user(unique_name('user'), @organization)
+          api_key = FactoryGirl.create(:api_key_apis, user_id: user.id)
+
+          user.destroy
+          expect(Carto::ApiKey.exists?(api_key.id)).to be_false
+          expect($users_metadata.exists(api_key.send(:redis_key))).to be_false
+          expect(
+            @org_user_owner.in_database["SELECT 1 FROM pg_roles WHERE rolname = '#{api_key.db_role}'"].first
+          ).to be_nil
+        end
+      end
+    end
+  end
+
+  describe 'User#destroy_cascade' do
+    include_context 'organization with users helper'
+    include TableSharing
+
+    it 'allows deletion even with shared entities' do
+      table = create_random_table(@org_user_1)
+      share_table_with_user(table, @org_user_1)
+
+      @org_user_1.destroy_cascade
+
+      ::User[@org_user_1.id].should_not be
     end
   end
 
@@ -1465,11 +1744,15 @@ describe User do
 
   # INFO: since user can be also created in Central, and it can fail, we need to request notification explicitly. See #3022 for more info
   it "can notify a new user creation" do
-
     ::Resque.stubs(:enqueue).returns(nil)
-
+    @account_type_org = create_account_type_fg('ORGANIZATION USER')
     organization = create_organization_with_owner(quota_in_bytes: 1000.megabytes)
-    user1 = new_user(:username => 'test', :email => "client@example.com", :organization => organization, :organization_id => organization.id, :quota_in_bytes => 20.megabytes)
+    user1 = new_user(username: 'test',
+                     email: "client@example.com",
+                     organization: organization,
+                     organization_id: organization.id,
+                     quota_in_bytes: 20.megabytes,
+                     account_type: 'ORGANIZATION USER')
     user1.id = UUIDTools::UUID.timestamp_create.to_s
 
     ::Resque.expects(:enqueue).with(::Resque::UserJobs::Mail::NewOrganizationUser, user1.id).once
@@ -1565,6 +1848,11 @@ describe User do
     @user.save
 
     @user.crypted_password.should eq old_crypted_password
+
+    last_password_change_date = @user.last_password_change_date
+    @user.change_password(@user_password, @user_password, @user_password)
+    @user.save
+    @user.last_password_change_date.should eq last_password_change_date
   end
 
   describe "when user is signed up with google sign-in and don't have any password yet" do
@@ -1602,24 +1890,36 @@ describe User do
       end
 
       collection = CartoDB::Visualization::Collection.new.fetch({user_id: @user.id})
-      redis_mock = mock
+      redis_spy = RedisDoubles::RedisSpy.new
       redis_vizjson_cache = CartoDB::Visualization::RedisVizjsonCache.new()
       redis_embed_cache = EmbedRedisCache.new()
-      CartoDB::Visualization::RedisVizjsonCache.any_instance.stubs(:redis).returns(redis_mock)
-      EmbedRedisCache.any_instance.stubs(:redis).returns(redis_mock)
+      CartoDB::Visualization::RedisVizjsonCache.any_instance.stubs(:redis).returns(redis_spy)
+      EmbedRedisCache.any_instance.stubs(:redis).returns(redis_spy)
 
 
-      redis_vizjson_keys = collection.map {|v| [redis_vizjson_cache.key(v.id, false), redis_vizjson_cache.key(v.id, true)] }.flatten
+      redis_vizjson_keys = collection.map { |v|
+        [
+          redis_vizjson_cache.key(v.id, false), redis_vizjson_cache.key(v.id, true),
+          redis_vizjson_cache.key(v.id, false, 3), redis_vizjson_cache.key(v.id, true, 3),
+          redis_vizjson_cache.key(v.id, false, '3n'), redis_vizjson_cache.key(v.id, true, '3n'),
+          redis_vizjson_cache.key(v.id, false, '3a'), redis_vizjson_cache.key(v.id, true, '3a'),
+        ]
+      }.flatten
       redis_vizjson_keys.should_not be_empty
 
-      redis_embed_keys = collection.map {|v| [redis_embed_cache.key(v.id, false), redis_embed_cache.key(v.id, true)] }.flatten
+      redis_embed_keys = collection.map { |v|
+        [redis_embed_cache.key(v.id, false), redis_embed_cache.key(v.id, true)]
+      }.flatten
       redis_embed_keys.should_not be_empty
 
-
-      redis_mock.expects(:del).once.with(redis_vizjson_keys)
-      redis_mock.expects(:del).once.with(redis_embed_keys)
-
       @user.purge_redis_vizjson_cache
+
+      redis_spy.deleted.should include(*redis_vizjson_keys)
+      redis_spy.deleted.should include(*redis_embed_keys)
+      redis_spy.deleted.count.should eq redis_vizjson_keys.count + redis_embed_keys.count
+      redis_spy.invokes(:del).count.should eq 2
+      redis_spy.invokes(:del).map(&:sort).should include(redis_vizjson_keys.sort)
+      redis_spy.invokes(:del).map(&:sort).should include(redis_embed_keys.sort)
     end
 
     it "shall not fail if the user does not have visualizations" do
@@ -1647,7 +1947,7 @@ describe User do
 
       data_import_id = '11111111-1111-1111-1111-111111111111'
 
-      Rails::Sequel.connection.run(%Q{
+      SequelRails.connection.run(%Q{
         INSERT INTO data_imports("data_source","data_type","table_name","state","success","logger","updated_at",
           "created_at","tables_created_count",
           "table_names","append","id","table_id","user_id",
@@ -1660,7 +1960,7 @@ describe User do
             '[{"type":".csv","size":5015}]','t','f','t','test','0.0.0.0','13204','test','f','{"twitter_credits_limit":0}');
         })
 
-      Rails::Sequel.connection.run(%Q{
+      SequelRails.connection.run(%Q{
         INSERT INTO geocodings("table_name","processed_rows","created_at","updated_at","formatter","state",
           "id","user_id",
           "cache_hits","kind","geometry_type","processable_rows","real_rows","used_credits",
@@ -1705,9 +2005,6 @@ describe User do
 
   describe 'User creation and DB critical calls' do
     it 'Properly setups a new user (not belonging to an organization)' do
-      # INFO: avoiding enable_remote_db_user
-      Cartodb.config[:signups] = nil
-
       CartoDB::UserModule::DBService.any_instance.stubs(
         cartodb_extension_version_pre_mu?: nil,
         monitor_user_notification: nil,
@@ -1717,8 +2014,8 @@ describe User do
       user_timeout_secs = 666
 
       user = ::User.new
-      user.username = String.random(8).downcase
-      user.email = String.random(8).downcase + '@' + String.random(5).downcase + '.com'
+      user.username = unique_name('user')
+      user.email = unique_email
       user.password = user.email.split('@').first
       user.password_confirmation = user.password
       user.admin = false
@@ -1915,9 +2212,6 @@ describe User do
     end
 
     it 'Properly setups a new organization user' do
-      # INFO: avoiding enable_remote_db_user
-      Cartodb.config[:signups] = nil
-
       CartoDB::UserModule::DBService.any_instance.stubs(
         cartodb_extension_version_pre_mu?: nil,
         monitor_user_notification: nil,
@@ -1926,11 +2220,22 @@ describe User do
 
       disk_quota = 1234567890
       user_timeout_secs = 666
+      max_import_file_size = 6666666666
+      max_import_table_row_count = 55555555
+      max_concurrent_import_count = 44
+      max_layers = 11
 
       # create an owner
       organization = create_org('org-user-creation-db-checks-organization', disk_quota * 10, 10)
       user1 = create_user email: 'user1@whatever.com', username: 'creation-db-checks-org-owner', password: 'user11'
       user1.organization = organization
+
+      user1.max_import_file_size = max_import_file_size
+      user1.max_import_table_row_count = max_import_table_row_count
+      user1.max_concurrent_import_count = max_concurrent_import_count
+
+      user1.max_layers = 11
+
       user1.save
       organization.owner_id = user1.id
       organization.save
@@ -1938,8 +2243,8 @@ describe User do
       user1.reload
 
       user = ::User.new
-      user.username = String.random(8).downcase
-      user.email = String.random(8).downcase + '@' + String.random(5).downcase + '.com'
+      user.username = unique_name('user')
+      user.email = unique_email
       user.password = user.email.split('@').first
       user.password_confirmation = user.password
       user.admin = false
@@ -1967,6 +2272,12 @@ describe User do
       CartoDB::UserModule::DBService.terminate_database_connections(user.database_name, user.database_host)
 
       user.reload
+
+      user.max_import_file_size.should eq max_import_file_size
+      user.max_import_table_row_count.should eq max_import_table_row_count
+      user.max_concurrent_import_count.should eq max_concurrent_import_count
+
+      user.max_layers.should eq max_layers
 
       # Just to be sure all following checks will not falsely report ok using wrong schema
       user.database_schema.should_not eq CartoDB::UserModule::DBService::SCHEMA_PUBLIC
@@ -2108,14 +2419,561 @@ describe User do
     end
   end
 
+  describe "Write locking" do
+    it "detects locking properly" do
+      @user.db_service.writes_enabled?.should eq true
+      @user.db_service.disable_writes
+      @user.db_service.terminate_database_connections
+      @user.db_service.writes_enabled?.should eq false
+      @user.db_service.enable_writes
+      @user.db_service.terminate_database_connections
+      @user.db_service.writes_enabled?.should eq true
+    end
+
+    it "enables and disables writes in user database" do
+      @user.db_service.run_pg_query("create table foo_1(a int);")
+      @user.db_service.disable_writes
+      @user.db_service.terminate_database_connections
+      lambda {
+        @user.db_service.run_pg_query("create table foo_2(a int);")
+      }.should raise_error(CartoDB::ErrorRunningQuery)
+      @user.db_service.enable_writes
+      @user.db_service.terminate_database_connections
+      @user.db_service.run_pg_query("create table foo_3(a int);")
+    end
+  end
+
+  describe '#destroy' do
+    def create_full_data
+      carto_user = FactoryGirl.create(:carto_user)
+      user = ::User[carto_user.id]
+      table = create_table(user_id: carto_user.id, name: 'My first table', privacy: UserTable::PRIVACY_PUBLIC)
+      canonical_visualization = table.table_visualization
+
+      map = FactoryGirl.create(:carto_map_with_layers, user_id: carto_user.id)
+      carto_visualization = FactoryGirl.create(:carto_visualization, user: carto_user, map: map)
+      visualization = CartoDB::Visualization::Member.new(id: carto_visualization.id).fetch
+
+      # Force ORM to cache layers (to check if they are deleted later)
+      canonical_visualization.map.layers
+      visualization.map.layers
+
+      user_layer = Layer.create(kind: 'tiled')
+      user.add_layer(user_layer)
+
+      [user, table, [canonical_visualization, visualization], user_layer]
+    end
+
+    def check_deleted_data(user_id, table_id, visualizations, layer_id)
+      ::User[user_id].should be_nil
+      visualizations.each do |visualization|
+        Carto::Visualization.exists?(visualization.id).should be_false
+        visualization.map.layers.each { |layer| Carto::Layer.exists?(layer.id).should be_false }
+      end
+      Carto::UserTable.exists?(table_id).should be_false
+      Carto::Layer.exists?(layer_id).should be_false
+    end
+
+    it 'destroys all related information' do
+      user, table, visualizations, layer = create_full_data
+
+      ::User[user.id].destroy
+
+      check_deleted_data(user.id, table.id, visualizations, layer.id)
+    end
+
+    it 'destroys all related information, even for viewer users' do
+      user, table, visualizations, layer = create_full_data
+      user.viewer = true
+      user.save
+      user.reload
+
+      user.destroy
+
+      check_deleted_data(user.id, table.id, visualizations, layer.id)
+    end
+  end
+
+  describe '#visualization_count' do
+    include_context 'organization with users helper'
+    include TableSharing
+
+    it 'filters by type if asked' do
+      vis = FactoryGirl.create(:carto_visualization, user_id: @org_user_1.id, type: Carto::Visualization::TYPE_DERIVED)
+
+      @org_user_1.visualization_count.should eq 1
+      @org_user_1.visualization_count(type: Carto::Visualization::TYPE_DERIVED).should eq 1
+      [Carto::Visualization::TYPE_CANONICAL, Carto::Visualization::TYPE_REMOTE].each do |type|
+        @org_user_1.visualization_count(type: type).should eq 0
+      end
+
+      vis.destroy
+    end
+
+    it 'filters by privacy if asked' do
+      vis = FactoryGirl.create(:carto_visualization,
+                               user_id: @org_user_1.id,
+                               privacy: Carto::Visualization::PRIVACY_PUBLIC)
+
+      @org_user_1.visualization_count.should eq 1
+      @org_user_1.visualization_count(privacy: Carto::Visualization::PRIVACY_PUBLIC).should eq 1
+      [
+        Carto::Visualization::PRIVACY_PRIVATE,
+        Carto::Visualization::PRIVACY_LINK,
+        Carto::Visualization::PRIVACY_PROTECTED
+      ].each do |privacy|
+        @org_user_1.visualization_count(privacy: privacy).should eq 0
+      end
+
+      vis.destroy
+    end
+
+    it 'filters by shared exclusion if asked' do
+      vis = FactoryGirl.create(:carto_visualization, user_id: @org_user_1.id, type: Carto::Visualization::TYPE_DERIVED)
+      share_visualization_with_user(vis, @org_user_2)
+
+      @org_user_2.visualization_count.should eq 1
+      @org_user_2.visualization_count(exclude_shared: true).should eq 0
+
+      vis.destroy
+    end
+
+    it 'filters by raster exclusion if asked' do
+      vis = FactoryGirl.create(:carto_visualization, user_id: @org_user_1.id, kind: Carto::Visualization::KIND_RASTER)
+
+      @org_user_1.visualization_count.should eq 1
+      @org_user_1.visualization_count(exclude_raster: true).should eq 0
+
+      vis.destroy
+    end
+  end
+
+  describe 'viewer user' do
+    def verify_viewer_quota(user)
+      user.quota_in_bytes.should eq 0
+      user.geocoding_quota.should eq 0
+      user.soft_geocoding_limit.should eq false
+      user.twitter_datasource_quota.should eq 0
+      user.soft_twitter_datasource_limit.should eq false
+      user.here_isolines_quota.should eq 0
+      user.soft_here_isolines_limit.should eq false
+      user.obs_snapshot_quota.should eq 0
+      user.soft_obs_snapshot_limit.should eq false
+      user.obs_general_quota.should eq 0
+      user.soft_obs_general_limit.should eq false
+    end
+
+    describe 'creation' do
+      it 'assigns 0 as quota and no soft limit no matter what is requested' do
+        @user = create_user email: 'u_v@whatever.com', username: 'viewer', password: 'user11', viewer: true,
+                            geocoding_quota: 10, soft_geocoding_limit: true, twitter_datasource_quota: 100,
+                            soft_twitter_datasource_limit: 10, here_isolines_quota: 10, soft_here_isolines_limit: true,
+                            obs_snapshot_quota: 100, soft_obs_snapshot_limit: true, obs_general_quota: 100,
+                            soft_obs_general_limit: true
+        verify_viewer_quota(@user)
+        @user.destroy
+      end
+    end
+
+    describe 'builder -> viewer' do
+      it 'assigns 0 as quota and no soft limit no matter what is requested' do
+        @user = create_user email: 'u_v@whatever.com', username: 'builder-to-viewer', password: 'user11', viewer: false,
+                            geocoding_quota: 10, soft_geocoding_limit: true, twitter_datasource_quota: 100,
+                            soft_twitter_datasource_limit: 10, here_isolines_quota: 10, soft_here_isolines_limit: true,
+                            obs_snapshot_quota: 100, soft_obs_snapshot_limit: true, obs_general_quota: 100,
+                            soft_obs_general_limit: true
+        # Random check, but we can trust create_user
+        @user.quota_in_bytes.should_not eq 0
+
+        @user.viewer = true
+        @user.save
+        @user.reload
+        verify_viewer_quota(@user)
+        @user.destroy
+      end
+    end
+
+    describe 'quotas' do
+      it "can't change for viewer users" do
+        @user = create_user(viewer: true)
+        verify_viewer_quota(@user)
+        @user.quota_in_bytes = 666
+        @user.save
+        @user.reload
+        verify_viewer_quota(@user)
+        @user.destroy
+      end
+    end
+  end
+
+  describe 'api keys' do
+    before(:all) do
+      @auth_api_feature_flag = FactoryGirl.create(:feature_flag, name: 'auth_api', restricted: false)
+      @auth_api_user = FactoryGirl.create(:valid_user)
+    end
+
+    after(:all) do
+      @auth_api_feature_flag.destroy
+      @auth_api_user.destroy
+    end
+
+    describe 'create api keys on user creation' do
+      it "creates master api key on user creation if ff auth_api is enabled for the user" do
+        api_keys = Carto::ApiKey.where(user_id: @auth_api_user.id)
+        api_keys.should_not be_empty
+
+        master_api_key = Carto::ApiKey.where(user_id: @auth_api_user.id).master.first
+        master_api_key.should be
+        master_api_key.token.should eq @auth_api_user.api_key
+      end
+
+      it "does not create master api key on user creation if ff auth_api is not enabled for the user" do
+        user = FactoryGirl.create(:valid_user)
+        api_keys = Carto::ApiKey.where(user_id: @user.id)
+        api_keys.should be_empty
+        user.destroy
+      end
+    end
+
+    it 'syncs api key changes with master api key' do
+      master_key = Carto::ApiKey.where(user_id: @auth_api_user.id).master.first
+      expect(@auth_api_user.api_key).to eq master_key.token
+
+      expect { @auth_api_user.regenerate_api_key }.to(change { @auth_api_user.api_key })
+      master_key.reload
+      expect(@auth_api_user.api_key).to eq master_key.token
+    end
+
+    describe 'are enabled/disabled' do
+      before(:all) do
+        @regular_key = @auth_api_user.api_keys.create_regular_key!(name: 'regkey', grants: [{ type: 'apis', apis: [] }])
+      end
+
+      after(:all) do
+        @regular_key.destroy
+      end
+
+      before(:each) do
+        @auth_api_user.state = 'active'
+        @auth_api_user.engine_enabled = true
+        @auth_api_user.save
+      end
+
+      def enabled_api_key?(api_key)
+        $users_metadata.exists(api_key.send(:redis_key))
+      end
+
+      it 'disables all api keys for locked users' do
+        @auth_api_user.state = 'locked'
+        @auth_api_user.save
+
+        expect(@auth_api_user.api_keys.none? { |k| enabled_api_key?(k) }).to be_true
+
+        expect(@auth_api_user.api_key).to_not eq($users_metadata.HGET(@auth_api_user.send(:key), 'map_key'))
+      end
+
+      it 'disables regular keys for engine disabled' do
+        @auth_api_user.engine_enabled = false
+        @auth_api_user.save
+
+        expect(@auth_api_user.api_keys.regular.none? { |k| enabled_api_key?(k) }).to be_true
+        expect(@auth_api_user.api_keys.master.all? { |k| enabled_api_key?(k) }).to be_true
+        expect(@auth_api_user.api_keys.default_public.all? { |k| enabled_api_key?(k) }).to be_true
+
+        expect(@auth_api_user.api_key).to eq($users_metadata.HGET(@auth_api_user.send(:key), 'map_key'))
+      end
+
+      it 'enables all keys for active engine users' do
+        expect(@auth_api_user.api_keys.all? { |k| enabled_api_key?(k) }).to be_true
+
+        expect(@auth_api_user.api_key).to eq($users_metadata.HGET(@auth_api_user.send(:key), 'map_key'))
+      end
+    end
+
+    describe '#regenerate_all_api_keys' do
+      before(:all) do
+        @regular_key = @auth_api_user.api_keys.create_regular_key!(name: 'regkey', grants: [{ type: 'apis', apis: [] }])
+      end
+
+      after(:all) do
+        @regular_key.destroy
+      end
+
+      it 'regenerates master key at user model' do
+        expect { @auth_api_user.regenerate_all_api_keys }.to(change { @auth_api_user.api_key })
+      end
+
+      it 'regenerates master key model' do
+        expect { @auth_api_user.regenerate_all_api_keys }.to(change { @auth_api_user.api_keys.master.first.token })
+      end
+
+      it 'regenerates regular key' do
+        expect { @auth_api_user.regenerate_all_api_keys }.to(change { @regular_key.reload.token })
+      end
+    end
+  end
+
+  describe '#rate limits' do
+    before :all do
+      @limits_feature_flag = FactoryGirl.create(:feature_flag, name: 'limits_v2', restricted: false)
+      @account_type = create_account_type_fg('FREE')
+      @account_type_pro = create_account_type_fg('PRO')
+      @account_type_org = create_account_type_fg('ORGANIZATION USER')
+      @rate_limits_custom = FactoryGirl.create(:rate_limits_custom)
+      @rate_limits = FactoryGirl.create(:rate_limits)
+      @rate_limits_pro = FactoryGirl.create(:rate_limits_pro)
+      @user_rt = FactoryGirl.create(:valid_user, rate_limit_id: @rate_limits.id)
+      @organization = FactoryGirl.create(:organization)
+
+      owner = FactoryGirl.create(:user, account_type: 'PRO')
+      uo = CartoDB::UserOrganization.new(@organization.id, owner.id)
+      uo.promote_user_to_admin
+      @organization.reload
+      @user_org = FactoryGirl.build(:user, account_type: 'FREE')
+      @user_org.organization_id = @organization.id
+      @user_org.enabled = true
+      @user_org.save
+
+      @map_prefix = "limits:rate:store:#{@user_rt.username}:maps:"
+      @sql_prefix = "limits:rate:store:#{@user_rt.username}:sql:"
+    end
+
+    after :all do
+      @user_rt.destroy unless @user_rt.nil?
+      @user_no_ff.destroy unless @user_no_ff.nil?
+      @organization.destroy unless @organization.nil?
+      @account_type.destroy unless @account_type.nil?
+      @account_type_pro.destroy unless @account_type_pro.nil?
+      @account_type_org.destroy unless @account_type_org.nil?
+      @account_type.rate_limit.destroy unless @account_type.nil?
+      @account_type_pro.rate_limit.destroy unless @account_type_pro.nil?
+      @account_type_org.rate_limit.destroy unless @account_type_org.nil?
+      @rate_limits.destroy unless @rate_limits.nil?
+      @rate_limits_custom.destroy unless @rate_limits_custom.nil?
+      @rate_limits_custom2.destroy unless @rate_limits_custom2.nil?
+      @rate_limits_pro.destroy unless @rate_limits_pro.nil?
+    end
+
+    before :each do
+      unless FeatureFlag.where(name: 'limits_v2').first.present?
+        @limits_feature_flag = FactoryGirl.create(:feature_flag, name: 'limits_v2', restricted: false)
+      end
+    end
+
+    after :each do
+      @limits_feature_flag.destroy if @limits_feature_flag.exists?
+    end
+
+    it 'does not create rate limits if feature flag is not enabled' do
+      @limits_feature_flag.destroy
+      @user_no_ff = FactoryGirl.create(:valid_user, rate_limit_id: @rate_limits.id)
+      map_prefix = "limits:rate:store:#{@user_no_ff.username}:maps:"
+      sql_prefix = "limits:rate:store:#{@user_no_ff.username}:sql:"
+      $limits_metadata.EXISTS("#{map_prefix}anonymous").should eq 0
+      $limits_metadata.EXISTS("#{sql_prefix}query").should eq 0
+    end
+
+    it 'creates rate limits from user account type' do
+      expect_rate_limits_saved_to_redis(@user_rt.username)
+    end
+
+    it 'updates rate limits from user custom rate_limit' do
+      expect_rate_limits_saved_to_redis(@user_rt.username)
+
+      @user_rt.rate_limit_id = @rate_limits_custom.id
+      @user_rt.save
+
+      expect_rate_limits_custom_saved_to_redis(@user_rt.username)
+    end
+
+    it 'creates rate limits for a org user' do
+      expect_rate_limits_pro_saved_to_redis(@user_org.username)
+    end
+
+    it 'destroy rate limits' do
+      user2 = FactoryGirl.create(:valid_user, rate_limit_id: @rate_limits_pro.id)
+
+      expect_rate_limits_pro_saved_to_redis(user2.username)
+
+      user2.destroy
+
+      expect {
+        Carto::RateLimit.find(user2.rate_limit_id)
+      }.to raise_error(ActiveRecord::RecordNotFound)
+
+      expect_rate_limits_exist(user2.username)
+    end
+
+    it 'updates rate limits when user has no rate limits' do
+      user = FactoryGirl.create(:valid_user)
+      user.update_rate_limits(@rate_limits.api_attributes)
+
+      user.reload
+      user.rate_limit.should_not be_nil
+      user.rate_limit.api_attributes.should eq @rate_limits.api_attributes
+
+      user.destroy
+    end
+
+    it 'does nothing when user has no rate limits' do
+      user = FactoryGirl.create(:valid_user)
+      user.update_rate_limits(nil)
+
+      user.reload
+      user.rate_limit.should be_nil
+
+      user.destroy
+    end
+
+    it 'updates rate limits when user has rate limits' do
+      @rate_limits_custom2 = FactoryGirl.create(:rate_limits_custom2)
+      user = FactoryGirl.create(:valid_user, rate_limit_id: @rate_limits_custom2.id)
+      user.update_rate_limits(@rate_limits.api_attributes)
+      user.reload
+      user.rate_limit.should_not be_nil
+      user.rate_limit_id.should eq @rate_limits_custom2.id
+      user.rate_limit.api_attributes.should eq @rate_limits.api_attributes
+      @rate_limits.api_attributes.should eq @rate_limits_custom2.reload.api_attributes
+
+      user.destroy
+    end
+
+    it 'set rate limits to nil when user has rate limits' do
+      @rate_limits_custom2 = FactoryGirl.create(:rate_limits_custom2)
+      user = FactoryGirl.create(:valid_user, rate_limit_id: @rate_limits_custom2.id)
+
+      user.update_rate_limits(nil)
+
+      user.reload
+      user.rate_limit.should be_nil
+
+      expect {
+        Carto::RateLimit.find(@rate_limits_custom2.id)
+      }.to raise_error(ActiveRecord::RecordNotFound)
+
+      # limits reverted to the ones from the account type
+      expect_rate_limits_saved_to_redis(user.username)
+
+      user.destroy
+    end
+  end
+
+  describe '#password_expired?' do
+    before(:all) do
+      @organization_password = create_organization_with_owner
+    end
+
+    after(:all) do
+      @organization_password.destroy
+    end
+
+    before(:each) do
+      @github_user = FactoryGirl.build(:valid_user, github_user_id: 932847)
+      @google_user = FactoryGirl.build(:valid_user, google_sign_in: true)
+      @password_user = FactoryGirl.build(:valid_user)
+      @org_user = FactoryGirl.create(:valid_user,
+                                     account_type: 'ORGANIZATION USER',
+                                     organization: @organization_password)
+    end
+
+    it 'never expires without configuration' do
+      Cartodb.with_config(passwords: { 'expiration_in_d' => nil }) do
+        expect(@github_user.password_expired?).to be_false
+        expect(@google_user.password_expired?).to be_false
+        expect(@password_user.password_expired?).to be_false
+        expect(@org_user.password_expired?).to be_false
+      end
+    end
+
+    it 'never expires for users without password' do
+      Cartodb.with_config(passwords: { 'expiration_in_d' => 5 }) do
+        Delorean.jump(10.days)
+        expect(@github_user.password_expired?).to be_false
+        expect(@google_user.password_expired?).to be_false
+        Delorean.back_to_the_present
+      end
+    end
+
+    it 'expires for users with oauth and changed passwords' do
+      Cartodb.with_config(passwords: { 'expiration_in_d' => 5 }) do
+        @github_user.last_password_change_date = Time.now - 10.days
+        expect(@github_user.password_expired?).to be_true
+        @google_user.last_password_change_date = Time.now - 10.days
+        expect(@google_user.password_expired?).to be_true
+      end
+    end
+
+    it 'expires for password users after a while has passed' do
+      @password_user.save
+      Cartodb.with_config(passwords: { 'expiration_in_d' => 15 }) do
+        expect(@password_user.password_expired?).to be_false
+        Delorean.jump(30.days)
+        expect(@password_user.password_expired?).to be_true
+        @password_user.password = @password_user.password_confirmation = 'waduspass'
+        @password_user.save
+        expect(@password_user.password_expired?).to be_false
+        Delorean.jump(30.days)
+        expect(@password_user.password_expired?).to be_true
+        Delorean.back_to_the_present
+      end
+      @password_user.destroy
+    end
+
+    it 'expires for org users with password_expiration set' do
+      @organization_password.stubs(:password_expiration_in_d).returns(2)
+      org_user2 = FactoryGirl.create(:valid_user,
+                                     account_type: 'ORGANIZATION USER',
+                                     organization: @organization_password)
+
+      Cartodb.with_config(passwords: { 'expiration_in_d' => 5 }) do
+        expect(org_user2.password_expired?).to be_false
+        Delorean.jump(1.day)
+        expect(org_user2.password_expired?).to be_false
+        Delorean.jump(5.days)
+        expect(org_user2.password_expired?).to be_true
+        org_user2.password = org_user2.password_confirmation = 'waduspass'
+        org_user2.save
+        Delorean.jump(1.day)
+        expect(org_user2.password_expired?).to be_false
+        Delorean.jump(5.day)
+        expect(org_user2.password_expired?).to be_true
+        Delorean.back_to_the_present
+      end
+    end
+
+    it 'never expires for org users with no password_expiration set' do
+      @organization_password.stubs(:password_expiration_in_d).returns(nil)
+      org_user2 = FactoryGirl.create(:valid_user, organization: @organization_password)
+
+      Cartodb.with_config(passwords: { 'expiration_in_d' => 5 }) do
+        expect(org_user2.password_expired?).to be_false
+        Delorean.jump(10.days)
+        expect(org_user2.password_expired?).to be_false
+        org_user2.password = org_user2.password_confirmation = 'waduspass'
+        org_user2.save
+        Delorean.jump(10.days)
+        expect(org_user2.password_expired?).to be_false
+        Delorean.back_to_the_present
+      end
+    end
+  end
+
   protected
 
   def create_org(org_name, org_quota, org_seats)
     organization = Organization.new
-    organization.name = org_name
+    organization.name = unique_name(org_name)
     organization.quota_in_bytes = org_quota
     organization.seats = org_seats
-    organization.save!
+    organization.save
     organization
+  end
+
+  def tables_including_shared(user)
+    Carto::VisualizationQueryBuilder
+      .new
+      .with_owned_by_or_shared_with_user_id(user.id)
+      .with_type(Carto::Visualization::TYPE_CANONICAL)
+      .build.map(&:table)
   end
 end

@@ -2,8 +2,6 @@
   <p class="FormAccount-titleText">LDAP Configuration</p>
 </div>
 
-<span class="FormAccount-separator"></span>
-
 <div class="FormAccount-row">
   <div class="FormAccount-rowLabel"><label class="FormAccount-label">Host</label></div>
   <div class="FormAccount-rowData"><%= @ldap_configuration.host %></div>
@@ -57,6 +55,11 @@
 <div class="FormAccount-row">
   <div class="FormAccount-rowLabel"><label class="FormAccount-label">Domain bases</label></div>
   <div class="FormAccount-rowData"><%= @ldap_configuration.domain_bases %></div>
+</div>
+
+<div class="FormAccount-row">
+  <div class="FormAccount-rowLabel"><label class="FormAccount-label">Additional search filter</label></div>
+  <div class="FormAccount-rowData"><%= @ldap_configuration.additional_search_filter %></div>
 </div>
 
 <div class="FormAccount-row">

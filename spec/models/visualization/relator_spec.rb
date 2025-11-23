@@ -9,11 +9,10 @@ include CartoDB
 
 describe Visualization::Relator do
   before do
-    @db = Rails::Sequel.connection
+    @db = SequelRails.connection
     Sequel.extension(:pagination)
 
     Visualization.repository  = DataRepository::Backend::Sequel.new(@db, :visualizations)
-    Overlay.repository        = DataRepository.new # In-memory storage
   end
 
   before(:all) do
@@ -22,15 +21,16 @@ describe Visualization::Relator do
         username: 'admin',
         password: '123456'
       })
+    @carto_user = Carto::User.find(@user.id)
   end
 
   before(:each) do
-    stub_named_maps_calls
+    bypass_named_maps
     delete_user_data(@user)
   end
 
   after(:all) do
-    stub_named_maps_calls
+    bypass_named_maps
     @user.destroy
   end
 
@@ -61,8 +61,8 @@ describe Visualization::Relator do
     it 'should return the canonical visualizations associated to a derived visualization' do
       table1 = create_table({:name => 'table1', :user_id => @user.id})
       table2 = create_table({:name => 'table2', :user_id => @user.id})
-      vis_table1 = create_vis_from_table(@user, table1)
-      vis_table2 = create_vis_from_table(@user, table2)
+      vis_table1 = create_vis_from_table(@carto_user, table1)
+      create_vis_from_table(@carto_user, table2)
 
       vis_table1.related_canonical_visualizations.map(&:id).should == [table1.table_visualization.id]
     end

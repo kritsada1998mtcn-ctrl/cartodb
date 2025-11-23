@@ -41,9 +41,7 @@ module Resque
   end
 
   module UserJobs
-
     module Signup
-
       module NewUser
         @queue = :users
 
@@ -53,41 +51,26 @@ module Resque
           user_creation.set_owner_promotion(organization_owner_promotion)
           user_creation.next_creation_step! until user_creation.finished?
         end
-
       end
-
     end
 
-    module SyncTables
-
-      module LinkGhostTables
+    module RateLimitsJobs
+      module SyncRedis
         extend ::Resque::Metrics
-        @queue = :users
+        @queue = :batch_updates
 
-        def self.perform(user_id)
-          u = ::User.where(id: user_id).first
-          u.link_ghost_tables
+        def self.perform(account_type)
+          rate_limit = Carto::AccountType.find(account_type).rate_limit
+          Carto::User.where(account_type: account_type, rate_limit_id: nil).find_each do |user|
+            next unless user.has_feature_flag?('limits_v2')
+            rate_limit.save_to_redis(user)
+          end
         rescue => e
-          CartoDB.notify_exception(e)
+          CartoDB::Logger.error(exception: e, message: 'Error syncing rate limits to redis', account_type: account_type)
           raise e
         end
-
       end
-
     end
-
-
-    module CommonData
-      module LoadCommonData
-        @queue = :users
-
-        def self.perform(user_id, visualizations_api_url)
-          ::User.where(id: user_id).first.load_common_data(visualizations_api_url)
-        end
-      end
-
-    end
-
 
     module Mail
 
@@ -106,7 +89,7 @@ module Resque
         @queue = :users
 
         def self.perform(visualization_id, user_id)
-          v = CartoDB::Visualization::Member.new(id: visualization_id).fetch
+          v = Carto::Visualization.find(visualization_id)
           u = ::User.where(id: user_id).first
           UserMailer.share_visualization(v, u).deliver
         end
@@ -117,7 +100,7 @@ module Resque
         @queue = :users
 
         def self.perform(table_id, user_id)
-          t = CartoDB::Visualization::Member.new(id: table_id).fetch
+          t = Carto::Visualization.find(table_id)
           u = ::User.where(id: user_id).first
           UserMailer.share_table(t, u).deliver
         end
@@ -128,7 +111,6 @@ module Resque
         @queue = :users
 
         def self.perform(visualization_name, visualization_owner_name, user_id)
-          #v = CartoDB::Visualization::Member.new(id: visualization_id).fetch
           u = ::User.where(id: user_id).first
           UserMailer.unshare_visualization(visualization_name, visualization_owner_name, u).deliver
         end

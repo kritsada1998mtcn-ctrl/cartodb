@@ -3,11 +3,23 @@
 require 'uuidtools'
 require_relative '../../../spec_helper'
 require_relative '../../../../app/controllers/carto/api/user_creations_controller'
+require 'helpers/account_types_helper'
 
 describe Carto::Api::UserCreationsController do
   include_context 'organization with users helper'
+  include AccountTypesHelper
 
   describe 'show' do
+
+    before :all do
+      create_account_type_fg('FREE')
+      create_account_type_fg('ORGANIZATION USER')
+    end
+
+    after :all do
+      Carto::AccountType.find('FREE').try(:destroy)
+      Carto::AccountType.find('ORGANIZATION USER').try(:destroy)
+    end
 
     it 'returns 404 for unknown user creations' do
       get_json api_v1_user_creations_show_url(id: UUIDTools::UUID.timestamp_create.to_s), @headers do |response|
@@ -39,12 +51,13 @@ describe Carto::Api::UserCreationsController do
 
     it 'triggers user_creation authentication for google users' do
       ::User.any_instance.stubs(:create_in_central).returns(true)
-      :CartoDB::UserModule::DBService.any_instance.stubs(:enable_remote_db_user).returns(true)
+      CartoDB::UserModule::DBService.any_instance.stubs(:enable_remote_db_user).returns(true)
       user_data = FactoryGirl.build(:valid_user)
       user_data.organization = @organization
       user_data.google_sign_in = true
 
-      Carto::Api::UserCreationsController.any_instance.expects(:authenticate!).with(:user_creation, scope: user_data.organization.name).once
+      Carto::Api::UserCreationsController.any_instance.expects(:authenticate!)
+                                         .with(:user_creation, scope: user_data.username).once
 
       user_creation = Carto::UserCreation.new_user_signup(user_data)
       user_creation.next_creation_step until user_creation.finished?

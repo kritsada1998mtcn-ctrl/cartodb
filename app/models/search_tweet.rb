@@ -1,4 +1,4 @@
-# encoding: UTF-8'
+# encoding: UTF-8
 
 class SearchTweet < Sequel::Model
 
@@ -21,9 +21,9 @@ class SearchTweet < Sequel::Model
 
   def self.get_twitter_imports_count(dataset, date_from, date_to)
     dataset
-        .where(state: ::SearchTweet::STATE_COMPLETE)
-        .where('search_tweets.created_at >= ? AND search_tweets.created_at <= ?', date_from, date_to + 1.days)
-        .sum("retrieved_items".lit).to_i
+      .where('search_tweets.state = ?', ::SearchTweet::STATE_COMPLETE)
+      .where('search_tweets.created_at >= ? AND search_tweets.created_at <= ?', date_from, date_to + 1.days)
+      .sum("retrieved_items".lit).to_i
   end
 
   def set_importing_state
@@ -65,8 +65,7 @@ class SearchTweet < Sequel::Model
 
     if user.effective_twitter_block_price.nil? || calculate_used_credits.nil? \
        || user.effective_twitter_datasource_block_size.nil?
-      Rollbar.report_message('Twitter datasource ', 'error', \
-        error_info: 'Looks like user/org has not set all twitter block or price params')
+      CartoDB::Logger.error('Looks like user/org has not set all twitter block or price params', user: user)
       # As the import itself went well don't break execution, just return something
       0
     else

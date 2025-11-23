@@ -1,4 +1,4 @@
-require_relative '../../../helpers/bounding_box_helper'
+require_dependency 'carto/bounding_box_utils'
 
 module Carto
   module Api
@@ -31,15 +31,16 @@ module Carto
         only_with_display_name = params[:only_with_display_name] == 'true'
 
         vqb = VisualizationQueryBuilder.new
-            .with_prefetch_user
-            .with_prefetch_table
-            .with_prefetch_permission
-            .with_prefetch_external_source
-            .with_types(types)
-            .with_tags(tags)
+                                       .with_prefetch_user
+                                       .with_prefetch_table
+                                       .with_prefetch_permission
+                                       .with_prefetch_synchronization
+                                       .with_prefetch_external_source
+                                       .with_types(types)
+                                       .with_tags(tags)
 
         if !bbox_parameter.blank?
-          vqb.with_bounding_box(BoundingBoxHelper.parse_bbox_parameters(bbox_parameter))
+          vqb.with_bounding_box(Carto::BoundingBoxUtils.parse_bbox_parameters(bbox_parameter))
         end
 
         # FIXME Patch to exclude legacy visualization from data-library #5097
@@ -93,6 +94,19 @@ module Carto
         end
 
         vqb
+      end
+
+      def presenter_options_from_hash(params)
+        options = {}
+        options[:show_stats] = false if params[:show_stats].to_s == 'false'
+        options[:show_likes] = false if params[:show_likes].to_s == 'false'
+        options[:show_liked] = false if params[:show_liked].to_s == 'false'
+        options[:show_table] = false if params[:show_table].to_s == 'false'
+        options[:show_permission] = false if params[:show_permission].to_s == 'false'
+        options[:show_uses_builder_features] = false if params[:show_uses_builder_features].to_s == 'false'
+        options[:show_synchronization] = false if params[:show_synchronization].to_s == 'false'
+        options[:show_table_size_and_row_count] = false if params[:show_table_size_and_row_count].to_s == 'false'
+        options
       end
 
       private

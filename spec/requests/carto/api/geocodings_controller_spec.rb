@@ -3,6 +3,7 @@
 require_relative '../../../spec_helper'
 require_relative '../../api/json/geocodings_controller_shared_examples'
 require_relative '../../../../app/controllers/carto/api/geocodings_controller'
+require 'mock_redis'
 
 describe Carto::Api::GeocodingsController do
   it_behaves_like 'geocoding controllers' do
@@ -12,18 +13,18 @@ describe 'legacy behaviour tests' do
     let(:params) { { :api_key => @user.api_key } }
 
     before(:all) do
-      @user = create_user(username: 'test')
+      @user = create_user
     end
 
     before(:each) do
-      stub_named_maps_calls
+      bypass_named_maps
       delete_user_data @user
       host! "#{@user.username}.localhost.lan"
       login_as(@user, scope: @user.username)
     end
 
     after(:all) do
-      stub_named_maps_calls
+      bypass_named_maps
       @user.destroy
     end
 
@@ -42,6 +43,12 @@ describe 'legacy behaviour tests' do
     describe 'GET /api/v1/geocodings/:id' do
 
       it 'returns a geocoding' do
+        @user.geocoder_provider = 'heremaps'
+        @user.save.reload
+        redis_mock = MockRedis.new
+        user_geocoder_metrics = CartoDB::GeocoderUsageMetrics.new(@user.username, _orgname = nil, _redis = redis_mock)
+        CartoDB::GeocoderUsageMetrics.stubs(:new).returns(user_geocoder_metrics)
+        user_geocoder_metrics.incr(:geocoder_here, :success_responses, 100)
         geocoding = FactoryGirl.create(:geocoding, table_id: UUIDTools::UUID.timestamp_create.to_s, formatter: 'b', user: @user, used_credits: 100, processed_rows: 100, kind: 'high-resolution')
 
         get_json api_v1_geocodings_show_url(params.merge(id: geocoding.id)) do |response|
@@ -56,8 +63,8 @@ describe 'legacy behaviour tests' do
       it 'does not return a geocoding owned by another user' do
         geocoding = FactoryGirl.create(:geocoding, table_id: UUIDTools::UUID.timestamp_create.to_s, formatter: 'b', user_id: UUIDTools::UUID.timestamp_create.to_s)
 
-        get api_v1_geocodings_show_url(params.merge(id: geocoding.id)) do |response|
-          last_response.status.should eq 404
+        get_json api_v1_geocodings_show_url(params.merge(id: geocoding.id)) do |response|
+          response.status.should eq 404
         end
       end
     end
@@ -244,21 +251,21 @@ describe 'legacy behaviour tests' do
 
     it 'returns started geocodings but not finished' do
       geocoding1 = FactoryGirl.create(:geocoding, user: @user1, kind: 'high-resolution', created_at: Time.now,
-                                      processed_rows: 1, state: 'started')
+                                      processed_rows: 1, state: 'started', formatter: 'foo')
       FactoryGirl.create(:geocoding, user: @user1, kind: 'high-resolution', created_at: Time.now,
-                         processed_rows: 1, state: 'finished')
+                         processed_rows: 1, state: 'finished', formatter: 'foo')
 
       get api_v1_geocodings_index_url
       last_response.status.should eq 200
 
-      expected = {"geocodings"=>[{"table_name" => nil, "processed_rows" => 1, "remote_id" => nil, "formatter" => nil,
+      expected = {"geocodings"=>[{"table_name" => nil, "processed_rows" => 1, "remote_id" => nil, "formatter" => 'foo',
                                   "geocoder_type" => nil, "state" => "started", "cache_hits" => 0,
                                   "id" => geocoding1.id, "user_id" => @user1.id,"table_id" => nil,
                                   "automatic_geocoding_id" => nil, "kind" => "high-resolution", "country_code" => nil,
                                   "geometry_type" => nil, "processable_rows" => nil, "real_rows" => nil,
                                   "used_credits" => nil, "country_column" => nil, "data_import_id" => nil,
                                   "region_code" => nil, "region_column" => nil, "batched" => nil, "error_code" => nil,
-                                  "force_all_rows" => false, "log_id" => nil}]}
+                                  "force_all_rows" => false, "log_id" => nil, "pid" => nil}]}
       received_without_dates = {
         'geocodings' => JSON.parse(last_response.body)['geocodings'].map { |g| remove_dates(g) }
       }
@@ -281,17 +288,18 @@ describe 'legacy behaviour tests' do
         kind: 'high-resolution',
         created_at: Time.now,
         processed_rows: 1,
-        state: 'started'
+        state: 'started',
+        formatter: 'foo'
       )
 
       get api_v1_geocodings_show_url(id: geocoding.id)
       last_response.status.should eq 200
 
       expected = {"id" => geocoding.id, "table_id" => nil, "table_name" => nil, "state" => "started",
-                  "kind" => "high-resolution", "country_code" => nil, "region_code" => nil, "formatter" => nil,
+                  "kind" => "high-resolution", "country_code" => nil, "region_code" => nil, "formatter" => 'foo',
                   "geocoder_type" => nil, "geometry_type" => nil, "error" => {"title" => "Geocoding error",
                   "description" => ""}, "processed_rows" => 1, "cache_hits" => 0, "processable_rows" => nil,
-                  "real_rows" => nil, "price" => 0, "used_credits" => nil, "remaining_quota" => 999,
+                  "real_rows" => nil, "price" => 0, "used_credits" => nil, "remaining_quota" => 0,
                   "country_column" => nil, "region_column" => nil, "data_import_id" => nil, "error_code" => nil}
       received_without_dates = remove_dates(JSON.parse(last_response.body))
       received_without_dates.should == expected

@@ -56,42 +56,9 @@ module CartoDB
         @current_name = @suggested_name
       end
 
-      # attempt to transform the_geom to 4326
-      if column_names.include? "the_geom"
-        begin
-          if srid = @db_connection["select st_srid(the_geom) from #{@suggested_name} limit 1"].first
-            srid = srid[:st_srid] if srid.is_a?(Hash)
-            begin
-              if srid.to_s != "4326"
-                # move original geometry column around
-                @db_connection.run("UPDATE #{@suggested_name} SET the_geom = ST_Transform(the_geom, 4326);")
-              end
-            rescue => e
-              @runlog.err << "Failed to transform the_geom from #{srid} to 4326 #{@suggested_name}. #{e.inspect}"
-            end
-          end
-        rescue => e
-          # if no SRID or invalid the_geom, we need to remove it from the table
-          begin
-            @db_connection.run("ALTER TABLE #{@suggested_name} RENAME COLUMN the_geom TO invalid_the_geom")
-            column_names.delete("the_geom")
-          rescue => exception
-          end
-        end
-      end
-
       @table_created = true
-      rows_imported = @db_connection["SELECT count(*) as count from #{@suggested_name}"].first[:count]
 
-      payload = OpenStruct.new({
-                              :name => @suggested_name,
-                              :rows_imported => rows_imported,
-                              :import_type => "external_table",
-                              :log => @runlog
-                              })
-
-      # construct return variables
-      return payload
+      return @suggested_name
 
     rescue => e
       log "====================="
@@ -107,11 +74,6 @@ module CartoDB
     end
 
     private
-
-    def get_valid_name(name)
-      ::Table.get_valid_table_name(name,
-        name_candidates: @db_connection.tables.map(&:to_s))
-    end
 
     def log(str)
       if @@debug
@@ -136,7 +98,7 @@ module CartoDB
 
       sanitization_map = sanitization_map.inject({}) { |memo, pair|
         if memo.values.include?(pair.last) || correct_columns.include?(pair.last)
-          sanitization_count += 1 
+          sanitization_count += 1
           memo.merge(pair.first => "#{pair.last}_#{sanitization_count}")
         else
           memo.merge(pair.first => pair.last)

@@ -5,6 +5,13 @@ require File.expand_path('../config/application', __FILE__)
 require 'rake/dsl_definition'
 require 'rake'
 require 'resque/tasks'
+require 'active_support/dependencies'
+
+# Do not load rake tasks when running resque: https://github.com/CartoDB/cartodb/issues/11046
+if Rake.application.top_level_tasks.reject { |t| ['environment', 'resque:work'].include?(t) }.empty?
+  CartoDB::Application.paths['lib/tasks'] = []
+  load 'lib/tasks/resque.rake'
+end
 
 CartoDB::Application.load_tasks
 

@@ -4,6 +4,7 @@ require 'active_record'
 
 module Carto
   class DataImport < ActiveRecord::Base
+    include Carto::DataImportConstants
 
     # INFO: hack to workaround `ActiveRecord::DangerousAttributeError: logger is defined by ActiveRecord`
     class << self
@@ -23,16 +24,18 @@ module Carto
     STATE_STUCK     = 'stuck'
 
     belongs_to :user, class_name: Carto::User
-    belongs_to :log, class_name: Carto::Log
+    belongs_to :log, class_name: Carto::Log, foreign_key: :logger
     has_many :external_data_imports, inverse_of: :data_import, class_name: Carto::ExternalDataImport
     has_many :user_tables, class_name: Carto::UserTable
+
+    validate :validate_collision_strategy
 
     def is_raster?
       ::JSON.parse(self.stats).select{ |item| item['type'] == '.tif' }.length > 0
     end
 
     def final_state?
-      [STATE_COMPLETE, STATE_FAILURE, STATE_STUCK].include? state
+      [STATE_COMPLETE, STATE_FAILURE, STATE_STUCK].include?(state)
     end
 
     private

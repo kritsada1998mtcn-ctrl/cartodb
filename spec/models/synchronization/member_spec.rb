@@ -5,14 +5,13 @@ require_relative '../../spec_helper'
 require_relative '../../../services/data-repository/backend/sequel'
 require_relative '../../../services/data-repository/repository'
 require_relative '../../../app/models/synchronization/member'
+require 'helpers/unique_names_helper'
+require 'helpers/file_server_helper'
 
+include UniqueNamesHelper
 include CartoDB
 
 describe Synchronization::Member do
-  before do
-    Synchronization.repository = DataRepository.new
-  end
-
   describe 'Basic actions' do
     it 'assigns an id by default' do
       member = Synchronization::Member.new
@@ -53,37 +52,106 @@ describe Synchronization::Member do
     end
   end
 
-  describe "External sources" do
-    it "Authorizes to sync always if from an external source" do
-      member  = Synchronization::Member.new(random_attributes({user_id: $user_1.id})).store
-      member.fetch
+  describe "synchronizations" do
+    before(:all) do
+      @user1 = create_user(sync_tables_enabled: true)
+      @user2 = create_user(sync_tables_enabled: true)
+    end
 
-      member.expects(:from_external_source?)
-            .returns(true)
+    before(:each) do
+      bypass_named_maps
+    end
 
-      $user_1.sync_tables_enabled = true
-      $user_2.sync_tables_enabled = true
+    around(:each) do |example|
+      Cartodb.with_config(metrics: {}, &example)
+    end
 
-      member.authorize?($user_1).should eq true
-      member.authorize?($user_2).should eq false
+    after(:all) do
+      @user1.destroy
+      @user2.destroy
+    end
 
-      $user_1.sync_tables_enabled = false
-      $user_2.sync_tables_enabled = false
+    describe 'external sources' do
+      it "Authorizes to sync always if from an external source" do
+        member = Synchronization::Member.new(random_attributes(user_id: @user1.id)).store
+        member.fetch
 
-      member.authorize?($user_1).should eq true
+        member.expects(:from_external_source?).returns(true)
+
+        @user1.sync_tables_enabled = true
+        @user2.sync_tables_enabled = true
+
+        member.authorize?(@user1).should eq true
+        member.authorize?(@user2).should eq false
+
+        @user1.sync_tables_enabled = false
+        @user2.sync_tables_enabled = false
+
+        member.authorize?(@user1).should eq true
+      end
+    end
+
+    describe "synchronization" do
+      it 'syncs' do
+        # TODO: this is the minimum test valid to reproduce #11889, it's not a complete sync test
+        CartoDB::Logger.stubs(:error).never
+
+        url = 'https://wadus.com/guess_country.csv'
+
+        path = fake_data_path('guess_country.csv')
+        stub_download(url: url, filepath: path, content_disposition: false)
+
+        attrs = random_attributes(user_id: @user1.id).merge(service_item_id: url, url: url, name: 'guess_country')
+        member = Synchronization::Member.new(attrs).store
+
+        DataImport.create(
+          user_id: @user1.id,
+          data_source: fake_data_path('guess_country.csv'),
+          synchronization_id: member.id,
+          service_name: 'public_url',
+          service_item_id: url,
+          updated_at: Time.now
+        ).run_import!
+
+        member.run
+      end
+
+      it 'fails to overwrite tables with views' do
+        url = 'https://wadus.com/guess_country.csv'
+
+        path = fake_data_path('guess_country.csv')
+        stub_download(url: url, filepath: path, content_disposition: false)
+
+        attrs = random_attributes(user_id: @user2.id).merge(service_item_id: url, url: url, name: 'guess_country')
+        member = Synchronization::Member.new(attrs).store
+
+        DataImport.create(
+          user_id: @user2.id,
+          data_source: fake_data_path('guess_country.csv'),
+          synchronization_id: member.id,
+          service_name: 'public_url',
+          service_item_id: url,
+          updated_at: Time.now
+        ).run_import!
+
+        @user2.in_database.execute('CREATE VIEW wadus AS SELECT * FROM guess_country')
+
+        member.run
+        expect(member.state).to eq 'failure'
+        expect(member.error_code).to eq 2013
+      end
     end
   end
 
   private
 
   def random_attributes(attributes={})
-    random = rand(999)
+    random = unique_integer
     {
-      name:       attributes.fetch(:name, "name #{random}"),
+      name:       attributes.fetch(:name, "name#{random}"),
       interval:   attributes.fetch(:interval, 15 * 60 + random),
       state:      attributes.fetch(:state, 'enabled'),
       user_id:    attributes.fetch(:user_id, nil)
     }
   end
 end
-

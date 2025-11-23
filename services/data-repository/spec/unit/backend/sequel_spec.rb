@@ -6,7 +6,7 @@ include CartoDB
 
 describe DataRepository::Backend::Sequel do
   before do
-    db = Rails::Sequel.connection
+    db = SequelRails.connection
     db.create_table :visualizations do
       UUID      :id, primary_key: true
       String    :name
@@ -22,7 +22,6 @@ describe DataRepository::Backend::Sequel do
       String    :privacy
       String    :encrypted_password
       String    :password_salt
-      String    :url_options
       UUID      :permission_id
       Boolean   :locked
       String    :parent_id
@@ -104,4 +103,3 @@ describe DataRepository::Backend::Sequel do
     end
   end
 end
-

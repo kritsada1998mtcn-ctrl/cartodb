@@ -1,15 +1,15 @@
 # encoding: utf-8
 require 'json'
 require 'ostruct'
-require_relative '../overlay/presenter'
 require_relative '../layer/presenter'
 require_relative '../layer_group/presenter'
 require_relative '../named_map/presenter'
-require_relative '../../../services/named-maps-api-wrapper/lib/named_maps_wrapper'
 
 module CartoDB
   module Visualization
     class VizJSON
+      include Carto::HtmlSafe
+
       VIZJSON_VERSION = '0.1.0'
 
       def initialize(visualization, options = {}, configuration = {}, logger = nil)
@@ -22,8 +22,12 @@ module CartoDB
       end
 
       def to_export_poro(version = 1)
-        description = visualization.description_html_safe.nil? ? "" : clean_description(
-          visualization.description_html_safe)
+        description = if visualization.description.blank?
+                        ""
+                      else
+                        clean_description(markdown_html_safe(visualization.description))
+                      end
+
         {
           id:             visualization.id,
           version:        VIZJSON_VERSION,
@@ -40,19 +44,20 @@ module CartoDB
           overlays:       overlays_for(visualization),
           # Fields specific for this export
           export_version: version,
+          # TODO: bug? @user is _viewer_user_, who might not be the owner
           owner:          { id: @user.id }
         }
       end
 
       # Return a PORO (Hash object) for easy JSONification
-      # @see https://github.com/CartoDB/cartodb.js/blob/privacy-maps/doc/vizjson_format.md
+      # @see https://github.com/CartoDB/carto.js/blob/privacy-maps/doc/vizjson_format.md
       def to_poro
         poro_data = {
           id:             visualization.id,
           version:        VIZJSON_VERSION,
           title:          visualization.qualified_name(@user),
           likes:          visualization.likes.count,
-          description:    visualization.description_html_safe,
+          description:    markdown_html_safe(visualization.description),
           scrollwheel:    map.scrollwheel,
           legends:        map.legends,
           url:            options.delete(:url),
@@ -71,11 +76,9 @@ module CartoDB
         auth_tokens = auth_tokens_for(visualization)
         poro_data.merge!(auth_tokens: auth_tokens) if auth_tokens.length > 0
 
-        children = children_for(visualization)
-        poro_data.merge!(slides: children) if children.length > 0
         unless visualization.parent_id.nil?
           poro_data[:title] = visualization.parent.qualified_name(@user)
-          poro_data[:description] = visualization.parent.description_html_safe
+          poro_data[:description] = markdown_html_safe(visualization.parent.description)
         end
 
         poro_data
@@ -204,12 +207,8 @@ module CartoDB
 
       def overlays_for(visualization)
         ordered_overlays_for(visualization).map do |overlay|
-          Overlay::Presenter.new(overlay).to_poro
+          Carto::Api::OverlayPresenter.new(overlay).to_vizjson_poro
         end
-      end
-
-      def children_for(visualization)
-        visualization.children.map(&:to_vizjson)
       end
 
       def ordered_overlays_for(visualization)
@@ -221,7 +220,8 @@ module CartoDB
           full: true,
           visualization_id: visualization.id,
           https_request: false,
-          attributions: visualization.attributions_from_derived_visualizations
+          attributions: visualization.attributions_from_derived_visualizations,
+          for_named_map: false
         }
       end
 

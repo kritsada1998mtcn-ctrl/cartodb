@@ -5,16 +5,8 @@ require_relative '../visualization/member'
 module CartoDB
   class TableRelator
     INTERFACE = %w{
-      table_visualization
-      serialize_dependent_visualizations
-      serialize_non_dependent_visualizations
-      dependent_visualizations
-      non_dependent_visualizations
-      affected_visualizations
       synchronization
-      serialize_synchronization
       row_count_and_size
-      set_table_visualization
       related_templates
     }
 
@@ -23,32 +15,8 @@ module CartoDB
       @table  = table
     end
 
-    def table_visualization
-      @table_visualization ||= Visualization::Collection.new.fetch(
-        map_id: @table.map_id,
-        type:   Visualization::Member::TYPE_CANONICAL
-      ).first
-    end
-
-    # INFO: avoids doble viz fetching when table is itself generated from viz
-    def set_table_visualization(table_visualization)
-      @table_visualization = table_visualization
-    end
-
-    def serialize_dependent_visualizations
-      dependent_visualizations.map { |object| preview_for(object) }
-    end
-
-    def serialize_non_dependent_visualizations
-      non_dependent_visualizations.map { |object| preview_for(object) }
-    end
-
     def dependent_visualizations
-      affected_visualizations.select(&:dependent?)
-    end
-
-    def non_dependent_visualizations
-      affected_visualizations.select(&:non_dependent?)
+      affected_visualizations.select { |v| v.dependent_on?(table) }
     end
 
     def affected_visualizations
@@ -57,27 +25,30 @@ module CartoDB
         .map  { |attributes| Visualization::Member.new(attributes) }
     end
 
-    def preview_for(object)
+    def preview_for(visualization)
       data = {
-        id:         object.id,
-        name:       object.name,
-        updated_at: object.updated_at
+        id:         visualization.id,
+        name:       visualization.name,
+        updated_at: visualization.updated_at
       }
-      if object[:permission_id].present? && !object.permission.nil?
-        data[:permission] = object.permission.to_poro.select {|key, val|
+      if visualization[:permission_id].present? && !visualization.permission.nil?
+        data[:permission] = CartoDB::PermissionPresenter.new(visualization.permission).to_poro.select do |key, _val|
           [:id, :owner].include?(key)
-        }
+        end
       end
+      data[:auth_tokens] = if visualization.password_protected?
+                             visualization.get_auth_tokens
+                           elsif visualization.is_privacy_private?
+                             visualization.user.get_auth_tokens
+                           else
+                             []
+                           end
       data
     end
 
     def synchronization
       return nil unless synchronization_record && !synchronization_record.empty?
       CartoDB::Synchronization::Member.new(synchronization_record.first)
-    end
-
-    def serialize_synchronization
-      (synchronization || {}).to_hash
     end
 
     def row_count_and_size
@@ -118,4 +89,3 @@ module CartoDB
 
   end
 end
-

@@ -1,6 +1,7 @@
 # encoding: utf-8
 require 'pg'
 require 'sequel'
+require_relative '../../../../spec/spec_helper'
 require_relative '../../lib/importer/ogr2ogr'
 require_relative '../doubles/job'
 require_relative '../factories/csv'
@@ -10,8 +11,10 @@ include CartoDB::Importer2
 
 describe Ogr2ogr do
   before(:all) do
-    @pg_options       = Factories::PGConnection.new.pg_options
-    @db               = Factories::PGConnection.new.connection
+    @user             = create_user
+    @user.save
+    @pg_options       = @user.db_service.db_configuration_for.with_indifferent_access
+    @db               = @user.in_database
     @db.execute('CREATE SCHEMA IF NOT EXISTS cdb_importer')
     @db.execute('SET search_path TO cdb_importer,public')
   end
@@ -33,6 +36,7 @@ describe Ogr2ogr do
   after(:all) do
     @db.execute('DROP SCHEMA cdb_importer cascade')
     @db.disconnect
+    @user.destroy
   end
 
   describe '#initialize' do
@@ -48,28 +52,28 @@ describe Ogr2ogr do
 
   describe '#command' do
     it 'includes an encoding' do
-      (@wrapper.command =~ /PGCLIENTENCODING/).should_not be nil
+      @wrapper.environment.should include 'PGCLIENTENCODING'
     end
 
     it 'includes the postgres options passed at initialization time' do
-      (@wrapper.command =~ /#{@pg_options.fetch(:host)}/).should_not be nil
-      (@wrapper.command =~ /#{@pg_options.fetch(:port)}/).should_not be nil
-      (@wrapper.command =~ /#{@pg_options.fetch(:user)}/).should_not be nil
-      (@wrapper.command =~ /#{@pg_options.fetch(:database)}/).should_not be nil
+      @wrapper.command.any? { |c| c.include?(@pg_options.fetch(:host)) }.should be_true
+      @wrapper.command.any? { |c| c.include?(@pg_options.fetch(:port).to_s) }.should be_true
+      @wrapper.command.any? { |c| c.include?(@pg_options.fetch(:username)) }.should be_true
+      @wrapper.command.any? { |c| c.include?(@pg_options.fetch(:database)) }.should be_true
     end
 
     it 'includes the desired output table name' do
-      (@wrapper.command =~ /#{@full_table_name}/).should_not be nil
+      @wrapper.command.should include @full_table_name
     end
 
     it 'includes the filepath to process' do
-      (@wrapper.command =~ /#{@filepath}/).should_not be nil
+      @wrapper.command.should include @filepath
     end
   end
 
   describe '#executable_path' do
     it 'returns the path to the ogr2ogr binary' do
-      (@wrapper.executable_path =~ /ogr2ogr2/).should_not be nil
+      (@wrapper.executable_path =~ /ogr2ogr/).should_not be nil
     end
   end
 
@@ -143,7 +147,7 @@ describe Ogr2ogr do
         .write(header, data_1)
 
       csv_2 = Factories::CSV.new(name=nil, how_many_duplicates=0)
-      .write(header, data_2)
+        .write(header, data_2)
 
       ogr2ogr = CartoDB::Importer2::Ogr2ogr.new(@table_name, csv_1.filepath, @pg_options)
       ogr2ogr.run
@@ -158,4 +162,3 @@ describe Ogr2ogr do
   end
 
 end
-

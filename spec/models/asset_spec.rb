@@ -1,15 +1,14 @@
-#encoding: UTF-8
+# encoding: utf-8
 
 require 'spec_helper'
 
 describe Asset do
-
   before(:all) do
-    @user = create_user username: 'test'
+    @user = create_user
   end
 
   after(:all) do
-    stub_named_maps_calls
+    bypass_named_maps
     @user.destroy
   end
 
@@ -60,6 +59,11 @@ describe Asset do
     end
   end
 
+  def local_path(asset)
+    local_url = CGI.unescape(asset.public_url).gsub(/\/uploads/, '')
+    Carto::Conf.new.public_uploaded_assets_path + local_url
+  end
+
   describe '#create' do
     describe 'on local filesystem' do
       before(:each) do
@@ -68,8 +72,7 @@ describe Asset do
 
       it 'should save the file when passing a full path as an argument' do
         asset = Asset.create user_id: @user.id, asset_file: (Rails.root + 'spec/support/data/cartofante_blue.png').to_s
-        local_url = asset.public_url.gsub(/http:\/\/#{CartoDB.account_host}/,'')
-        File.exists?("#{Rails.root}/public#{local_url}").should be_true
+        File.exists?(local_path(asset)).should be_true
         asset.public_url.should =~ /.*test\/#{@user.username}\/assets\/\d+cartofante_blue\.png.*/
       end
 
@@ -79,8 +82,7 @@ describe Asset do
         asset = Asset.create(
           user_id: @user.id,
           asset_file: Rack::Test::UploadedFile.new(file_path, 'image/png'))
-        local_url = asset.public_url.gsub(/http:\/\/#{CartoDB.account_host}/, '')
-        File.exists?("#{Rails.root}/public#{local_url}").should be_true
+        File.exists?(local_path(asset)).should be_true
         asset.public_url.should =~ /.*test\/#{@user.username}\/assets\/\d+cartofante_blue.png.*/
       end
 
@@ -96,12 +98,16 @@ describe Asset do
         file = Rails.root.join('spec/support/data/cartofante_blue.png')
         serve_file file do |url|
           asset = Asset.create(user_id: @user.id, url: url)
-          local_url = asset.public_url.gsub(/http:\/\/#{CartoDB.account_host}/,'')
-          File.exists?("#{Rails.root}/public#{local_url}").should be_true
-          asset.public_url.should =~ /\/test\/test\/assets\/\d+cartofante_blue\.png/
+          File.exists?(local_path(asset)).should be_true
+          asset.public_url.should =~ /\/test\/#{@user.username}\/assets\/\d+cartofante_blue\.png/
         end
       end
 
+      it 'should import assets with spaces in their name' do
+        asset = Asset.create user_id: @user.id, asset_file: (Rails.root + 'spec/support/data/cartofante blue.png').to_s
+        File.exists?(local_path(asset)).should be_true
+        asset.public_url.should =~ /\/test\/#{@user.username}\/assets\/\d+cartofante%20blue\.png/
+      end
     end
   end
 
@@ -109,19 +115,27 @@ describe Asset do
     it 'removes the file from storage if needed' do
       Asset.any_instance.stubs("use_s3?").returns(false)
       asset = Asset.create user_id: @user.id, asset_file: (Rails.root + 'spec/support/data/cartofante_blue.png').to_s
-      local_url = asset.public_url.gsub(/http:\/\/#{CartoDB.account_host}/,'')
-      path = "#{Rails.root}/public#{local_url}"
+      path = local_path(asset)
+      File.exists?(path).should be_true
+      asset.destroy
+      File.exists?(path).should be_false
+    end
+
+    it 'removes the file with special characters from storage' do
+      Asset.any_instance.stubs("use_s3?").returns(false)
+      asset = Asset.create user_id: @user.id, asset_file: (Rails.root + 'spec/support/data/cartofante blue.png').to_s
+      path = local_path(asset)
       File.exists?(path).should be_true
       asset.destroy
       File.exists?(path).should be_false
     end
   end
 
-  describe '#public_values' do
+  describe '#presenter' do
     it 'returns the expected format' do
       asset = Asset.new user_id: @user.id, asset_file: (Rails.root + 'db/fake_data/simple.json').to_s
 
-      asset.public_values.should == { "public_url" => nil, "user_id" => @user.id, "id" => nil, "kind" => nil }
+      Carto::Api::AssetPresenter.new(asset).to_hash.should == { public_url: nil, user_id: @user.id, id: nil, kind: nil }
     end
   end
 end

@@ -3,9 +3,7 @@
 <% end -%>
 <%= content_for(:js) do -%>
   <% if !@google_maps_query_string.blank? %>
-        <script type="text/javascript"
-            src="//maps.googleapis.com/maps/api/js?sensor=false&v=3.12&<%= @google_maps_query_string %>">
-        </script>
+    <%= insert_google_maps(@google_maps_query_string) %>
   <% end %>
   <script type="text/javascript">
     var username = "<%= current_user.username %>";
@@ -15,6 +13,8 @@
     var isFirstTimeViewingDashboard = <%= (!!@first_time).to_s %>;
     var isJustLoggedIn = <%= (!!@just_logged_in).to_s %>;
     var default_fallback_basemap = <%= safe_js_object current_user.default_basemap.to_json %>;
+    var dashboard_notifications = <%= safe_js_object @dashboard_notifications.to_json %>;
+    var organization_notifications = <%= safe_js_object @organization_notifications.to_json %>;
   </script>
   <%= javascript_include_tag 'cdb.js', 'models.js', 'dashboard_templates.js', 'dashboard_deps.js', 'dashboard.js' -%>
 <% end %>
@@ -35,3 +35,4 @@
 <% end %>
 
 <%= render 'admin/shared/footer' %>
+<%= insert_fullstory %>

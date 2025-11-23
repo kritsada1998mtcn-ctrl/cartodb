@@ -1,4 +1,4 @@
-#encoding: UTF-8
+# encoding: utf-8
 require Rails.root.join('services', 'sql-api', 'sql_api')
 
 class Api::Json::GeocodingsController < Api::ApplicationController
@@ -16,7 +16,7 @@ class Api::Json::GeocodingsController < Api::ApplicationController
         geocoding = current_user.geocodings_dataset.where(id: params[:id]).first
         return head(401) unless geocoding && params[:state] == 'cancelled'
         @stats_aggregator.timing('save') do
-          geocoding.update(state: 'cancelled')
+          geocoding.cancel
         end
         render_jsonp(geocoding.reload)
       rescue => e
@@ -86,6 +86,6 @@ class Api::Json::GeocodingsController < Api::ApplicationController
   protected
 
   def load_table
-    @table = Helpers::TableLocator.new.get_by_id_or_name(params.fetch('table_name'), current_user)
+    @table = Carto::Helpers::TableLocator.new.get_by_id_or_name(params.fetch('table_name'), current_user).try(:service)
   end
 end

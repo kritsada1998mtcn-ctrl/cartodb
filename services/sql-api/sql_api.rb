@@ -5,6 +5,7 @@ require_relative '../../lib/carto/http/client'
 
 module CartoDB
   class SQLApi
+
     class SQLApiError < StandardError; end
     class SQLError < SQLApiError; end
     class PermissionError < SQLApiError; end
@@ -18,6 +19,20 @@ module CartoDB
     attr_accessor :api_key, :username, :timeout, :base_url
     attr_reader   :response_code, :parsed_response
 
+    # privacy: 'public' / 'private'
+    def self.with_username_api_key(username, api_key, privacy,
+                                   base_url: ::ApplicationHelper.sql_api_url(username, privacy))
+      new(
+        base_url: base_url,
+        username: username,
+        api_key: api_key
+      )
+    end
+
+    def self.with_user(user, privacy)
+      with_username_api_key(user.username, user.api_key, privacy)
+    end
+
     def initialize(arguments)
       self.username = arguments.fetch(:username)
       self.api_key  = arguments.fetch(:api_key, nil)
@@ -27,6 +42,11 @@ module CartoDB
 
     def url(query, format = '', filename = '')
       build_request(query, format, filename, :get, :public).url
+    end
+
+    def export_table_url(table, format = 'shp', filename = table)
+      query = %{select * from "#{table}"}
+      url(query, format, filename)
     end
 
     def fetch(query, format = '')

@@ -2,6 +2,7 @@
 
 require 'active_record'
 require_dependency 'cartodb/errors'
+require_dependency 'carto/helpers/auth_token_generator'
 require_relative 'paged_model'
 
 module Carto
@@ -17,6 +18,7 @@ module Carto
   # - remove_users_with_extension
   class Group < ActiveRecord::Base
     include PagedModel
+    include AuthTokenGenerator
 
     belongs_to :organization, class_name: Carto::Organization
     has_many :users_group, dependent: :destroy, class_name: Carto::UsersGroup
@@ -24,7 +26,11 @@ module Carto
 
     private_class_method :new
 
-    validates :name, :database_role, :organization_id, presence: true
+    validates :name, :database_role, :organization, presence: true
+
+    # In order to avoid locks between CDB_Organization_Remove_Organization_Access_Permission and CDB_Group_DropGroup
+    # the "shared with" deletion must be performed outside the transaction, on deletion.
+    after_commit :destroy_shared_with
 
     # Constructor for groups already existing in the database
     def self.new_instance(database_name, name, database_role, display_name = name)
@@ -50,6 +56,16 @@ module Carto
       group.display_name = display_name
       group.save
       group
+    end
+
+    # Constructor for groups metadata, ignores database roles. Should be generally avoided.
+    def self.new_instance_without_validation(name:, database_role:, display_name: name, auth_token: nil)
+      new(
+        name: name,
+        display_name: display_name,
+        database_role: database_role,
+        auth_token: auth_token
+      )
     end
 
     def rename_group_with_extension(new_display_name)
@@ -134,6 +150,17 @@ module Carto
     end
 
     private
+
+    def destroy_shared_with
+      if transaction_include_action?(:destroy)
+        Carto::SharedEntity.where(recipient_id: id).each do |se|
+          viz = Carto::Visualization.find(se.entity_id)
+          permission = viz.permission
+          permission.remove_group_permission(self)
+          permission.save
+        end
+      end
+    end
 
     # TODO: PG Format("%I", strvar); ?
     def self.valid_group_name(display_name)

@@ -1,16 +1,16 @@
-# encoding utf-8
+# encoding: utf-8
 
 Sequel.migration do
 
   up do
 
-    Rails::Sequel::connection.run 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'
+    SequelRails::connection.run 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp"'
 
     alter_table :organizations do
       add_column :default_quota_in_bytes, :bigint
     end
 
-    Rails::Sequel.connection.run(%q{
+    SequelRails.connection.run(%q{
       ALTER TABLE "organizations"
       ADD COLUMN whitelisted_email_domains text[] NOT NULL DEFAULT ARRAY[]::text[]
     })

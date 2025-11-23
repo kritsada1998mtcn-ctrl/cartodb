@@ -7,13 +7,18 @@ module Carto
     class OrganizationsController < ::Api::ApplicationController
       include OrganizationsHelper
       include PagedSearcher
+      include Carto::ControllerHelper
 
       ssl_required :users
 
       before_filter :load_organization, :load_group
 
+      rescue_from Carto::OrderParamInvalidError, with: :rescue_from_carto_error
+
+      VALID_ORDER_PARAMS = [:username, :updated_at].freeze
+
       def users
-        page, per_page, order = page_per_page_order_params(50, :username)
+        page, per_page, order = page_per_page_order_params(VALID_ORDER_PARAMS, 50, :username)
         query = params[:q]
         users_query = [@group, @organization].compact.first.users
         users_query = users_query.where('(username like ? or email like ?)', "%#{query}%", "#{query}") if query
@@ -23,7 +28,7 @@ module Carto
         users = users_query.all
 
         render_jsonp({ users: users.map { |u|
-          Carto::Api::UserPresenter.new(u, current_user: current_user).to_poro
+          Carto::Api::UserPresenter.new(u, current_viewer: current_user, fetch_db_size: false).to_poro
         }, total_user_entries: total_user_entries, total_entries: users.count })
       end
     end

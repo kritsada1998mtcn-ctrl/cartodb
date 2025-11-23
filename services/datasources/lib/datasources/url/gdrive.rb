@@ -18,12 +18,11 @@ module CartoDB
 
         # Specific of this provider
         FORMATS_TO_MIME_TYPES = {
-            FORMAT_CSV =>         %W( text/csv ),
-            FORMAT_EXCEL =>       %W( application/vnd.ms-excel application/vnd.google-apps.spreadsheet application/vnd.openxmlformats-officedocument.spreadsheetml.sheet ),
-            FORMAT_PNG =>         %W( image/png ),
-            FORMAT_JPG =>         %W( image/jpeg ),
-            FORMAT_SVG =>         %W( image/svg+xml ),
-            FORMAT_COMPRESSED =>  %W( application/zip ), #application/x-compressed-tar application/x-gzip application/x-bzip application/x-tar )
+          FORMAT_CSV =>        %w(text/csv),
+          FORMAT_EXCEL =>      %w(application/vnd.ms-excel application/vnd.google-apps.spreadsheet application/vnd.openxmlformats-officedocument.spreadsheetml.sheet),
+          # FORMAT_GPX =>        %w(text/xml), # Disabled because text/xml list any XML file
+          FORMAT_KML =>        %w(application/vnd.google-earth.kml+xml),
+          FORMAT_COMPRESSED => %w(application/zip application/x-zip-compressed), # application/x-compressed-tar application/x-gzip application/x-bzip application/x-tar )
         }
 
         # Constructor (hidden)
@@ -99,7 +98,7 @@ module CartoDB
           @client.authorization.fetch_access_token!
           if @client.authorization.refresh_token.nil?
             raise AuthError.new(
-              "Error validating auth token. Is this Google account linked to another CartoDB account?",
+              "Error validating auth token. Is this Google account linked to another CARTO account?",
               DATASOURCE_NAME)
           end
           @refresh_token = @client.authorization.refresh_token
@@ -182,7 +181,7 @@ module CartoDB
           end
 
           @client.execute(batch_request)
-          all_results
+          all_results.compact
         rescue Google::APIClient::InvalidIDTokenError => ex
           raise TokenExpiredOrInvalidError.new("Invalid token: #{ex.message}", DATASOURCE_NAME)
         rescue Google::APIClient::BatchError, Google::APIClient::TransmissionError, Google::APIClient::ClientError, \
@@ -306,12 +305,6 @@ module CartoDB
           raise AuthError.new("revoke_token: #{ex.message}", DATASOURCE_NAME)
         end
 
-        # Sets an error reporting component
-        # @param component mixed
-        def report_component=(component)
-          nil
-        end
-
         private
 
         # Formats all data to comply with our desired format
@@ -332,11 +325,14 @@ module CartoDB
             data[:url] = data[:url][0..data[:url].rindex('=')] + 'csv'
             data[:filename] = clean_filename(item_data.fetch('title')) + '.csv'
             data[:size] = NO_CONTENT_SIZE_PROVIDED
-          else
+          elsif item_data.include?('downloadUrl')
             data[:url] = item_data.fetch('downloadUrl')
             # For Drive files, title == filename + extension
             data[:filename] = item_data.fetch('title')
             data[:size] = item_data.fetch('fileSize').to_i
+          else
+            # Downloads from files shared by other people can be disabled, ignore them
+            return nil
           end
           data
         end

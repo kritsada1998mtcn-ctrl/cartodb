@@ -1,35 +1,7 @@
 # encoding: utf-8
 
 shared_examples_for "layer presenters" do |tested_klass, model_klass|
-
   describe '#show legacy tests' do
-
-    before(:each) do
-      CartoDB::UserModule::DBService.any_instance.stubs(:enable_remote_db_user).returns(true)
-    end
-
-    before(:all) do
-      set_tested_classes(tested_klass, model_klass)
-      puts "Testing class #{tested_klass.to_s} with model #{model_klass.to_s}"
-
-      $user_1 = create_user(
-        username: 'test',
-        email:    'client@example.com',
-        password: 'clientex'
-      )
-      $user_2 = create_user(
-        username: 'test2',
-        email:    'client2@example.com',
-        password: 'clientex'
-      )
-    end
-
-    before(:each) do
-      CartoDB::NamedMapsWrapper::NamedMaps.any_instance.stubs(:get => nil, :create => true, :update => true)
-      delete_user_data $user_1
-      delete_user_data $user_2
-    end
-
     def set_tested_classes(tested_class, model_class)
       @tested_class = tested_class
       @model_class = model_class
@@ -42,6 +14,29 @@ shared_examples_for "layer presenters" do |tested_klass, model_klass|
     # Always uses old models to created data, then battery set one for instantiation
     def instance_of_tested_model(creation_model)
       @model_class.where(id: creation_model.id).first
+    end
+
+    before(:all) do
+      set_tested_classes(tested_klass, model_klass)
+      puts "Testing class #{tested_klass.to_s} with model #{model_klass.to_s}"
+
+      @user_1 = FactoryGirl.create(:valid_user)
+      @user_2 = FactoryGirl.create(:valid_user)
+    end
+
+    after(:all) do
+      @user_1.destroy
+      @user_2.destroy
+    end
+
+    before(:each) do
+      CartoDB::UserModule::DBService.any_instance.stubs(:enable_remote_db_user).returns(true)
+    end
+
+    before(:each) do
+      bypass_named_maps
+      delete_user_data @user_1
+      delete_user_data @user_2
     end
 
     it "Tests to_json()" do
@@ -71,8 +66,8 @@ shared_examples_for "layer presenters" do |tested_klass, model_klass|
       json_data['tooltip'].should == layer_2.tooltip
 
       presenter_options =  {
-          viewer_user: $user_2,
-          user: $user_1
+          viewer_user: @user_2,
+          user: @user_1
         }
 
       #no changes to layer_2
@@ -85,20 +80,16 @@ shared_examples_for "layer presenters" do |tested_klass, model_klass|
     it 'Tests to_poro()' do
       table_name = 'test_table'
 
-      layer_1 = Layer.create({
-          kind: 'tiled'
-        })
-      layer_1 = instance_of_tested_model(layer_1)
-      layer_2 = Layer.create({
-          kind: 'carto',
-          order: 13,
-          options: {
-            'fake' => 'value',
-            'table_name' => table_name
-            },
-          infowindow: { 'fake2' => 'val2' },
-          tooltip: { 'fake3' => 'val3' }
-        })
+      layer_2 = Layer.create(
+        kind: 'carto',
+        order: 13,
+        options: {
+          'fake' => 'value',
+          'table_name' => table_name
+        },
+        infowindow: { 'fake2' => 'val2' },
+        tooltip: { 'fake3' => 'val3' }
+      )
       layer_2 = instance_of_tested_model(layer_2)
 
       expected_poro = {
@@ -106,42 +97,49 @@ shared_examples_for "layer presenters" do |tested_klass, model_klass|
         'kind' => 'carto',
         'order' => 13,
         'options' => {
-            'fake' => 'value',
-            'table_name' => table_name
-          },
+          'fake' => 'value',
+          'table_name' => table_name
+        },
         'infowindow' => {
-            'fake2' => 'val2'
-          },
+          'fake2' => 'val2'
+        },
         'tooltip' => {
-            'fake3' => 'val3'
-          }
+          'fake3' => 'val3'
+        }
       }
+      expected_options = expected_poro.delete('options')
 
       poro = instance_of_tested_class(layer_2).to_poro
-      poro.should == expected_poro
+      poro_options = poro.delete('options')
+
+      expect(poro).to include(expected_poro)
+      expect(poro_options).to include(expected_options)
 
       # Now add presenter options to change table_name (new way)
-      expected_poro['options']['table_name'] = "#{$user_1.database_schema}.#{table_name}"
+      expected_options['table_name'] = "#{@user_1.database_schema}.#{table_name}"
 
-      presenter_options =  {
-          viewer_user: $user_2,
-          # New presenter way of sending a viewer that's different from the owner
-          user: $user_1
-        }
+      presenter_options = {
+        viewer_user: @user_2,
+        # New presenter way of sending a viewer that's different from the owner
+        user: @user_1
+      }
 
       poro = instance_of_tested_class(layer_2, presenter_options).to_poro
-      poro.should == expected_poro
+      poro_options = poro.delete('options')
+
+      expect(poro).to include(expected_poro)
+      expect(poro_options).to include(expected_options)
 
       # old way
 
       # change state always with old model to be sure
-      layer_2 = ::Layer.where(id:layer_2.id).first
+      layer_2 = ::Layer.where(id: layer_2.id).first
       layer_2.options = {
-            'fake' => 'value',
-            'table_name' => table_name,
-            # Old presenter way of sending a viewer
-            'user_name' => $user_1.username
-            }
+        'fake' => 'value',
+        'table_name' => table_name,
+        # Old presenter way of sending a viewer
+        'user_name' => @user_1.username
+      }
       layer_2.save
       layer_2 = instance_of_tested_model(layer_2)
 
@@ -150,42 +148,161 @@ shared_examples_for "layer presenters" do |tested_klass, model_klass|
         'kind' => 'carto',
         'order' => 13,
         'options' => {
-            'fake' => 'value',
-            'table_name' => "#{$user_1.username}.#{table_name}",
-            'user_name' => "#{$user_1.username}"
-          },
+          'fake' => 'value',
+          'table_name' => "#{@user_1.username}.#{table_name}",
+          'user_name' => @user_1.username
+        },
         'infowindow' => {
-            'fake2' => 'val2'
-          },
+          'fake2' => 'val2'
+        },
         'tooltip' => {
-            'fake3' => 'val3'
-          }
+          'fake3' => 'val3'
+        }
       }
 
-      presenter_options =  {
-          viewer_user: $user_2
-        }
+      presenter_options = {
+        viewer_user: @user_2
+      }
 
       poro = instance_of_tested_class(layer_2, presenter_options).to_poro
       # Already changed to fully qualified expected table name, so no need to do it again
-      poro.should == expected_poro
+      poro_options = poro.delete('options')
+      expected_options = expected_poro.delete('options')
+      expect(poro).to include(expected_poro)
+      expect(poro_options).to include(expected_options)
 
       # Finally, don't change if already has a fully qualified table_name
 
-      layer_2 = ::Layer.where(id:layer_2.id).first
+      layer_2 = ::Layer.where(id: layer_2.id).first
       layer_2.options = {
-            'fake' => 'value',
-            'table_name' => "fake.#{table_name}",
-            # Old presenter way of sending a viewer
-            'user_name' => $user_1.username
-            }
+        'fake' => 'value',
+        'table_name' => "fake.#{table_name}",
+        # Old presenter way of sending a viewer
+        'user_name' => @user_1.username
+      }
       layer_2.save
       layer_2 = instance_of_tested_model(layer_2)
 
-      expected_poro['options']['table_name'] =  "fake.#{table_name}"
+      expected_options['table_name'] = "fake.#{table_name}"
 
       poro = instance_of_tested_class(layer_2, presenter_options).to_poro
-      poro.should == expected_poro
+      poro_options = poro.delete('options')
+      expect(poro).to include(expected_poro)
+      expect(poro_options).to include(expected_options)
+    end
+
+    it 'Tests to_poro() with uuid table name' do
+      table_name = '000cd294-b124-4f82-b569-0f7fe41d2db8'
+
+      layer_2 = Layer.create(
+        kind: 'carto',
+        order: 13,
+        options: {
+          'fake' => 'value',
+          'table_name' => table_name
+        },
+        infowindow: { 'fake2' => 'val2' },
+        tooltip: { 'fake3' => 'val3' }
+      )
+      layer_2 = instance_of_tested_model(layer_2)
+
+      expected_poro = {
+        'id' => layer_2.id,
+        'kind' => 'carto',
+        'order' => 13,
+        'options' => {
+          'fake' => 'value',
+          'table_name' => table_name
+        },
+        'infowindow' => {
+          'fake2' => 'val2'
+        },
+        'tooltip' => {
+          'fake3' => 'val3'
+        }
+      }
+      expected_options = expected_poro.delete('options')
+
+      poro = instance_of_tested_class(layer_2).to_poro
+      poro_options = poro.delete('options')
+
+      expect(poro).to include(expected_poro)
+      expect(poro_options).to include(expected_options)
+
+      # Now add presenter options to change table_name (new way)
+      expected_options['table_name'] = "#{@user_1.database_schema}.\"#{table_name}\""
+
+      presenter_options = {
+        viewer_user: @user_2,
+        # New presenter way of sending a viewer that's different from the owner
+        user: @user_1
+      }
+
+      poro = instance_of_tested_class(layer_2, presenter_options).to_poro
+      poro_options = poro.delete('options')
+
+      expect(poro).to include(expected_poro)
+      expect(poro_options).to include(expected_options)
+
+      # old way
+
+      # change state always with old model to be sure
+      layer_2 = ::Layer.where(id: layer_2.id).first
+      layer_2.options = {
+        'fake' => 'value',
+        'table_name' => table_name,
+        # Old presenter way of sending a viewer
+        'user_name' => @user_1.username
+      }
+      layer_2.save
+      layer_2 = instance_of_tested_model(layer_2)
+
+      expected_poro = {
+        'id' => layer_2.id,
+        'kind' => 'carto',
+        'order' => 13,
+        'options' => {
+          'fake' => 'value',
+          'table_name' => "#{@user_1.username}.\"#{table_name}\"",
+          'user_name' => @user_1.username
+        },
+        'infowindow' => {
+          'fake2' => 'val2'
+        },
+        'tooltip' => {
+          'fake3' => 'val3'
+        }
+      }
+
+      presenter_options = {
+        viewer_user: @user_2
+      }
+
+      poro = instance_of_tested_class(layer_2, presenter_options).to_poro
+      # Already changed to fully qualified expected table name, so no need to do it again
+      poro_options = poro.delete('options')
+      expected_options = expected_poro.delete('options')
+      expect(poro).to include(expected_poro)
+      expect(poro_options).to include(expected_options)
+
+      # Finally, don't change if already has a fully qualified table_name
+
+      layer_2 = ::Layer.where(id: layer_2.id).first
+      layer_2.options = {
+        'fake' => 'value',
+        'table_name' => "fake.\"#{table_name}\"",
+        # Old presenter way of sending a viewer
+        'user_name' => @user_1.username
+      }
+      layer_2.save
+      layer_2 = instance_of_tested_model(layer_2)
+
+      expected_options['table_name'] = "fake.\"#{table_name}\""
+
+      poro = instance_of_tested_class(layer_2, presenter_options).to_poro
+      poro_options = poro.delete('options')
+      expect(poro).to include(expected_poro)
+      expect(poro_options).to include(expected_options)
     end
 
     it 'Tests to_vizjson_v1()' do
@@ -328,7 +445,7 @@ shared_examples_for "layer presenters" do |tested_klass, model_klass|
           options: {
             'table_name' => 'my_test_table',
             # This is only for compatibility with old LayerModule::Presenter, new one checkes in the presenter options
-            'user_name' => $user_1.database_schema
+            'user_name' => @user_1.database_schema
             },
         })
       layer = instance_of_tested_model(layer)
@@ -336,14 +453,42 @@ shared_examples_for "layer presenters" do |tested_klass, model_klass|
       expected_vizjson[:id] = layer.id
       # No special quoting
       expected_vizjson[:options]['query'] = "select * from public.#{layer.options['table_name']}"
-      expected_vizjson[:options]['user_name'] = $user_1.database_schema
+      expected_vizjson[:options]['user_name'] = @user_1.database_schema
 
       presenter_options =  {
           visualization_id: stat_tag,
-          viewer_user: $user_2,
+          viewer_user: @user_2,
           # New presenter way of sending a viewer that's different from the owner
-          user: $user_1
+          user: @user_1
         }
+
+      vizjson = instance_of_tested_class(layer, presenter_options).to_vizjson_v2
+      vizjson.should == expected_vizjson
+
+      # torque layer, different viewer, UUID table name
+      layer = Layer.create(
+        kind: 'torque',
+        options: {
+          'table_name' => '000cd294-b124-4f82-b569-0f7fe41d2db8',
+          # This is only for compatibility with old LayerModule::Presenter, new one checkes in the presenter options
+          'user_name' => @user_1.database_schema
+        }
+      )
+      layer = instance_of_tested_model(layer)
+
+      expected_vizjson[:id] = layer.id
+      # No special quoting
+      expected_vizjson[:options][:layer_name] = layer.options['table_name']
+      expected_vizjson[:options]['table_name'] = layer.options['table_name']
+      expected_vizjson[:options]['query'] = "select * from public.\"#{layer.options['table_name']}\""
+      expected_vizjson[:options]['user_name'] = @user_1.database_schema
+
+      presenter_options = {
+        visualization_id: stat_tag,
+        viewer_user: @user_2,
+        # New presenter way of sending a viewer that's different from the owner
+        user: @user_1
+      }
 
       vizjson = instance_of_tested_class(layer, presenter_options).to_vizjson_v2
       vizjson.should == expected_vizjson
@@ -363,6 +508,8 @@ shared_examples_for "layer presenters" do |tested_klass, model_klass|
         }
 
       expected_vizjson[:id] = layer.id
+      expected_vizjson[:options][:layer_name] = layer.options['table_name']
+      expected_vizjson[:options]['table_name'] = layer.options['table_name']
       expected_vizjson[:options]['query'] = layer.options['query']
       expected_vizjson[:options].delete('user_name')
 
@@ -417,12 +564,77 @@ shared_examples_for "layer presenters" do |tested_klass, model_klass|
         legend: nil,
         visible: nil,
         options: {
-            sql: "select * from #{layer.options['table_name']}",
-            layer_name: layer.options['table_name'],
-            cartocss: @tested_class::EMPTY_CSS,
-            cartocss_version: layer.options['style_version'],
-            interactivity: layer.options['interactivity']
-          }
+          sql: "select * from #{layer.options['table_name']}",
+          layer_name: layer.options['table_name'],
+          cartocss: @tested_class::EMPTY_CSS,
+          cartocss_version: layer.options['style_version'],
+          interactivity: layer.options['interactivity']
+        }
+      }
+
+      vizjson = instance_of_tested_class(layer, presenter_options).to_vizjson_v2
+      vizjson.should == expected_vizjson
+
+      # CartoDB layer, non default fields filled. table_name UUID to check quoting
+      layer = Layer.create(
+        kind: 'carto',
+        options: {
+          'table_name' => '000cd294-b124-4f82-b569-0f7fe41d2db8',
+          'style_version' => '2.1.1',
+          'interactivity' => 'something',
+          'tile_style' => '/* aaa */ #bbb{ marker-width: 12; } ',
+          'legend' => {
+            'type' => "custom",
+            'show_title' => true,
+            'title' => "xxx",
+            'template' => "",
+            'items' => [
+              {
+                'name' => "yyy",
+                'visible' => true,
+                'value' => "#ccc",
+                'sync' => true
+              }
+            ]
+          },
+          'visible' => true,
+          # Shouldn't appear
+          'wadus' => 'whatever'
+        },
+        infowindow: {
+          'fields' => nil,
+          'template_name' => "infowindow_light",
+          'template' => "<div></div>",
+          'alternative_names' => {},
+          'width' => 200,
+          'maxHeight' => 100
+        },
+        tooltip: {
+          'fields' => nil,
+          'template_name' => "tooltip_light",
+          'template' => "<div></div>",
+          'alternative_names' => {},
+          'maxHeight' => 180
+        }
+      )
+      layer = instance_of_tested_model(layer)
+
+      expected_vizjson = {
+        id: layer.id,
+        type: 'CartoDB',
+        order: layer.order,
+        infowindow: layer.infowindow,
+        tooltip: layer.tooltip,
+        legend: layer.legend,
+        visible: true,
+        options: {
+          # yes... this ones come as symbols and not strings as the others (sigh)
+          sql: "select * from \"#{layer.options['table_name']}\"",
+          layer_name: layer.options['table_name'],
+          cartocss: layer.options['tile_style'],
+          cartocss_version: layer.options['style_version'],
+          interactivity: layer.options['interactivity']
+        }
       }
 
       vizjson = instance_of_tested_class(layer, presenter_options).to_vizjson_v2
@@ -481,13 +693,13 @@ shared_examples_for "layer presenters" do |tested_klass, model_klass|
         legend: layer.legend,
         visible: true,
         options: {
-            # yes... this ones come as symbols and not strings as the others (sigh)
-            sql: "select * from #{layer.options['table_name']}",
-            layer_name: layer.options['table_name'],
-            cartocss: layer.options['tile_style'],
-            cartocss_version: layer.options['style_version'],
-            interactivity: layer.options['interactivity']
-          }
+          # yes... this ones come as symbols and not strings as the others (sigh)
+          sql: "select * from #{layer.options['table_name']}",
+          layer_name: layer.options['table_name'],
+          cartocss: layer.options['tile_style'],
+          cartocss_version: layer.options['style_version'],
+          interactivity: layer.options['interactivity']
+        }
       }
 
       vizjson = instance_of_tested_class(layer, presenter_options).to_vizjson_v2

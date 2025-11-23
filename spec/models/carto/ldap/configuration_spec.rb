@@ -1,5 +1,6 @@
 # coding: UTF-8
 require_relative '../../../spec_helper'
+require_relative '../../../lib/fake_net_ldap_bind_as'
 
 require 'fake_net_ldap'
 
@@ -81,6 +82,11 @@ describe Carto::Ldap::Configuration do
     result.should_not eq false
     result.user_id.should eq other_user_username
 
+    # Test connection error
+    Net::LDAP.any_instance.stubs(:bind_as).raises(Net::LDAP::Error.new)
+    result = ldap_configuration.authenticate(auth_username, auth_password)
+    result.should be_false
+
     ldap_configuration.delete
   end
 
@@ -154,13 +160,13 @@ describe Carto::Ldap::Configuration do
 private
 
 def register_ldap_user(cn, username, password)
-  # Data to return as an LDAP result, that will be loaded into Carto::Ldap::Entry
   ldap_entry_data = {
-      @user_id_field => [username]
-    }
-
+    dn: cn,
+    @user_id_field => [username]
+  }
+  # Data to return as an LDAP result, that will be loaded into Carto::Ldap::Entry
   FakeNetLdap.register_user(:username => cn, :password => password)
-  FakeNetLdap.register_query(Net::LDAP::Filter.eq('cn', username), ldap_entry_data)
+  FakeNetLdap.register_query(Net::LDAP::Filter.eq('cn', username), [ldap_entry_data])
 end
 
 end

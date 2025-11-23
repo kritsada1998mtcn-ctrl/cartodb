@@ -1,39 +1,68 @@
 # coding: UTF-8
 require_relative '../spec_helper'
-require_relative '../../app/models/visualization/member'
+require 'models/user_table_shared_examples'
 
 describe UserTable do
-
   before(:all) do
-    @user = create_user({
-        email: 'admin@cartotest.com', 
-        username: 'admin', 
-        password: '123456'
-      })
-  end
+    bypass_named_maps
 
-  before(:each) do
-    stub_named_maps_calls
-    delete_user_data(@user)
+    @user = create_user(email: 'admin@cartotest.com', username: 'admin', password: '123456')
+    @carto_user = Carto::User.find(@user.id)
+
+    @user_table = ::UserTable.new
+
+    @user_table.user_id = @user.id
+    @user_table.name = 'user_table'
+    @user_table.save
+
+    # The dependent visualization models are in the Table class for the Sequel model
+    @dependent_test_object = @user_table.service
   end
 
   after(:all) do
-    stub_named_maps_calls
+    @user_table.destroy
     @user.destroy
   end
 
-  describe '#estimated_row_count and #actual_row_count' do
-
-    it 'should query Table estimated an actual row count methods' do
-      ::Table.any_instance.stubs(:estimated_row_count).returns(999)
-      ::Table.any_instance.stubs(:actual_row_count).returns(1000)
-      table = create_table({:name => 'table1', :user_id => @user.id})
-      user_table = ::UserTable[table.id]
-      user_table.estimated_row_count.should == 999
-      user_table.actual_row_count.should == 1000
+  it_behaves_like 'user table models' do
+    def build_user_table(attrs = {})
+      ::UserTable.new.set_all(attrs)
     end
-
   end
 
-end
+  context 'viewer users' do
+    after(:each) do
+      @user.viewer = false
+      @user.save
+    end
 
+    it "can't create new user tables" do
+      bypass_named_maps
+      @user.viewer = true
+      @user.save
+
+      @user_table = ::UserTable.new
+      @user_table.user_id = @user.id
+      @user_table.name = 'user_table_2'
+      expect { @user_table.save }.to raise_error(Sequel::ValidationFailed, /Viewer users can't create tables/)
+    end
+
+    it "can't delete user tables" do
+      bypass_named_maps
+      @user_table = ::UserTable.new
+      @user_table.user_id = @user.id
+      @user_table.name = 'user_table_2'
+      @user_table.save
+      @user.viewer = true
+      @user.save
+      @user_table.reload
+
+      expect { @user_table.destroy }.to raise_error(CartoDB::InvalidMember, /Viewer users can't destroy tables/)
+
+      @user.viewer = false
+      @user.save
+      @user_table.reload
+      @user_table.destroy
+    end
+  end
+end

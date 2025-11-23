@@ -1,20 +1,21 @@
-#encoding: UTF-8
+# encoding: utf-8
 require 'spec_helper'
+require 'mock_redis'
 
 describe Geocoding do
   before(:all) do
-    @user  = create_user(geocoding_quota: 200, geocoding_block_price: 1500)
+    @user = create_user(geocoding_quota: 200, geocoding_block_price: 1500, geocoder_provider: 'heremaps')
 
-    stub_named_maps_calls
+    bypass_named_maps
     @table = FactoryGirl.create(:user_table, user_id: @user.id)
   end
 
   before(:each) do
-    stub_named_maps_calls
+    bypass_named_maps
   end
 
   after(:all) do
-    stub_named_maps_calls
+    bypass_named_maps
     @user.destroy
   end
 
@@ -55,6 +56,7 @@ describe Geocoding do
 
     it 'validates formatter' do
       geocoding.raise_on_save_failure = true
+      geocoding.formatter = nil
       expect { geocoding.save }.to raise_error(Sequel::ValidationFailed)
       geocoding.errors[:formatter].join(',').should match /is not present/
     end
@@ -92,30 +94,11 @@ describe Geocoding do
   end
 
   describe '#run!' do
-    it 'updates geocoding stats' do
-      # TODO: this doesn't really test anything but parameter passing, consider deleting it
-      geocoding = FactoryGirl.create(:geocoding, user: @user, user_table: @table, formatter: 'b', kind: 'high-resolution')
-      geocoding.table_geocoder.stubs(:run).returns true
-      geocoding.table_geocoder.stubs(:used_batch_request?).returns false
-      geocoding.table_geocoder.stubs(:cache).returns  OpenStruct.new(hits: 5000)
-      geocoding.table_geocoder.stubs(:process_results).returns true
-      geocoding.class.stubs(:processable_rows).returns 10
-
-      hires_geocoder_mock = mock
-      hires_geocoder_mock.stubs(:status).returns 'completed'
-      hires_geocoder_mock.stubs(:update_status).returns true
-      hires_geocoder_mock.stubs(:processed_rows).returns 10
-      geocoding.table_geocoder.stubs(:geocoder).returns hires_geocoder_mock
-
-      geocoding.run!
-      geocoding.processed_rows.should eq 10
-      geocoding.state.should eq 'finished'
-      geocoding.cache_hits.should eq 5000
-      geocoding.used_credits.should eq 4810
-    end
 
     it 'marks the geocoding as failed if the geocoding job fails' do
-      geocoding = FactoryGirl.build(:geocoding, user: @user, formatter: 'a', user_table: @table, formatter: 'b')
+      geocoding = FactoryGirl.build(:geocoding, user: @user, formatter: 'a',
+                                    user_table: @table, geometry_type: 'polygon',
+                                    kind: 'admin0')
       geocoding.class.stubs(:processable_rows).returns 10
       CartoDB::TableGeocoder.any_instance.stubs(:used_batch_request?).returns false
       CartoDB::TableGeocoder.any_instance.stubs(:run).raises("Error")
@@ -179,7 +162,9 @@ describe Geocoding do
     end
 
     it 'succeeds if there are no rows to geocode' do
-      geocoding = FactoryGirl.build(:geocoding, user: @user, formatter: 'a', user_table: @table, formatter: 'b')
+      geocoding = FactoryGirl.build(:geocoding, user: @user, formatter: 'a',
+                                    user_table: @table, geometry_type: 'polygon',
+                                    kind: 'admin0')
       geocoding.class.stubs(:processable_rows).returns 0
       geocoding.run!
       geocoding.processed_rows.should eq 0
@@ -207,7 +192,9 @@ describe Geocoding do
         payload[:email] == @user.email && payload[:processed_rows] == 0
       }
 
-      geocoding = FactoryGirl.build(:geocoding, user: @user, formatter: 'a', user_table: @table, formatter: 'b')
+      geocoding = FactoryGirl.build(:geocoding, user: @user, formatter: 'a',
+                                    user_table: @table, geometry_type: 'polygon',
+                                    kind: 'admin0')
       geocoding.class.stubs(:processable_rows).returns 0
       geocoding.run!
     end
@@ -220,24 +207,29 @@ describe Geocoding do
       @user.stubs('hard_geocoding_limit?').returns(true)
       delete_user_data @user
       geocoding.max_geocodable_rows.should eq 200
-      FactoryGirl.create(:geocoding, user: @user, processed_rows: 100, remote_id: 'wadus', formatter: 'foo', kind: 'high-resolution')
+      user_geocoder_metrics = CartoDB::GeocoderUsageMetrics.new(@user.username, nil)
+      user_geocoder_metrics.incr(:geocoder_here, :success_responses, 100)
       geocoding.max_geocodable_rows.should eq 100
     end
 
     it 'returns 50000 if the user has soft limit' do
       @user.stubs('soft_geocoding_limit?').returns(true)
-      FactoryGirl.create(:geocoding, user: @user, processed_rows: 100, formatter: 'foo', kind: 'high-resolution')
+      user_geocoder_metrics = CartoDB::GeocoderUsageMetrics.new(@user.username, nil)
+      user_geocoder_metrics.incr(:geocoder_here, :success_responses, 100)
       geocoding.max_geocodable_rows.should eq 50000
     end
 
     it 'returns the remaining quota for the organization if the user has hard limit and belongs to an org' do
-      organization = create_organization_with_users(:geocoding_quota => 150)
+      organization = create_organization_with_users(geocoding_quota: 150)
+      organization.owner.geocoder_provider = 'heremaps'
+      organization.owner.save.reload
       org_user = organization.users.last
       org_user.stubs('soft_geocoding_limit?').returns(false)
       org_geocoding = FactoryGirl.build(:geocoding, user: org_user)
       organization.geocoding_quota.should eq 150
       org_geocoding.max_geocodable_rows.should eq 150
-      FactoryGirl.create(:geocoding, user: org_user, processed_rows: 100, remote_id: 'wadus', formatter: 'foo', kind: 'high-resolution')
+      org_user_geocoder_metrics = CartoDB::GeocoderUsageMetrics.new(org_user.username, organization.name)
+      org_user_geocoder_metrics.incr(:geocoder_here, :success_responses, 100)
       org_geocoding.max_geocodable_rows.should eq 50
       organization.destroy
     end
@@ -276,13 +268,19 @@ describe Geocoding do
     end
 
     it 'returns the used credits when the user is over geocoding quota' do
-      geocoding = FactoryGirl.create(:geocoding, user: @user, processed_rows: 0, cache_hits: 100, kind: 'high-resolution', formatter: 'foo')
+      redis_mock = MockRedis.new
+      user_geocoder_metrics = CartoDB::GeocoderUsageMetrics.new(@user.username, _org = nil, _redis = redis_mock)
+      CartoDB::GeocoderUsageMetrics.stubs(:new).returns(user_geocoder_metrics)
+      geocoding = FactoryGirl.create(:geocoding, user: @user, processed_rows: 0, cache_hits: 100, kind: 'high-resolution', geocoder_type: 'heremaps', formatter: 'foo')
+      user_geocoder_metrics.incr(:geocoder_here, :success_responses, 100)
       # 100 total (user has 200) => 0 used credits
       geocoding.calculate_used_credits.should eq 0
-      geocoding = FactoryGirl.create(:geocoding, user: @user, processed_rows: 0, cache_hits: 150, kind: 'high-resolution', formatter: 'foo')
+      geocoding = FactoryGirl.create(:geocoding, user: @user, processed_rows: 0, cache_hits: 150, kind: 'high-resolution', geocoder_type: 'heremaps', formatter: 'foo')
+      user_geocoder_metrics.incr(:geocoder_cache, :success_responses, 150)
       # 250 total => 50 used credits
       geocoding.calculate_used_credits.should eq 50
-      geocoding = FactoryGirl.create(:geocoding, user: @user, processed_rows: 100, cache_hits: 0, kind: 'high-resolution', formatter: 'foo')
+      geocoding = FactoryGirl.create(:geocoding, user: @user, processed_rows: 100, cache_hits: 0, kind: 'high-resolution', geocoder_type: 'heremaps', formatter: 'foo')
+      user_geocoder_metrics.incr(:geocoder_here, :success_responses, 100)
       # 350 total => 100 used credits
       geocoding.calculate_used_credits.should eq 100
     end
@@ -357,7 +355,4 @@ describe Geocoding do
     end
   end
 
-  describe '#successful_rows' do
-
-  end
 end

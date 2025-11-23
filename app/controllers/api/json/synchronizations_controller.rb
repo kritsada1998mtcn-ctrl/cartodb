@@ -16,11 +16,11 @@ class Api::Json::SynchronizationsController < Api::ApplicationController
 
   # Upon creation, no rate limit checks
   def create
+    return head(401) unless current_user.sync_tables_enabled || @external_source
+
     @stats_aggregator.timing('synchronizations.create') do
 
       begin
-        external_source = nil
-
         member_attributes = setup_member_attributes
         member = Synchronization::Member.new(member_attributes)
         member = @stats_aggregator.timing('member.save') do
@@ -40,6 +40,15 @@ class Api::Json::SynchronizationsController < Api::ApplicationController
 
         ::Resque.enqueue(::Resque::ImporterJobs, job_id: data_import.id)
 
+        # Need to mark the synchronization job as queued state.
+        # If this is missed there is an error state that can be
+        # achieved where the synchronization job can never be
+        # manually kicked off ever again.  This state will occur if the
+        # resque job fails to mark the synchronization state to success or
+        # failure (ie: resque never runs, or bug in ImporterJobs code)
+        member.state = Synchronization::Member::STATE_QUEUED
+        member.store
+
         response = {
           data_import: {
             endpoint:       '/api/v1/imports',
@@ -55,7 +64,7 @@ class Api::Json::SynchronizationsController < Api::ApplicationController
       rescue CartoDB::InvalidInterval => exception
         render_jsonp({ errors: "#{exception.detail['message']}: #{exception.detail['hint']}" }, 400)
       rescue InvalidUrlError => exception
-        CartoDB::Logger.info('Error: create', "#{exception.message} #{exception.backtrace.inspect}")
+        CartoDB::StdoutLogger.info('Error: create', "#{exception.message} #{exception.backtrace.inspect}")
         render_jsonp({ errors: exception.message }, 400)
       end
 
@@ -140,20 +149,22 @@ class Api::Json::SynchronizationsController < Api::ApplicationController
   private
 
   def set_external_source
-    @external_source = params[:remote_visualization_id].present? ? 
-                                                get_external_source(params[:remote_visualization_id]) : nil
+    @external_source =
+      if params[:remote_visualization_id].present?
+        get_external_source(params[:remote_visualization_id])
+      end
   end
 
   def setup_member_attributes
     member_attributes = payload.merge(
-            name:                   params[:table_name],
-            user_id:                current_user.id,
-            state:                  Synchronization::Member::STATE_CREATED,
-            # Keep in sync with http://docs.cartodb.com/cartodb-platform/import-api.html#params-4
-            type_guessing:          !["false", false].include?(params[:type_guessing]),
-            quoted_fields_guessing: !["false", false].include?(params[:quoted_fields_guessing]),
-            content_guessing:       ["true", true].include?(params[:content_guessing])
-        )
+      name:                   params[:table_name],
+      user_id:                current_user.id,
+      state:                  Synchronization::Member::STATE_CREATED,
+      # Keep in sync with https://carto.com/developers/import-api/guides/sync-tables/#params-1
+      type_guessing:          !["false", false].include?(params[:type_guessing]),
+      quoted_fields_guessing: !["false", false].include?(params[:quoted_fields_guessing]),
+      content_guessing:       ["true", true].include?(params[:content_guessing])
+    )
 
     if from_sync_file_provider?
       member_attributes = member_attributes.merge({
@@ -165,10 +176,13 @@ class Api::Json::SynchronizationsController < Api::ApplicationController
     if params[:remote_visualization_id].present?
       member_attributes[:interval] = Carto::ExternalSource::REFRESH_INTERVAL
       external_source = @external_source
-      member_attributes.merge!( {
-        url: external_source.import_url.presence,
-        service_item_id: external_source.import_url.presence
-        } )
+      member_attributes[:url] = external_source.import_url.presence
+      member_attributes[:service_item_id] = external_source.import_url.presence
+    end
+
+    if params[:connector].present?
+      member_attributes[:service_name]    = 'connector'
+      member_attributes[:service_item_id] = params[:connector].to_json
     end
 
     member_attributes
@@ -196,7 +210,10 @@ class Api::Json::SynchronizationsController < Api::ApplicationController
 
     if params[:remote_visualization_id].present?
       external_source = get_external_source(params[:remote_visualization_id])
-      options.merge!( { data_source: external_source.import_url.presence } )
+      options.merge!(data_source: external_source.import_url.presence)
+    elsif params[:connector].present?
+      options[:service_name]    = 'connector'
+      options[:service_item_id] = params[:connector].to_json
     else
       url = params[:url]
       validate_url!(url) unless Rails.env.development? || Rails.env.test? || url.nil? || url.empty?
@@ -218,11 +235,10 @@ class Api::Json::SynchronizationsController < Api::ApplicationController
   end
 
   def get_external_source(remote_visualization_id)
-    external_source = CartoDB::Visualization::ExternalSource.where(visualization_id: remote_visualization_id).first
-    unless remote_visualization_id.present? && external_source.importable_by(current_user)
+    external_source = Carto::ExternalSource.where(visualization_id: remote_visualization_id).first
+    unless remote_visualization_id.present? && external_source.importable_by?(current_user)
       raise CartoDB::Datasources::AuthError.new('Illegal external load')
     end
     external_source
   end
 end
-

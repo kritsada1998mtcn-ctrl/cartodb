@@ -19,25 +19,32 @@
 body {
   background: $cStructure-mainBkg;
   font: normal #{$sFontSize-normal}/#{$sLineHeight-normal} 'Lato', sans-serif;
+  -moz-font-smoothing: antialiased;
+  -webkit-font-smoothing: antialiased;
 }
 
-ul { list-style: none }
+ul {
+  list-style: none;
+}
 
 a {
+  color: #1181FB;
   text-decoration: none;
-  color: $cTypography-link;
+
   &:hover {
-    color: $cTypography-linkHover;
     text-decoration: underline;
   }
 }
 
-i { font-style: normal }
+i {
+  font-style: normal;
+}
 
 button {
   border: 0;
   background: transparent;
 }
+
 button:focus {
   outline: none;
 }

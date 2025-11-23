@@ -6,14 +6,31 @@ module Carto
   module Api
     class VisualizationPresenter
 
-      # options
-      # - related: load related tables. Default: true.
-      # - show_stats: load stats (daily mapview counts). Default: true.
-      def initialize(visualization, current_viewer, context, options = {})
+      def initialize(visualization, current_viewer, context,
+                     related: true, related_canonical_visualizations: false, show_user: false,
+                     show_stats: true, show_likes: true, show_liked: true, show_table: true,
+                     show_permission: true, show_synchronization: true, show_uses_builder_features: true,
+                     show_table_size_and_row_count: true, show_auth_tokens: true, show_user_basemaps: false,
+                     password: nil)
         @visualization = visualization
         @current_viewer = current_viewer
         @context = context
-        @options = options
+
+        @related = related
+        @load_related_canonical_visualizations = related_canonical_visualizations
+        @show_user = show_user
+        @show_stats = show_stats
+        @show_likes = show_likes
+        @show_liked = show_liked
+        @show_table = show_table
+        @show_permission = show_permission
+        @show_synchronization = show_synchronization
+        @show_uses_builder_features = show_uses_builder_features
+        @show_table_size_and_row_count = show_table_size_and_row_count
+        @show_auth_tokens = show_auth_tokens
+        @show_user_basemaps = show_user_basemaps
+        @password = password
+
         @presenter_cache = Carto::Api::PresenterCache.new
       end
 
@@ -23,15 +40,34 @@ module Carto
       end
 
       def to_poro
-        return to_public_poro unless @visualization.is_viewable_by_user?(@current_viewer)
+        return_private_poro = @visualization.can_view_private_info?(@current_viewer)
 
-        show_stats = @options.fetch(:show_stats, true)
+        poro = return_private_poro ? to_private_poro : to_public_poro
 
-        permission = @visualization.permission.nil? ? nil : Carto::Api::PermissionPresenter.new(@visualization.permission,
-                                                                                                current_viewer: @current_viewer)
-                                                                                           .with_presenter_cache(@presenter_cache)
-                                                                                           .to_poro
+        poro[:user] = user if show_user
 
+        if load_related_canonical_visualizations
+          poro[:related_canonical_visualizations] = related_canonicals
+          # The count doesn't take into account privacy concerns
+          poro[:related_canonical_visualizations_count] = @visualization.related_canonical_visualizations.count
+        end
+
+        poro[:liked] = @current_viewer ? @visualization.liked_by?(@current_viewer.id) : false if show_liked
+        poro[:permission] = permission if show_permission
+        poro[:stats] = show_stats ? @visualization.stats : {}
+
+        if show_auth_tokens
+          poro[:auth_tokens] = auth_tokens
+        elsif return_private_poro || @visualization.is_accessible_with_password?(@current_viewer, @password)
+          poro[:auth_tokens] = auth_tokens
+        end
+
+        poro[:table] = user_table_presentation if show_table
+
+        poro
+      end
+
+      def to_private_poro
         poro = {
           id: @visualization.id,
           name: @visualization.name,
@@ -42,30 +78,33 @@ module Carto
           tags: @visualization.tags,
           description: @visualization.description,
           privacy: @visualization.privacy.upcase,
-          stats: show_stats ? @visualization.stats : {},
           created_at: @visualization.created_at,
           updated_at: @visualization.updated_at,
-          permission: permission,
           locked: @visualization.locked,
           source: @visualization.source,
           title: @visualization.title,
-          parent_id: @visualization.parent_id,
           license: @visualization.license,
           attributions: @visualization.attributions,
           kind: @visualization.kind,
-          likes: @visualization.likes.count,
+          external_source: Carto::Api::ExternalSourcePresenter.new(@visualization.external_source).to_poro,
+          url: url,
+          version: @visualization.version || 2,
+          # TODO: The following are Odyssey fields and could be removed
+          # They are kept here for now for compatibility with the old presenter and JS code
+          # `children` is hardcoded to avoid a performance impact (an extra query)
           prev_id: @visualization.prev_id,
           next_id: @visualization.next_id,
+          parent_id: @visualization.parent_id,
           transition_options: @visualization.transition_options,
-          active_child: @visualization.active_child,
-          table: Carto::Api::UserTablePresenter.new(@visualization.table, @visualization.permission, @current_viewer).with_presenter_cache(@presenter_cache).to_poro,
-          external_source: Carto::Api::ExternalSourcePresenter.new(@visualization.external_source).to_poro,
-          synchronization: Carto::Api::SynchronizationPresenter.new(@visualization.synchronization).to_poro,
-          children: @visualization.children.map { |v| children_poro(v) },
-          liked: @current_viewer ? @visualization.is_liked_by_user_id?(@current_viewer.id) : false,
-          url: url
+          active_child: nil,
+          children: []
         }
-        poro.merge!( { related_tables: related_tables } ) if @options.fetch(:related, true)
+
+        poro[:related_tables] = related_tables if related
+        poro[:likes] = @visualization.likes_count if show_likes
+        poro[:synchronization] = synchronization if show_synchronization
+        poro[:uses_builder_features] = @visualization.uses_builder_features? if show_uses_builder_features
+
         poro
       end
 
@@ -73,14 +112,30 @@ module Carto
         {
           id:               @visualization.id,
           name:             @visualization.name,
+          display_name:     @visualization.display_name,
+          attributions:     @visualization.attributions,
+          source:           @visualization.source,
+          license:          @visualization.license,
           type:             @visualization.type,
           tags:             @visualization.tags,
           description:      @visualization.description,
+          created_at:       @visualization.created_at,
           updated_at:       @visualization.updated_at,
           title:            @visualization.title,
           kind:             @visualization.kind,
           privacy:          @visualization.privacy.upcase,
           likes:            @visualization.likes_count
+        }
+      end
+
+      # For dependent visualizations
+      def to_summarized_poro
+        {
+          id:          @visualization.id,
+          name:        @visualization.name,
+          updated_at:  @visualization.updated_at,
+          permission:  permission.slice(:id, :owner),
+          auth_tokens: auth_tokens
         }
       end
 
@@ -94,11 +149,11 @@ module Carto
         # When a visualization is private, checks of permissions need not only the Id but also the vis owner database schema
         # Logic on public_map route will handle permissions so here we only "namespace the id" when proceeds
         if @visualization.is_privacy_private?
-          # Final url will be like ORG.cartodb.com/u/VIEWER/viz/OWNER_SCHEMA.VIS_ID/public_map
+          # Final url will be like ORG.carto.com/u/VIEWER/viz/OWNER_SCHEMA.VIS_ID/public_map
           base_url_username = @current_viewer.username
           vis_id_schema = @visualization.user.sql_safe_database_schema
         else
-          # Final url will be like ORG.cartodb.com/u/VIEWER/viz/VIS_ID/public_map
+          # Final url will be like ORG.carto.com/u/VIEWER/viz/VIS_ID/public_map
           base_url_username = @visualization.user.username
           vis_id_schema = nil
         end
@@ -113,14 +168,56 @@ module Carto
 
       private
 
+      attr_reader :related, :load_related_canonical_visualizations, :show_user,
+                  :show_stats, :show_likes, :show_liked, :show_table,
+                  :show_permission, :show_synchronization, :show_uses_builder_features,
+                  :show_table_size_and_row_count, :show_auth_tokens,
+                  :show_user_basemaps
+
+      def user_table_presentation
+        Carto::Api::UserTablePresenter.new(@visualization.user_table, @current_viewer,
+                                           show_size_and_row_count: show_table_size_and_row_count)
+                                      .with_presenter_cache(@presenter_cache).to_poro
+      end
+
+      def synchronization
+        Carto::Api::SynchronizationPresenter.new(@visualization.synchronization).to_poro
+      end
+
+      def permission
+        unless @visualization.permission.nil?
+          Carto::Api::PermissionPresenter.new(@visualization.permission, current_viewer: @current_viewer)
+                                         .with_presenter_cache(@presenter_cache).to_poro
+        end
+      end
+
+      def auth_tokens
+        if @visualization.password_protected? && (@visualization.user.id == @current_viewer.try(:id) || @visualization.password_valid?(@password))
+          @visualization.get_auth_tokens
+        elsif @visualization.is_privacy_private?
+          @current_viewer.get_auth_tokens
+        else
+          []
+        end
+      end
+
       def related_tables
-        related = @visualization.table ?
-          @visualization.related_tables.select { |table| table.id != @visualization.table.id } :
-          @visualization.related_tables
+        related = if @visualization.user_table
+                    @visualization.related_tables.select { |table| table.id != @visualization.user_table.id }
+                  else
+                    @visualization.related_tables
+                  end
 
         related.map do |table|
-          Carto::Api::UserTablePresenter.new(table, @visualization.permission, @current_viewer).to_poro
+          Carto::Api::UserTablePresenter.new(table, @current_viewer).to_poro
         end
+      end
+
+      def related_canonicals
+        @visualization
+          .related_canonical_visualizations
+          .select { |v| v.is_viewable_by_user?(@current_viewer) }
+          .map { |v| self.class.new(v, @current_viewer, @context).to_poro }
       end
 
       def children_poro(visualization)
@@ -143,6 +240,13 @@ module Carto
         end
       end
 
+      def user
+        Carto::Api::UserPresenter.new(@visualization.user,
+                                      current_viewer: @current_viewer,
+                                      fetch_db_size: false,
+                                      fetch_basemaps: show_user_basemaps,
+                                      fetch_profile: false).to_poro
+      end
     end
   end
 end

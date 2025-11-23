@@ -7,26 +7,17 @@ include CartoDB
 
 describe Visualization::Member do
   before do
-    @db = Rails::Sequel.connection
+    @db = SequelRails.connection
     Sequel.extension(:pagination)
 
     Visualization.repository  = DataRepository::Backend::Sequel.new(@db, :visualizations)
-    Overlay.repository        = DataRepository.new # In-memory storage
   end
 
   before(:each) do
-    CartoDB::NamedMapsWrapper::NamedMaps.any_instance.stubs(:get => nil, :create => true, :update => true)
+    bypass_named_maps
 
-    user_id = UUIDTools::UUID.timestamp_create.to_s
     user_name = 'whatever'
-    user_apikey = '123'
-    @user_mock = mock
-    @user_mock.stubs(:id).returns(user_id)
-    @user_mock.stubs(:username).returns(user_name)
-    @user_mock.stubs(:api_key).returns(user_apikey)
-    @user_mock.stubs(:avatar_url).returns('')
-    @user_mock.stubs(:public_url).returns("http://#{user_name}.cartodb.com")
-    @user_mock.stubs(:groups).returns([])
+    @user_mock = FactoryGirl.build(:user, username: user_name)
     CartoDB::Visualization::Relator.any_instance.stubs(:user).returns(@user_mock)
 
     support_tables_mock = Doubles::Visualization::SupportTables.new
@@ -40,7 +31,7 @@ describe Visualization::Member do
           name: 'test',
           type: Visualization::Member::TYPE_CANONICAL
       )
-      visualization.user_data = { actions: { private_maps: true } }
+
       # Careful, do a user mock after touching user_data as it does some checks about user too
       user_mock = mock
       user_mock.stubs(:private_tables_enabled).returns(true)
@@ -63,8 +54,7 @@ describe Visualization::Member do
 
   describe 'to_poro fields' do
     it 'basic fields expected at the to_poro method' do
-      perm_mock = mock
-      perm_mock.stubs(:to_poro).returns({ wadus: 'wadus'})
+      perm_mock = FactoryGirl.build(:carto_permission)
 
       vis_mock = mock
       vis_mock.stubs(:id).returns(UUIDTools::UUID.timestamp_create.to_s)

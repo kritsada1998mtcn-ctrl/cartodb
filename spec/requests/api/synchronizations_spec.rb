@@ -20,30 +20,27 @@ describe Api::Json::SynchronizationsController do
   before(:all) do
 
     @user = create_user(
-      username: 'test',
-      email:    'client@example.com',
-      password: 'clientex',
       sync_tables_enabled: true
     )
     @api_key = @user.api_key
   end
 
   before(:each) do
-    @db = Rails::Sequel.connection
+    @db = SequelRails.connection
     Sequel.extension(:pagination)
 
-    CartoDB::Synchronization.repository  = DataRepository::Backend::Sequel.new(@db, :synchronizations)
+    CartoDB::Synchronization.repository = DataRepository::Backend::Sequel.new(@db, :synchronizations)
 
-    stub_named_maps_calls
+    bypass_named_maps
     delete_user_data @user
     @headers = {
-      'CONTENT_TYPE'  => 'application/json',
+      'CONTENT_TYPE' => 'application/json'
     }
-    host! 'test.localhost.lan'
+    host! "#{@user.username}.localhost.lan"
   end
 
   after(:all) do
-    stub_named_maps_calls
+    bypass_named_maps
     @user.destroy
   end
 

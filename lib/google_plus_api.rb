@@ -1,19 +1,21 @@
 require_dependency 'google_plus_api_user_data'
 require_dependency 'google_plus_config'
 require_relative 'carto/http/client'
+require_dependency 'carto/email_cleaner'
 
 class GooglePlusAPI
+  include Carto::EmailCleaner
 
   def get_user_data(access_token)
     response = request_user_data(access_token)
     if response.code == 200
       GooglePlusAPIUserData.new(::JSON.parse(response.body))
     else
-      Rollbar.report_message('Failed getting user from google', 'info', error_info: response.to_s)
+      CartoDB::Logger.info(message: 'Failed getting user from google', error_info: response.to_s)
       nil
     end
   rescue => e
-    Rollbar.report_exception(e)
+    CartoDB::Logger.error(exception: e)
     nil
   end
 
@@ -21,7 +23,7 @@ class GooglePlusAPI
   def get_user(access_token)
     google_user_data = GooglePlusAPI.new.get_user_data(access_token)
     # INFO: we assume if a user is queried at a CartoDB instance, user is local
-    google_user_data.present? ? ::User.where(email: google_user_data.email).first : false
+    google_user_data.present? ? ::User.where(email: clean_email(google_user_data.email)).first : false
   end
 
   def request_user_data(access_token)
@@ -35,5 +37,3 @@ class GooglePlusAPI
   end
 
 end
-
-

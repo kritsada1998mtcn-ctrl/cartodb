@@ -1,14 +1,17 @@
 # encoding: utf-8
 
 require 'active_support/inflector'
+require 'carto/api/vizjson3_presenter'
 
 require_relative '../../models/table'
 require_relative '../../models/visualization/member'
 require_relative '../../models/visualization/collection'
 
 class Admin::PagesController < Admin::AdminController
+  include Carto::HtmlSafe
 
   include CartoDB
+  include VisualizationsControllerHelper
 
   DATASETS_PER_PAGE = 9
   MAPS_PER_PAGE = 9
@@ -31,15 +34,30 @@ class Admin::PagesController < Admin::AdminController
               :render_not_found
 
   before_filter :login_required, :except => [:public, :datasets, :maps, :sitemap, :index, :user_feed]
-  before_filter :get_viewed_user
+  before_filter :load_viewed_entity
+  before_filter :set_new_dashboard_flag
   before_filter :ensure_organization_correct
   skip_before_filter :browser_is_html5_compliant?, only: [:public, :datasets, :maps, :user_feed]
   skip_before_filter :ensure_user_organization_valid, only: [:public]
 
+  helper_method :named_map_vizjson3
 
   # Just an entrypoint to dispatch to different places according to
   def index
-    CartoDB.subdomainless_urls? ? index_subdomainless : index_subdomainfull
+    if current_user
+      # I am logged in, visiting my subdomain -> my dashboard
+      redirect_to CartoDB.url(self, 'dashboard', {}, current_user)
+    elsif CartoDB.extract_subdomain(request).present?
+      # I am visiting another user subdomain -> other user public pages
+      redirect_to CartoDB.url(self, 'public_user_feed_home')
+    elsif current_viewer
+      # I am logged in but did not specify a subdomain -> my dashboard
+      redirect_to CartoDB.url(self, 'dashboard', {}, current_viewer)
+    else
+      # I am not logged in and did not specify a subdomain -> login
+      # Avoid using CartoDB.url helper, since we cannot get any user information from domain, path or session
+      redirect_to login_url
+    end
   end
 
   def common_data
@@ -50,7 +68,7 @@ class Admin::PagesController < Admin::AdminController
     if @viewed_user.nil?
       username = CartoDB.extract_subdomain(request)
       org = get_organization_if_exists(username)
-      return if org.nil?
+      render_404 and return if org.nil?
       visualizations = (org.public_visualizations.to_a || [])
       visualizations += (org.public_datasets.to_a || [])
     else
@@ -59,30 +77,27 @@ class Admin::PagesController < Admin::AdminController
         redirect_to CartoDB.base_url(@viewed_user.organization.name) << CartoDB.path(self, 'public_sitemap') and return
       end
 
-      visualizations = Visualization::Collection.new.fetch({
-        user_id:  @viewed_user.id,
-        privacy:  Visualization::Member::PRIVACY_PUBLIC,
-        order:    'updated_at',
-        o:        {updated_at: :desc},
-        exclude_shared: true,
-        exclude_raster: true
-      })
+      visualizations = Carto::VisualizationQueryBuilder.new
+                                                       .with_user_id(@viewed_user.id)
+                                                       .with_privacy(Carto::Visualization::PRIVACY_PUBLIC)
+                                                       .with_order('visualizations.updated_at', :desc)
+                                                       .without_raster
+                                                       .with_prefetch_user(true)
+                                                       .build
     end
 
-    @urls = visualizations.collect{ |vis|
+    @urls = visualizations.map { |vis|
       case vis.type
-        when Visualization::Member::TYPE_DERIVED
-          {
-            loc: CartoDB.url(self, 'public_visualizations_public_map', {id: vis[:id] }, vis.user),
-            lastfreq: vis.updated_at.strftime("%Y-%m-%dT%H:%M:%S%:z")
-          }
-        when Visualization::Member::TYPE_CANONICAL
-          {
-            loc: CartoDB.url(self, 'public_table', {id: vis.name }, vis.user),
-            lastfreq: vis.updated_at.strftime("%Y-%m-%dT%H:%M:%S%:z")
-          }
-        else
-          nil
+      when Carto::Visualization::TYPE_DERIVED
+        {
+          loc: CartoDB.url(self, 'public_visualizations_public_map', { id: vis.id }, vis.user),
+          lastfreq: vis.updated_at.strftime("%Y-%m-%dT%H:%M:%S%:z")
+        }
+      when Carto::Visualization::TYPE_CANONICAL
+        {
+          loc: CartoDB.url(self, 'public_table', { id: vis.name }, vis.user),
+          lastfreq: vis.updated_at.strftime("%Y-%m-%dT%H:%M:%S%:z")
+        }
       end
     }.compact
     render :formats => [:xml]
@@ -122,12 +137,15 @@ class Admin::PagesController < Admin::AdminController
 
       set_layout_vars_for_user(@viewed_user, 'feed')
 
-      @name               = @viewed_user.name.blank? ? @viewed_user.username : @viewed_user.name
-      @avatar_url         = @viewed_user.avatar
-      @tables_num         = @viewed_user.public_table_count
-      @maps_count         = @viewed_user.public_visualization_count
-      @website            = website_url(@viewed_user.website)
-      @website_clean      = @website ? @website.gsub(/https?:\/\//, "") : ""
+      dataset_builder = user_datasets_public_builder(@viewed_user)
+      maps_builder = user_maps_public_builder(@viewed_user)
+
+      @name                = @viewed_user.name_or_username
+      @avatar_url          = @viewed_user.avatar
+      @tables_num          = dataset_builder.build.count
+      @maps_count          = maps_builder.build.count
+      @website             = website_url(@viewed_user.website)
+      @website_clean       = @website ? @website.gsub(/https?:\/\//, "") : ""
 
       if eligible_for_redirect?(@viewed_user)
         # redirect username.host.ext => org-name.host.ext/u/username
@@ -139,7 +157,7 @@ class Admin::PagesController < Admin::AdminController
 
       # TODO: move to helper
       if @maps_count == 0 && @tables_num == 0
-        description << " uses CartoDB to transform location intelligence into dynamic renderings that enable discovery of trends and patterns"
+        description << " uses CARTO to transform location intelligence into dynamic renderings that enable discovery of trends and patterns"
       else
         description << " has"
 
@@ -155,7 +173,7 @@ class Admin::PagesController < Admin::AdminController
           description << " published #{@tables_num} public #{'dataset'.pluralize(@tables_num)}"
         end
 
-        description << " · View #{@name} CartoDB profile for the latest activity and contribute to Open Data by creating an account in CartoDB"
+        description << " · View #{@name} CARTO profile for the latest activity and contribute to Open Data by creating an account in CARTO"
       end
 
       @page_description = description
@@ -168,34 +186,22 @@ class Admin::PagesController < Admin::AdminController
 
   def datasets_for_user(user)
     set_layout_vars_for_user(user, 'datasets')
-    render_datasets(
-      user_public_vis_list({
-        user:  user,
-        vis_type: Visualization::Member::TYPE_CANONICAL,
-        per_page: DATASETS_PER_PAGE
-      }), user
-    )
+    render_datasets(user_datasets_public_builder(user), user)
   end
 
   def datasets_for_organization(org)
     set_layout_vars_for_organization(org, 'datasets')
-    render_datasets(org.public_datasets(current_page, DATASETS_PER_PAGE, tag_or_nil))
+    render_datasets(org_datasets_public_builder(org))
   end
 
   def maps_for_user(user)
     set_layout_vars_for_user(user, 'maps')
-    render_maps(
-      user_public_vis_list({
-        user:     user,
-        vis_type: Visualization::Member::TYPE_DERIVED,
-        per_page: MAPS_PER_PAGE,
-      }), user
-    )
+    render_maps(user_maps_public_builder(user), user)
   end
 
   def maps_for_organization(org)
     set_layout_vars_for_organization(org, 'maps')
-    render_maps(org.public_visualizations(current_page, MAPS_PER_PAGE, tag_or_nil))
+    render_maps(org_maps_public_builder(org))
   end
 
   def render_not_found
@@ -209,41 +215,18 @@ class Admin::PagesController < Admin::AdminController
     user.has_organization? && CartoDB.subdomain_from_request(request) != user.organization.name
   end
 
-  def index_subdomainfull
-    if current_user && current_viewer && current_user.id == current_viewer.id
-      # username.cartodb.com should redirect to the user dashboard in the maps view if the user is logged in
-      redirect_to CartoDB.url(self, 'dashboard')
-    else
-      # Asummes either current_user nil or at least different from current_viewer
-      # username.cartodb.com should redirect to the public user feeds view if the username is not the user's username
-      # username.cartodb.com should redirect to the public user feeds view if the user is not logged in
-      redirect_to CartoDB.url(self, 'public_user_feed_home')
-    end
-  end
-
-  def index_subdomainless
-    if current_user && current_viewer && current_user.id == current_viewer.id
-      redirect_to CartoDB.url(self, 'dashboard')
-    elsif current_user.nil? && current_viewer
-      # current_viewer always returns a user with a session
-      redirect_to CartoDB.url(self, 'dashboard', {}, current_viewer)
-    elsif CartoDB.username_from_request(request)
-      redirect_to CartoDB.url(self, 'public_user_feed_home')
-    else
-      # We cannot get any user information from domain, path or session
-      redirect_to login_url
-    end
-  end
-
-  def render_datasets(vis_list, user=nil)
-    set_pagination_vars({
-        total_count: vis_list.total_entries,
-        per_page:    DATASETS_PER_PAGE,
-        first_page_url: CartoDB.url(self, 'public_datasets_home', {}, user),
-        numbered_page_url: CartoDB.url(self, 'public_datasets_home', {page: PAGE_NUMBER_PLACEHOLDER}, user)
-      })
+  def render_datasets(vis_query_builder, user = nil)
+    home = CartoDB.url(self, 'public_datasets_home', { page: PAGE_NUMBER_PLACEHOLDER }, user)
+    set_pagination_vars(total_count: vis_query_builder.build.count,
+                        per_page: DATASETS_PER_PAGE,
+                        first_page_url: CartoDB.url(self, 'public_datasets_home', {}, user),
+                        numbered_page_url: home)
 
     @datasets = []
+
+    vis_list = vis_query_builder.build_paged(current_page, DATASETS_PER_PAGE).map do |v|
+      Carto::Admin::VisualizationPublicMapAdapter.new(v, current_user, self)
+    end
 
     vis_list.each do |vis|
       @datasets << process_dataset_render(vis)
@@ -255,12 +238,12 @@ class Admin::PagesController < Admin::AdminController
 
     # TODO: move to helper
     if @datasets.size == 0
-      description << " uses CartoDB to transform location intelligence into dynamic renderings that enable discovery of trends and patterns"
+      description << " uses CARTO to transform location intelligence into dynamic renderings that enable discovery of trends and patterns"
     else
       description << " has published #{@datasets.size} public #{'dataset'.pluralize(@datasets.size)}"
     end
 
-    description << " · View #{@name} CartoDB profile for the latest activity and contribute to Open Data by creating an account in CartoDB"
+    description << " · View #{@name} CARTO profile for the latest activity and contribute to Open Data by creating an account in CARTO"
 
     @page_description = description
 
@@ -269,13 +252,17 @@ class Admin::PagesController < Admin::AdminController
     end
   end
 
-  def render_maps(vis_list, user=nil)
+  def render_maps(vis_query_builder, user=nil)
     set_pagination_vars({
-        total_count: vis_list.total_entries,
+        total_count: vis_query_builder.build.count,
         per_page:    MAPS_PER_PAGE,
         first_page_url: CartoDB.url(self, 'public_maps_home', {}, user),
         numbered_page_url: CartoDB.url(self, 'public_maps_home', {page: PAGE_NUMBER_PLACEHOLDER}, user)
       })
+
+    vis_list = vis_query_builder.build_paged(current_page, MAPS_PER_PAGE).map do |v|
+      Carto::Admin::VisualizationPublicMapAdapter.new(v, current_user, self)
+    end
 
     @visualizations = []
     vis_list.each do |vis|
@@ -288,7 +275,7 @@ class Admin::PagesController < Admin::AdminController
 
     # TODO: move to helper
     if @visualizations.size == 0 && @tables_num == 0
-      description << " uses CartoDB to transform location intelligence into dynamic renderings that enable discovery of trends and patterns"
+      description << " uses CARTO to transform location intelligence into dynamic renderings that enable discovery of trends and patterns"
     else
       description << " has"
 
@@ -304,7 +291,7 @@ class Admin::PagesController < Admin::AdminController
         description << " published #{@tables_num} public #{'dataset'.pluralize(@tables_num)}"
       end
 
-      description << " · View #{@name} CartoDB profile for the latest activity and contribute to Open Data by creating an account in CartoDB"
+      description << " · View #{@name} CARTO profile for the latest activity and contribute to Open Data by creating an account in CARTO"
     end
 
     @page_description = description
@@ -314,18 +301,20 @@ class Admin::PagesController < Admin::AdminController
     end
   end
 
+  def set_new_dashboard_flag
+    ff_user = @viewed_user || @viewed_org.try(:owner)
+
+    unless ff_user.nil?
+      @has_new_dashboard = ff_user.builder_enabled?
+    end
+  end
+
   def set_layout_vars_for_user(user, content_type)
+    builder = user_maps_public_builder(user, visualization_version)
+    most_viewed = builder.with_order('mapviews', :desc).build_paged(1, 1).first
+
     set_layout_vars({
-        most_viewed_vis_map: Visualization::Collection.new.fetch({
-            user_id:        user.id,
-            type:           Visualization::Member::TYPE_DERIVED,
-            privacy:        Visualization::Member::PRIVACY_PUBLIC,
-            order:          'mapviews',
-            page:           1,
-            per_page:       1,
-            exclude_shared: true,
-            exclude_raster: true
-          }).first,
+        most_viewed_vis_map: most_viewed ? Carto::Admin::VisualizationPublicMapAdapter.new(most_viewed, current_user, self) : nil,
         content_type: content_type,
         default_fallback_basemap: user.default_basemap,
         user: user,
@@ -342,16 +331,19 @@ class Admin::PagesController < Admin::AdminController
   end
 
   def set_layout_vars_for_organization(org, content_type)
-    set_layout_vars({
-        most_viewed_vis_map: org.public_vis_by_type(Visualization::Member::TYPE_DERIVED, 1, 1, nil, 'mapviews').first,
-        content_type:        content_type,
-        default_fallback_basemap: org.owner ? org.owner.default_basemap : nil,
-        base_url: ''
-      })
-    set_shared_layout_vars(org, {
-        name:       org.display_name.blank? ? org.name : org.display_name,
-        avatar_url: org.avatar_url,
-      })
+    most_viewed_vis_map = org.public_vis_by_type(Carto::Visualization::TYPE_DERIVED,
+                                                 1,
+                                                 1,
+                                                 nil,
+                                                 'mapviews',
+                                                 visualization_version).first
+    set_layout_vars(most_viewed_vis_map: most_viewed_vis_map,
+                    content_type: content_type,
+                    default_fallback_basemap: org.owner ? org.owner.default_basemap : nil,
+                    base_url: '')
+    set_shared_layout_vars(org,
+                           name: org.display_name.blank? ? org.name : org.display_name,
+                           avatar_url: org.avatar_url)
   end
 
   def set_layout_vars(required)
@@ -387,23 +379,56 @@ class Admin::PagesController < Admin::AdminController
     @available_for_hire = optional.fetch(:available_for_hire, false)
     @user               = optional.fetch(:user, nil)
     @is_org             = model.is_a? Organization
-    @tables_num         = @is_org ? model.public_datasets_count : model.public_table_count
-    @maps_count         = @is_org ? model.public_visualizations_count : model.public_visualization_count
+    @tables_num = (@is_org ? org_datasets_public_builder(model) : user_datasets_public_builder(model)).build.count
+    @maps_count = (@is_org ? org_maps_public_builder(model) : user_maps_public_builder(model)).build.count
+
+    @needs_gmaps_lib = @most_viewed_vis_map.try(:map).try(:provider) == 'googlemaps'
+    @needs_gmaps_lib ||= @default_fallback_basemap['className'] == 'googlemaps'
+
+    gmaps_user = @most_viewed_vis_map.try(:user) || @viewed_user
+    @gmaps_query_string = gmaps_user ? gmaps_user.google_maps_query_string : @viewed_org.google_maps_key
   end
 
-  def user_public_vis_list(required)
-    Visualization::Collection.new.fetch({
-      user_id:  required.fetch(:user).id,
-      type:     required.fetch(:vis_type),
-      per_page: required.fetch(:per_page),
-      privacy:  Visualization::Member::PRIVACY_PUBLIC,
-      page:     current_page,
-      order:    'updated_at',
-      o:        {updated_at: :desc},
-      tags:     tag_or_nil,
-      exclude_shared: true,
-      exclude_raster: true,
-    })
+  def user_datasets_public_builder(user)
+    public_builder(user_id: user.id, vis_type: Carto::Visualization::TYPE_CANONICAL)
+  end
+
+  def user_maps_public_builder(user, version = nil)
+    public_builder(user_id: user.id, vis_type: Carto::Visualization::TYPE_DERIVED, version: version)
+  end
+
+  def org_datasets_public_builder(org)
+    public_builder(vis_type: Carto::Visualization::TYPE_CANONICAL, organization_id: org.id)
+  end
+
+  def org_maps_public_builder(org)
+    public_builder(vis_type: Carto::Visualization::TYPE_DERIVED, organization_id: org.id)
+  end
+
+  def public_builder(user_id: nil, vis_type: nil, organization_id: nil, version: nil)
+    tags = tag_or_nil.nil? ? nil : [tag_or_nil]
+
+    builder = Carto::VisualizationQueryBuilder.new
+                                              .with_privacy(Carto::Visualization::PRIVACY_PUBLIC)
+                                              .without_raster
+                                              .with_order(:updated_at, :desc)
+                                              .with_user_id(user_id)
+                                              .with_type(vis_type)
+                                              .with_tags(tags)
+                                              .with_organization_id(organization_id)
+                                              .with_version(version)
+
+    builder.with_published if vis_type == Carto::Visualization::TYPE_DERIVED
+
+    builder
+  end
+
+  def visualization_version
+    @has_new_dashboard ? Carto::Visualization::VERSION_BUILDER : nil
+  end
+
+  def named_map_vizjson3(visualization)
+    generate_named_map_vizjson3(Carto::Visualization.find(visualization.id))
   end
 
   def get_organization_if_exists(name)
@@ -444,7 +469,7 @@ class Admin::PagesController < Admin::AdminController
         rows_count: dataset.table.rows_counted,
         size_in_bytes: dataset.table.table_size,
         geometry_type: geometry_type,
-        source_html_safe: dataset.source_html_safe
+        source: markdown_html_safe(dataset.source)
       })
     rescue => e
       # A dataset might be invalid. For example, having the table deleted and not yet cleaned.
@@ -462,7 +487,7 @@ class Admin::PagesController < Admin::AdminController
     return {
       id:          vis.id,
       title:       vis.name,
-      description_html_safe: vis.description_html_safe,
+      description: markdown_html_safe(vis.description),
       tags:        vis.tags,
       updated_at:  vis.updated_at,
       owner:       vis.user,
@@ -471,9 +496,14 @@ class Admin::PagesController < Admin::AdminController
     }
   end
 
-  def get_viewed_user
+  def load_viewed_entity
     username = CartoDB.extract_subdomain(request)
     @viewed_user = ::User.where(username: username).first
+
+    if @viewed_user.nil?
+      username = username.strip.downcase
+      @viewed_org = get_organization_if_exists(username)
+    end
   end
 
 

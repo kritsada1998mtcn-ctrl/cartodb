@@ -29,7 +29,7 @@ module CartoDB
       DEFAULT_ENCODING  = 'UTF-8'
 
       def self.supported?(extension)
-        !(%w{ .tif .tiff .sql }.include?(extension))
+        !(%w{ .tif .tiff }.include?(extension))
       end
 
       def initialize(job, source_file, layer = nil, ogr2ogr = nil, georeferencer = nil)
@@ -108,6 +108,9 @@ module CartoDB
           # At this point the_geom column is renamed
           GeometryFixer.new(job.db, job.table_name, SCHEMA, 'the_geom', job).run
         end
+      rescue => e
+        raise CartoDB::Datasources::InvalidInputDataError.new(e.to_s, ERRORS_MAP[CartoDB::Datasources::InvalidInputDataError]) unless statement_timeout?(e.to_s)
+        raise StatementTimeoutError.new(e.to_s, ERRORS_MAP[CartoDB::Importer2::StatementTimeoutError])
       end
 
       def normalize
@@ -251,7 +254,7 @@ module CartoDB
         ogr2ogr.run(append_mode)
 
         #In case there are not an specific error we try to fix it
-        if ogr2ogr.generic_error? && ogr2ogr.exit_code == 0
+        if ogr2ogr.generic_error? && ogr2ogr.exit_code.zero? || ogr2ogr.missing_srs?
           try_fallback(append_mode)
         end
 
@@ -288,14 +291,20 @@ module CartoDB
           ogr2ogr.overwrite = true
           ogr2ogr.encoding = "ISO-8859-1"
           ogr2ogr.run(append_mode)
+        elsif ogr2ogr.missing_srs?
+          job.log "Fallback: Source dataset has no coordinate system, forcing -s_srs 4326"
+          @job.fallback_executed = "srs 4326"
+          ogr2ogr.overwrite = true
+          ogr2ogr.shape_coordinate_system = '4326'
+          ogr2ogr.run(append_mode)
         end
         ogr2ogr.set_default_properties
       end
 
       def check_for_import_errors
-        raise DuplicatedColumnError.new(job.logger) if ogr2ogr.duplicate_column?
-        raise InvalidGeoJSONError.new(job.logger) if ogr2ogr.invalid_geojson?
-        raise TooManyColumnsError.new(job.logger) if ogr2ogr.too_many_columns?
+        raise DuplicatedColumnError.new if ogr2ogr.duplicate_column?
+        raise InvalidGeoJSONError.new if ogr2ogr.invalid_geojson?
+        raise TooManyColumnsError.new if ogr2ogr.too_many_columns?
 
         if ogr2ogr.statement_timeout?
           raise StatementTimeoutError.new(ogr2ogr.command_output, ERRORS_MAP[CartoDB::Importer2::StatementTimeoutError])
@@ -306,33 +315,37 @@ module CartoDB
         end
 
         if ogr2ogr.file_too_big?
-          raise FileTooBigError.new(job.logger)
+          raise FileTooBigError.new
         end
 
         if ogr2ogr.unsupported_format?
-          raise UnsupportedFormatError.new(job.logger)
+          raise UnsupportedFormatError.new
         end
 
         if ogr2ogr.kml_style_missing?
-          raise KmlWithoutStyleIdError.new(job.logger)
+          raise KmlWithoutStyleIdError.new 'StyleID missing in KML file'
         end
 
         # Could be OOM, could be wrong input
         if ogr2ogr.segfault_error?
-          raise LoadError.new(job.logger)
+          raise LoadError.new 'Ogr2ogr SEGFAULT ERROR'
         end
 
         if ogr2ogr.exit_code == 256 && ogr2ogr.encoding_error?
-          raise EncodingError.new(job.logger)
+          raise EncodingError.new "Ogr2ogr encoding error"
+        end
+
+        if ogr2ogr.geometry_validity_error?
+          raise InvalidGeometriesError.new
         end
 
         # Some kind of error in ogr2ogr could lead to a partial import and we don't want it
         if ogr2ogr.generic_error? || ogr2ogr.exit_code != 0
           job.logger.append "Ogr2ogr FAILED!"
           job.logger.append "ogr2ogr.exit_code = " + ogr2ogr.exit_code.to_s
-          job.logger.append "ogr2ogr.command = " + ogr2ogr.command, truncate=false
-          job.logger.append "ogr2ogr.command_output = " + ogr2ogr.command_output, truncate=false
-          raise LoadError.new(job.logger)
+          job.logger.append "ogr2ogr.command = #{ogr2ogr.command}", false
+          job.logger.append "ogr2ogr.command_output = #{ogr2ogr.command_output}", false
+          raise LoadError.new 'Ogr2ogr ERROR'
         end
       end
 
@@ -355,6 +368,10 @@ module CartoDB
 
       def is_shp?
         !(@source_file.fullpath =~ /\.shp$/i).nil?
+      end
+
+      def statement_timeout?(error)
+        error =~ /canceling statement due to statement timeout/i
       end
     end
   end

@@ -1,6 +1,7 @@
 # coding: UTF-8
 
 require_relative '../spec_helper'
+require_relative '../factories/organizations_contexts'
 
 describe Carto::Api::UserPresenter do
 
@@ -8,8 +9,32 @@ describe Carto::Api::UserPresenter do
     CartoDB::UserModule::DBService.any_instance.stubs(:enable_remote_db_user).returns(true)
   end
 
+  describe '#current_viewer' do
+    include_context 'organization with users helper'
+
+    it 'displays full data for user administrator' do
+      presentation = Carto::Api::UserPresenter.new(@carto_org_user_1, current_viewer: @carto_org_user_owner).to_poro
+      expect(presentation.keys).to include :email
+    end
+
+    it 'displays full data for own user' do
+      presentation = Carto::Api::UserPresenter.new(@carto_org_user_1, current_viewer: @carto_org_user_1).to_poro
+      expect(presentation.keys).to include :email
+    end
+
+    it 'displays filtered data for other users' do
+      presentation = Carto::Api::UserPresenter.new(@carto_org_user_1, current_viewer: @carto_org_user_2).to_poro
+      expect(presentation.keys).to_not include :email
+    end
+
+    it 'displays filtered data for public' do
+      presentation = Carto::Api::UserPresenter.new(@carto_org_user_1).to_poro
+      expect(presentation.keys).to_not include :email
+    end
+  end
+
   it "Compares old and new ways of 'presenting' user data" do
-    CartoDB::NamedMapsWrapper::NamedMaps.any_instance.stubs(:get => nil, :create => true, :update => true)
+    bypass_named_maps
 
     # Non-org user
     user = create_user({
@@ -25,12 +50,16 @@ describe Carto::Api::UserPresenter do
         twitter_datasource_quota: 70000,
         soft_twitter_datasource_limit: true,
         public_visualization_count: 1,
-        all_visualization_count: 2
+        all_visualization_count: 2,
+        job_role: "Developer",
+        company: "test",
+        phone: "123",
+        industry: "Academic and Education"
       })
 
     # Some sample data
     data_import_id = '11111111-1111-1111-1111-111111111111'
-    Rails::Sequel.connection.run(%Q{
+    SequelRails.connection.run(%Q{
       INSERT INTO data_imports("data_source","data_type","table_name","state","success","logger","updated_at",
         "created_at","tables_created_count",
         "table_names","append","id","table_id","user_id",
@@ -42,7 +71,7 @@ describe Carto::Api::UserPresenter do
           '#{user.id}','public_url', 'test',
           '[{"type":".csv","size":5015}]','t','f','t','test','0.0.0.0','13204','test','f','{"twitter_credits_limit":0}');
       })
-    Rails::Sequel.connection.run(%Q{
+    SequelRails.connection.run(%Q{
       INSERT INTO geocodings("table_name","processed_rows","created_at","updated_at","formatter","state",
         "id","user_id",
         "cache_hits","kind","geometry_type","processable_rows","real_rows","used_credits",
@@ -58,9 +87,9 @@ describe Carto::Api::UserPresenter do
     feature_flag1 = FactoryGirl.create(:feature_flag, id: 1, name: 'ff1')
     feature_flag2 = FactoryGirl.create(:feature_flag, id: 2, name: 'ff2')
     user.set_relationships_from_central({ feature_flags: [ feature_flag1.id.to_s, feature_flag2.id.to_s ]})
-    user.save
+    user.save.reload
 
-    compare_data(user.data, Carto::Api::UserPresenter.new(Carto::User.where(id: user.id).first).data, false)
+    compare_data(user.data, Carto::Api::UserPresenter.new(Carto::User.where(id: user.id).first).data, false, false)
 
     # Now org user, organization and another member
 
@@ -77,7 +106,11 @@ describe Carto::Api::UserPresenter do
         twitter_datasource_quota: 70000,
         soft_twitter_datasource_limit: true,
         public_visualization_count: 1,
-        all_visualization_count: 2
+        all_visualization_count: 2,
+        job_role: "Developer",
+        company: "test",
+        phone: "123",
+        industry: "Academic and Education"
       })
 
     organization = ::Organization.new(quota_in_bytes: 200.megabytes, name: 'testorg', seats: 5).save
@@ -89,7 +122,8 @@ describe Carto::Api::UserPresenter do
     user2 = create_user({
         email: 'example2@carto.com',
         username: 'example2',
-        password: 'example123'
+        password: 'example123',
+        account_type: 'ORGANIZATION USER'
       })
 
     user2.organization = organization
@@ -99,15 +133,16 @@ describe Carto::Api::UserPresenter do
 
     compare_data(owner.data, Carto::Api::UserPresenter.new(Carto::User.where(id: owner.id).first).data, true)
 
-    Rails::Sequel.connection.run( %Q{ DELETE FROM geocodings } )
-    Rails::Sequel.connection.run( %Q{ DELETE FROM data_imports } )
+    SequelRails.connection.run( %Q{ DELETE FROM geocodings } )
+    SequelRails.connection.run( %Q{ DELETE FROM data_imports } )
     user.destroy
     organization.destroy
   end
 
   protected
 
-  def compare_data(old_data, new_data, org_user = false)
+  def compare_data(original_old_data, new_data, org_user = false, mobile_sdk_enabled = false)
+    old_data = add_new_keys(original_old_data)
     # INFO: new organization presenter now doesn't contain users
     old_data[:organization].delete(:users) if old_data[:organization]
 
@@ -115,7 +150,7 @@ describe Carto::Api::UserPresenter do
     #new_data.should eq old_data
 
     # To detect deltas not migrated to new presenter
-    new_data.keys.should == old_data.keys
+    new_data.keys.sort.should == old_data.keys.sort
 
     new_data[:id].should == old_data[:id]
     new_data[:email].should == old_data[:email]
@@ -140,6 +175,9 @@ describe Carto::Api::UserPresenter do
     new_data[:api_calls_quota].should == old_data[:api_calls_quota]
     new_data[:api_calls_block_price].should == old_data[:api_calls_block_price]
     new_data[:geocoding].should == old_data[:geocoding]
+    new_data[:here_isolines].should == old_data[:here_isolines]
+    new_data[:obs_snapshot].should == old_data[:obs_snapshot]
+    new_data[:obs_general].should == old_data[:obs_general]
     new_data[:twitter].should == old_data[:twitter]
     new_data[:billing_period].should == old_data[:billing_period]
     new_data[:max_layers].should == old_data[:max_layers]
@@ -155,9 +193,12 @@ describe Carto::Api::UserPresenter do
     new_data[:new_dashboard_enabled].should == old_data[:new_dashboard_enabled]
     new_data[:feature_flags].should == old_data[:feature_flags]
     new_data[:base_url].should == old_data[:base_url]
+    new_data[:geocoder_provider].should == old_data[:geocoder_provider]
+    new_data[:isolines_provider].should == old_data[:isolines_provider]
+    new_data[:routing_provider].should == old_data[:routing_provider]
 
     if org_user
-      new_data[:organization].keys.should == old_data[:organization].keys
+      new_data[:organization].keys.sort.should == old_data[:organization].keys.sort
 
       # This is an implicit test of OrganizationPresenter...
       # INFO: we have a weird error sometimes running builds that fails comparing dates despite having equal value...
@@ -176,10 +217,18 @@ describe Carto::Api::UserPresenter do
       new_data[:organization][:owner][:email].should == old_data[:organization][:owner][:email]
       new_data[:organization][:quota_in_bytes].should == old_data[:organization][:quota_in_bytes]
       new_data[:organization][:geocoding_quota].should == old_data[:organization][:geocoding_quota]
+      new_data[:organization][:here_isolines_quota].should == old_data[:organization][:here_isolines_quota]
+      new_data[:organization][:obs_snapshot_quota].should == old_data[:organization][:obs_snapshot_quota]
+      new_data[:organization][:obs_general_quota].should == old_data[:organization][:obs_general_quota]
+      new_data[:organization][:mapzen_routing_quota].should == old_data[:organization][:mapzen_routing_quota]
       new_data[:organization][:map_view_quota].should == old_data[:organization][:map_view_quota]
       new_data[:organization][:twitter_datasource_quota].should == old_data[:organization][:twitter_datasource_quota]
       new_data[:organization][:map_view_block_price].should == old_data[:organization][:map_view_block_price]
       new_data[:organization][:geocoding_block_price].should == old_data[:organization][:geocoding_block_price]
+      new_data[:organization][:here_isolines_block_price].should == old_data[:organization][:here_isolines_block_price]
+      new_data[:organization][:obs_snapshot_block_price].should == old_data[:organization][:obs_snapshot_block_price]
+      new_data[:organization][:obs_general_block_price].should == old_data[:organization][:obs_general_block_price]
+      new_data[:organization][:mapzen_routing_block_price].should == old_data[:organization][:mapzen_routing_block_price]
       new_data[:organization][:seats].should == old_data[:organization][:seats]
       new_data[:organization][:twitter_username].should == old_data[:organization][:twitter_username]
       new_data[:organization][:location].should == old_data[:organization][:location]
@@ -188,10 +237,30 @@ describe Carto::Api::UserPresenter do
       #owner is excluded from the users list
       new_data[:organization][:website].should == old_data[:organization][:website]
       new_data[:organization][:avatar_url].should == old_data[:organization][:avatar_url]
+      new_data[:geocoder_provider].should == old_data[:geocoder_provider]
+      new_data[:isolines_provider].should == old_data[:isolines_provider]
+      new_data[:routing_provider].should == old_data[:routing_provider]
+    end
+
+    if mobile_sdk_enabled
+      new_data[:mobile_apps].keys.sort.should == old_data[:mobile_apps].keys.sort
+
+      new_data[:mobile_apps][:mobile_xamarin].should = new_data[:mobile_apps].mobile_xamarin
+      new_data[:mobile_apps][:mobile_custom_watermark].should = new_data[:mobile_apps].mobile_custom_watermark
+      new_data[:mobile_apps][:mobile_offline_maps].should = new_data[:mobile_apps].mobile_offline_maps
+      new_data[:mobile_apps][:mobile_gis_extension].should = new_data[:mobile_apps].mobile_gis_extension
+      new_data[:mobile_apps][:mobile_max_open_users].should = new_data[:mobile_apps].mobile_max_open_users
+      new_data[:mobile_apps][:mobile_max_private_users].should = new_data[:mobile_apps].mobile_max_private_users
     end
 
     # TODO: Pending migration and testing of :real_table_count & :last_active_time
 
+  end
+
+  def add_new_keys(user_poro)
+    new_poro = user_poro.dup.deep_merge(viewer: false)
+    new_poro[:organization] = user_poro[:organization].deep_merge(viewer_seats: 0) if user_poro[:organization].present?
+    new_poro
   end
 
   def create_org(org_name, org_quota, org_seats)

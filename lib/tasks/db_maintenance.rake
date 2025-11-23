@@ -1,5 +1,5 @@
 require_relative 'thread_pool'
-require_relative '../../services/table-geocoder/lib/table_geocoder_factory'
+require_relative '../../services/dataservices-metrics/lib/geocoder_usage_metrics'
 require 'timeout'
 require 'date'
 
@@ -204,7 +204,6 @@ namespace :cartodb do
       }, threads, thread_sleep, database_host)
     end
 
-
     ########################
     # LOAD CARTODB FUNCTIONS
     ########################
@@ -248,8 +247,6 @@ namespace :cartodb do
 
     desc 'Upgrade cartodb postgresql extension'
     task :upgrade_postgres_extension, [:database_host, :version, :sleep, :statement_timeout] => :environment do |task_name, args|
-      raise "Sample usage: rake cartodb:db:upgrade_postgres_extension['127.0.0.1','0.5.2']" if args[:database_host].blank? or args[:version].blank?
-
       # Send this as string, not as number
       extension_version = args[:version]
       database_host = args[:database_host]
@@ -257,14 +254,17 @@ namespace :cartodb do
       statement_timeout = args[:statement_timeout].blank? ? 180000 : args[:statement_timeout] # 3 min by default
 
       puts "Upgrading cartodb extension with following config:"
-      puts "extension_version: #{extension_version}"
-      puts "database_host: #{database_host}"
+      puts "extension_version: #{extension_version || 'LATEST'}"
+      puts "database_host: #{database_host || 'ALL'}"
       puts "sleep: #{sleep}"
       puts "statement_timeout: #{statement_timeout}"
 
-      count = ::User.where(database_host: database_host).count
+      query = User
+      query = query.where(database_host: database_host) if database_host
 
-      ::User.where(database_host: database_host).order(Sequel.asc(:created_at)).each_with_index do |user, i|
+      count = query.count
+
+      query.order(Sequel.asc(:created_at)).each_with_index do |user, i|
         begin
           # We grant 2 x statement_timeout, by default 6 min
           Timeout::timeout(statement_timeout/1000 * 2) do
@@ -381,20 +381,50 @@ namespace :cartodb do
       user.db_service.set_user_privileges_at_db
     end
 
+    desc 'Set org role privileges in all organizations'
+    task :set_org_privileges_in_cartodb_schema, [:org_name] => :environment do |_t, args|
+      org = ::Organization.find(name: args[:org_name])
+      owner = org.owner
+      if owner
+        owner.db_service.setup_organization_role_permissions
+      else
+        puts 'Organization without owner'
+      end
+    end
+
+    desc 'Set org role privileges in all organizations'
+    task set_all_orgs_privileges_in_cartodb_schema: :environment do |_t, _args|
+      Organization.each do |org|
+        owner = org.owner
+        if owner
+          owner.db_service.setup_organization_role_permissions
+        else
+          puts "Organization without owner: #{org.name}"
+        end
+      end
+    end
+
     ##########################
     # SET TRIGGER CHECK QUOTA
     ##########################
     desc 'reset check quota trigger on all user tables'
-    task :reset_trigger_check_quota => :environment do |t, args|
+    task :reset_trigger_check_quota, [:start] => :environment do |_, args|
+      start = args[:start]
       puts "Resetting check quota trigger for ##{::User.count} users"
-      ::User.all.each_with_index do |user, i|
+      i = 0
+
+      query = ::User.order(:id)
+      query = query.where('id > ?', start) if start
+      query.use_cursor(rows_per_fetch: 500).each do |user|
         begin
-          puts "Setting user quota in db '#{user.database_name}' (#{user.username})"
+          puts "Setting user quota in db '#{user.database_name}' (#{user.id} #{user.username})"
           user.db_service.rebuild_quota_trigger
         rescue => exception
           puts "\nERRORED #{user.id} (#{user.username}): #{exception.message}\n"
         end
-        if i % 500 == 0
+
+        i += 1
+        if (i % 500).zero?
           puts "\nProcessed ##{i} users"
         end
       end
@@ -453,6 +483,18 @@ namespace :cartodb do
       puts "Organization: #{organization.name} seats updated to: #{args[:seats]}."
     end
 
+    desc "set organization viewer_seats"
+    task :set_organization_viewer_seats, [:organization_name, :seats] => :environment do |_, args|
+      usage = 'usage: rake cartodb:db:set_organization_viewer_seats[organization_name,seats]'
+      raise usage if args[:organization_name].blank? || args[:seats].blank?
+
+      organization = Organization.filter(name: args[:organization_name]).first
+      seats = args[:seats].to_i
+      organization.viewer_seats = seats
+      organization.save
+
+      puts "Organization: #{organization.name} seats updated to: #{args[:seats]}."
+    end
 
     #################
     # SET TABLE QUOTA
@@ -681,24 +723,6 @@ namespace :cartodb do
       end
     end
 
-    desc 'Runs the specified CartoDB migration script'
-    task :migrate_to, [:version] => :environment do |t, args|
-      usage = 'usage: rake cartodb:db:migrate_to[version]'
-      raise usage if args[:version].blank?
-      require Rails.root.join 'lib/cartodb/generic_migrator.rb'
-
-      CartoDB::GenericMigrator.new(args[:version]).migrate!
-    end
-
-    desc 'Undo migration changes USE WITH CARE'
-    task :rollback_migration, [:version] => :environment do |t, args|
-      usage = 'usage: rake cartodb:db:rollback_migration[version]'
-      raise usage if args[:version].blank?
-      require Rails.root.join 'lib/cartodb/generic_migrator.rb'
-
-      CartoDB::GenericMigrator.new(args[:version]).rollback!
-    end
-
     desc 'Save users metadata in redis'
     task :save_users_metadata => :environment do
       ::User.all.each do |u|
@@ -723,23 +747,19 @@ namespace :cartodb do
       page_size = args[:page_size].blank? ? 999999 : args[:page_size].to_i
       page = args[:page].blank? ? 1 : args[:page].to_i
 
-      require_relative '../../app/models/visualization/collection'
-
       progress_each =  (page_size > 10) ? (page_size / 10).ceil : 1
-      collection = CartoDB::Visualization::Collection.new
 
       begin
-        items = collection.fetch(page: page, per_page: page_size)
+        items = Carto::VisualizationQueryBuilder.new.build_paged(page, page_size)
 
         count = items.count
         puts "\n>Running :create_default_vis_permissions for page #{page} (#{count} vis)" if count > 0
-        items.each_with_index { |vis, i|
-          puts ">Processed: #{i}/#{count} - page #{page}" if i % progress_each == 0
+        items.each do |vis|
           if vis.permission_id.nil?
             begin
               raise 'No owner' if vis.user.nil?
               # Just saving will trigger the permission creation
-              vis.send(:do_store, false)
+              vis.save!
               puts "OK #{vis.id}"
             rescue => e
               owner_id = vis.user.nil? ? 'nil' : vis.user.id
@@ -748,51 +768,11 @@ namespace :cartodb do
               log(message, :create_default_vis_permissions.to_s)
             end
           end
-        }
+        end
         page += 1
       end while count > 0
 
       puts "\n>Finished :create_default_vis_permissions"
-    end
-
-    desc "Check all visualizations and populate their Permission object's entity_id and entity_type"
-    task :populate_permission_entity_id, [:page_size, :page] => :environment do |t, args|
-      page_size = args[:page_size].blank? ? 999999 : args[:page_size].to_i
-      page = args[:page].blank? ? 1 : args[:page].to_i
-
-      require_relative '../../app/models/visualization/collection'
-
-      progress_each =  (page_size > 10) ? (page_size / 10).ceil : 1
-      collection = CartoDB::Visualization::Collection.new
-
-
-      begin
-        items = collection.fetch(page: page, per_page: page_size)
-
-        count = items.count
-        puts "\n>Running :populate_permission_entity_id for page #{page} (#{count} vis)" if count > 0
-        items.each_with_index { |vis, i|
-          puts ">Processed: #{i}/#{count} - page #{page}" if i % progress_each == 0
-          unless vis.permission_id.nil?
-            begin
-              raise 'No owner' if vis.user.nil?
-              if vis.permission.entity_id.nil?
-                perm = vis.permission
-                perm.entity = vis
-                perm.save
-              end
-            rescue => e
-              owner_id = vis.user.nil? ? 'nil' : vis.user.id
-              message = "FAIL u:#{owner_id} v:#{vis.id}: #{e.message}"
-              puts message
-              log(message, :populate_permission_entity_id.to_s)
-            end
-          end
-        }
-        page += 1
-      end while count > 0
-
-      puts "\n>Finished :populate_permission_entity_id"
     end
 
     # Executes a ruby code proc/block on all existing users, outputting some info
@@ -882,6 +862,9 @@ namespace :cartodb do
         organization.display_name = ENV['ORGANIZATION_DISPLAY_NAME']
         organization.seats = ENV['ORGANIZATION_SEATS']
         organization.quota_in_bytes = ENV['ORGANIZATION_QUOTA']
+        if ENV['BUILDER_ENABLED'] == "true"
+          organization.builder_enabled = true
+        end
         organization.save
       end
       uo = CartoDB::UserOrganization.new(organization.id, user.id)
@@ -902,6 +885,9 @@ namespace :cartodb do
         organization.display_name = ENV['ORGANIZATION_DISPLAY_NAME']
         organization.seats = ENV['ORGANIZATION_SEATS']
         organization.quota_in_bytes = ENV['ORGANIZATION_QUOTA']
+        if ENV['BUILDER_ENABLED'] == "true"
+          organization.builder_enabled = true
+        end
         organization.save
       end
     end
@@ -913,7 +899,7 @@ namespace :cartodb do
       u.password_confirmation = username
       u.username = username
       u.quota_in_bytes = quota_in_bytes
-      #u.database_host = ::Rails::Sequel.configuration.environment_for(Rails.env)['host']
+      #u.database_host = ::SequelRails.configuration.environment_for(Rails.env)['host']
 
       if organization.owner_id.nil?
         u.save(raise_on_failure: true)
@@ -1179,7 +1165,7 @@ namespace :cartodb do
       organizations = args[:organization_name].present? ? Organization.where(name: args[:organization_name]).all : Organization.all
       run_for_organizations_owner(organizations) do |owner|
         begin
-          owner.db_service.setup_owner_permissions
+          owner.db_service.grant_admin_permissions
         rescue => e
           puts "ERROR for #{owner.organization.name}: #{e.message}"
         end
@@ -1276,7 +1262,8 @@ namespace :cartodb do
         begin
           # We are working on the v2 which is only Nokia
           next if user.google_maps_geocoder_enabled?
-          usage_metrics = Carto::TableGeocoderFactory.get_geocoder_metrics_instance(user)
+          orgname = user.organization.nil? ? nil : user.organization.name
+          usage_metrics = CartoDB::GeocoderUsageMetrics.new(user.username, orgname)
           geocoding_calls = user.get_not_aggregated_geocoding_calls({from: date_from, to: date_to})
           geocoding_calls.each do |metric|
             usage_metrics.incr(:geocoder_here, :success_responses, metric[:processed_rows], metric[:date])
@@ -1305,6 +1292,120 @@ namespace :cartodb do
         user = ::User.where(username: args[:username]).first
         update_user_metadata(user)
         update_organization_metadata(user)
+      end
+    end
+
+    # usage:
+    #   bundle exec rake cartodb:db:connect_aggregation_fdw_tables[username]
+    desc 'Connect aggregation tables through FDW to user'
+    task :connect_aggregation_fdw_tables_to_user, [:username] => [:environment] do |task, args|
+      args.with_defaults(:username => nil)
+      raise 'Not a valid username' if args[:username].blank?
+      user = ::User.find(username: args[:username])
+      user.db_service.connect_to_aggregation_tables
+    end
+
+    # usage:
+    #   bundle exec rake cartodb:db:connect_aggregation_fdw_tables[orgname]
+    desc 'Connect aggregation tables through FDW to orgname'
+    task :connect_aggregation_fdw_tables_to_org, [:orgname] => [:environment] do |task, args|
+      args.with_defaults(:orgname => nil)
+      raise 'Not a valid orgname' if args[:orgname].blank?
+      org = ::Organization.find(name: args[:orgname])
+      org.users.each do |u|
+        begin
+          u.db_service.connect_to_aggregation_tables
+        rescue => e
+          puts "Error trying to connect  #{u.username}: #{e.message}"
+        end
+      end
+    end
+
+    desc 'Connect aggregation tables through FDW to builder users'
+    task :connect_aggregation_fdw_tables_to_builder_users => :environment do
+      unless Cartodb.get_config(:aggregation_tables).present?
+        raise "Aggregation tables not configured!"
+      end
+      # We're using a PostgreSQL cursor to avoid loading all the users
+      # in memory at once. (For ActiveRecord we'd use `find_each`)
+      User.where.use_cursor(rows_per_fetch: 100).each do |user|
+        if user.has_feature_flag?('editor-3')
+          begin
+            user.db_service.connect_to_aggregation_tables
+          rescue => e
+            puts "Error trying to connect #{user.username}: #{e.message}"
+            puts e.backtrace
+          end
+        end
+      end
+    end
+
+    desc 'Connect aggregation tables through FDW to all users'
+    task :connect_aggregation_fdw_tables_to_all_users => :environment do
+      unless Cartodb.get_config(:aggregation_tables).present?
+        raise "Aggregation tables not configured!"
+      end
+      # We're using a PostgreSQL cursor to avoid loading all the users
+      # in memory at once. (For ActiveRecord we'd use `find_each`)
+      User.where.use_cursor(rows_per_fetch: 100).each do |user|
+        begin
+          user.db_service.connect_to_aggregation_tables
+        rescue => e
+          puts "Error trying to connect #{user.username}: #{e.message}"
+          puts e.backtrace
+        end
+      end
+    end
+
+    # usage:
+    #   bundle exec rake cartodb:db:obs_quota_enterprise[1000]
+    desc 'Give data observatory quota to all the enterprise users'
+    task :obs_quota_enterprise, [:quota] => [:environment] do |task, args|
+      args.with_defaults(:quota => 1000)
+      raise 'Not a valid quota' if args[:quota].blank?
+      do_quota = args[:quota]
+      users = User.where("account_type ilike 'enterprise%' or account_type ilike 'partner'").all
+      puts "Number of enterprise users to process: #{users.size}"
+      users.each do |u|
+        begin
+          if u.organization_owner? && !u.organization.nil?
+            u.organization.obs_general_quota = do_quota if u.organization.obs_general_quota.to_i == 0
+            u.organization.obs_snapshot_quota = do_quota if u.organization.obs_snapshot_quota.to_i == 0
+            u.organization.save
+            puts "Organization #{u.organization.name} processed OK"
+          else
+            u.obs_general_quota = do_quota if u.obs_general_quota.to_i == 0
+            u.obs_snapshot_quota = do_quota if u.obs_snapshot_quota.to_i == 0
+            u.save
+            puts "User #{u.username} processed OK"
+          end
+        rescue => e
+          puts "Error trying to give DO quota to #{u.username}: #{e.message}"
+        end
+      end
+    end
+
+    desc 'Fix analysis table the_geom type'
+    task fix_analysis_the_geom_type: [:environment] do
+      total_users = User.count
+      current = 0
+      User.where.use_cursor(rows_per_fetch: 100).each do |user|
+        puts "User #{current += 1} / #{total_users}"
+        next if user.organization && user.organization.owner != user # Filter out admin not owner users
+        begin
+          user.in_database do |db|
+            db.fetch("SELECT DISTINCT f_table_schema, f_table_name FROM geometry_columns WHERE f_table_name LIKE 'analysis%' AND type = 'MULTIPOLYGON'").map { |r| { schema: r[:f_table_schema], table: r[:f_table_name] } }.each do |entry|
+              geom_types = db.fetch("SELECT DISTINCT ST_GeometryType(the_geom) AS geom_type FROM \"#{entry[:schema]}\".\"#{entry[:table]}\"").map { |r| r[:geom_type] }
+              if geom_types.size == 2 && geom_types.include?('ST_Polygon') && geom_types.include?('ST_MultiPolygon')
+                db.execute("UPDATE \"#{entry[:schema]}\".\"#{entry[:table]}\" SET the_geom = ST_Multi(the_geom) where ST_GeometryType(the_geom) = 'ST_Polygon'")
+              elsif geom_types.size >= 2
+                puts "Unexpected type of geometries found for user #{user.username}. Table \"#{entry[:schema]}\".\"#{entry[:table]}\": #{geom_types.join(', ')}"
+              end
+            end
+          end
+        rescue => e
+          puts "Error processing user #{user.username}: #{e.inspect}"
+        end
       end
     end
 

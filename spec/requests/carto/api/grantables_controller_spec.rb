@@ -72,14 +72,14 @@ describe Carto::Api::GrantablesController do
         per_page = 1
 
         # this expectation is based on known naming:
-        expected_ids = [@org_user_1.id, @org_user_2.id, group_1.id, group_2.id, @org_user_owner.id]
+        expected_ids = [group_1.id, group_2.id, @org_user_owner.id, @org_user_1.id, @org_user_2.id]
 
         expected_ids.each { |expected_id|
           page = expected_ids.index(expected_id) + 1
 
           get_json api_v1_grantables_index_url(user_domain: @org_user_owner.username, organization_id: @carto_organization.id, api_key: @org_user_owner.api_key), { page: page, per_page: per_page, order: 'name' }, @headers do |response|
             response.status.should == 200
-            response.body[:grantables][0]['id'].should eq(expected_id), "#{response.body[:grantables][0]['id']} != #{expected_id}. Failing page: #{page}"
+            response.body[:grantables][0]['id'].should eq(expected_id), "#{response.body[:grantables][0]['id']} != #{expected_id}. Failing page: #{page}"
             response.body[:grantables].length.should == per_page
             response.body[:total_entries].should == count_grantables(@carto_organization)
           end
@@ -96,7 +96,8 @@ describe Carto::Api::GrantablesController do
       end
 
       it 'can filter by name' do
-        group = @carto_organization.groups.first 
+        group = @carto_organization.groups.first
+
         get_json api_v1_grantables_index_url(user_domain: @org_user_owner.username, organization_id: @carto_organization.id, api_key: @org_user_owner.api_key), {q: group.display_name}, @headers do |response|
           response.status.should == 200
           response.body[:grantables].length.should == 1
@@ -105,6 +106,44 @@ describe Carto::Api::GrantablesController do
         end
       end
 
+      it 'filter by name with special characters uses them as literals' do
+        search_strings = ['%', '___'] # % and _ are special characters in LIKE operator matchers
+
+        search_strings.each do |q|
+          get_json api_v1_grantables_index_url(
+            user_domain: @org_user_owner.username,
+            organization_id: @carto_organization.id,
+            api_key: @org_user_owner.api_key
+          ), { q: q }, @headers do |response|
+            response.status.should == 200
+            response.body[:grantables].length.should == 0
+            response.body[:total_entries].should == 0
+          end
+        end
+      end
+
+      it "validates order param" do
+        [:id, :name, :type, :avatar_url, :organization_id, :updated_at].each do |param|
+          get_json api_v1_grantables_index_url(
+            order: param,
+            user_domain: @org_user_owner.username,
+            organization_id: @carto_organization.id,
+            api_key: @org_user_owner.api_key
+          ), {}, @headers do |response|
+            response.status.should == 200
+          end
+        end
+
+        get_json api_v1_grantables_index_url(
+          order: :invalid,
+          user_domain: @org_user_owner.username,
+          organization_id: @carto_organization.id,
+          api_key: @org_user_owner.api_key
+        ), {}, @headers do |response|
+          response.status.should == 400
+          response.body.fetch(:errors).should_not be_nil
+        end
+      end
     end
 
   end

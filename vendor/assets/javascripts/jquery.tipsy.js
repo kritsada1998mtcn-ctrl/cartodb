@@ -4,14 +4,15 @@
 // released under the MIT license
 //
 //  Changes:
-//  June 3 2013: Added the custom class before the calc of the position. @javier
+//  April 27 2016: fixed problem with element size.
+//  June 3 2013: Added the custom class before the calc of the position.
 
 (function($) {
 
   var MOVE_OFFSET = 6;
 
-  function maybeCall(thing, ctx) {
-    return (typeof thing == 'function') ? (thing.call(ctx)) : thing;
+  function maybeCall(thing, ctx, argument) {
+    return (typeof thing == 'function') ? (thing.call(ctx, argument)) : thing;
   };
 
   function isElementInDOM(ele) {
@@ -38,20 +39,20 @@
             $tip[0].className = 'tipsy'; // reset classname in case of dynamic gravity
             $tip.remove().css({top: 0, left: 0, visibility: 'hidden', display: 'block'}).prependTo(document.body);
 
-            // Modified by @javier so we can use custom class names
+            // Modified so we can use custom class names
             if (this.options.className) {
               $tip.addClass(maybeCall(this.options.className, this.$element[0]));
             }
 
-            //  Fixed by Arce
+            // Modified
             var pos = $.extend({}, this.$element.offset(), {
-              width: this.$element[0].offsetWidth,
-              height: this.$element[0].offsetHeight
+              width: this.$element[0].getBoundingClientRect().width,
+              height: this.$element[0].getBoundingClientRect().height
             });
 
             var actualWidth = $tip[0].offsetWidth,
             actualHeight = $tip[0].offsetHeight,
-            gravity = maybeCall(this.options.gravity, this.$element[0]);
+            gravity = maybeCall(this.options.gravity, this.$element[0], $tip[0]);
 
             var tp;
             switch (gravity.charAt(0)) {

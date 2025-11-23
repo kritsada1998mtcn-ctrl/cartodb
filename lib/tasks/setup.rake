@@ -2,7 +2,11 @@ namespace :cartodb do
   namespace :test do
     task :prepare do
       if (ENV['RAILS_ENV'] == "test")
-        Rake::Task['db:drop'].invoke &&
+        begin
+          Rake::Task['db:drop'].invoke
+        rescue Sequel::DatabaseConnectionError
+          puts "Not dropping DB (did not exist)"
+        end
         Rake::Task['db:create'].invoke &&
         Rake::Task['db:migrate'].invoke &&
         Rake::Task['cartodb:db:create_publicuser'].invoke
@@ -19,6 +23,9 @@ Setup cartodb database and creates a new user from environment variables:
   - ENV['SUBDOMAIN']: user subdomain
 DESC
     task :setup => ["rake:db:create", "rake:db:migrate", "cartodb:db:create_publicuser"] do
+    end
+
+    task :setup_user => :environment do
       raise "You should provide a valid e-mail"    if ENV['EMAIL'].blank?
       raise "You should provide a valid password"  if ENV['PASSWORD'].blank?
       raise "You should provide a valid subdomain" if ENV['SUBDOMAIN'].blank?
@@ -32,7 +39,11 @@ DESC
       u.password = ENV['PASSWORD']
       u.password_confirmation = ENV['PASSWORD']
       u.username = ENV['SUBDOMAIN']
-      u.database_host = ENV['DATABASE_HOST'] || ::Rails::Sequel.configuration.environment_for(Rails.env)['host']
+      u.database_host = ENV['DATABASE_HOST'] || ::SequelRails.configuration.environment_for(Rails.env)['host']
+
+      if ENV['BUILDER_ENABLED'] == "true"
+        u.builder_enabled = true
+      end
 
       u.save
 
@@ -41,7 +52,7 @@ DESC
     end
 
     task :create_dev_user =>
-      ["rake:db:create", "rake:db:migrate", "cartodb:db:create_publicuser"] do
+      ["cartodb:db:create_publicuser"] do
       raise "You should provide a valid e-mail"    if ENV['EMAIL'].blank?
       raise "You should provide a valid password"  if ENV['PASSWORD'].blank?
       raise "You should provide a valid subdomain" if ENV['SUBDOMAIN'].blank?
@@ -55,9 +66,13 @@ DESC
       user.password = ENV['PASSWORD']
       user.password_confirmation = ENV['PASSWORD']
       user.username = ENV['SUBDOMAIN']
-      user.database_host = ENV['DATABASE_HOST'] || ::Rails::Sequel.configuration.environment_for(Rails.env)['host']
+      user.database_host = ENV['DATABASE_HOST'] || ::SequelRails.configuration.environment_for(Rails.env)['host']
 
-      if !user.errors.empty?
+      if ENV['BUILDER_ENABLED'] == "true"
+        user.builder_enabled = true
+      end
+
+      unless user.valid?
         puts
         puts 'There are some problems with the info that you provided to create the new user:'
         user.errors.full_messages.each do |error|
@@ -104,7 +119,7 @@ DESC
     task :create_publicuser => :environment do
       [CartoDB::PUBLIC_DB_USER, CartoDB::TILE_DB_USER].each do |u|
         puts "Creating user #{u}"
-        ::Rails::Sequel.connection.run("DO $$
+        ::SequelRails.connection.run("DO $$
         BEGIN
           IF NOT EXISTS ( SELECT * FROM pg_user WHERE usename = '#{u}') THEN
             CREATE USER #{u}; -- TODO: with password '...'
@@ -131,10 +146,15 @@ DESC
         u.password_confirmation = ENV['PASSWORD']
         u.username = ENV['SUBDOMAIN']
         if ENV['DATABASE_HOST'].blank?
-          u.database_host = ::Rails::Sequel.configuration.environment_for(Rails.env)['host']
+          u.database_host = ::SequelRails.configuration.environment_for(Rails.env)['host']
         else
           u.database_host = ENV['DATABASE_HOST']
         end
+
+        if ENV['BUILDER_ENABLED'] == "true"
+          u.builder_enabled = true
+        end
+
         u.save
         if u.new?
           raise u.errors.inspect

@@ -11,6 +11,10 @@ describe Carto::User do
     def get_user_by_id(user_id)
       Carto::User.where(id: user_id).first
     end
+
+    def create_user
+      FactoryGirl.create(:carto_user)
+    end
   end
 
   describe '#needs_password_confirmation?' do
@@ -33,27 +37,33 @@ describe Carto::User do
     end
   end
 
-  describe '#dedicated_support, #remove_logo and #soft_geocoding_limit' do
+  describe '#soft_geocoding_limit' do
     before(:all) do
       @carto_user = FactoryGirl.build(:carto_user)
     end
 
     it 'false for free accounts' do
-      @carto_user.account_type = Carto::AccountType::FREE
+      @carto_user.account_type = 'FREE'
 
-      @carto_user.dedicated_support?.should be_false
-      @carto_user.remove_logo?.should be_false
       @carto_user.soft_geocoding_limit?.should be_false
     end
 
-    it 'true for BASIC and PRO accounts' do
-      [Carto::AccountType::BASIC, Carto::AccountType::PRO].each do |account_type|
+    it 'false for BASIC and PRO accounts' do
+      ['BASIC', 'PRO'].each do |account_type|
         @carto_user.account_type = account_type
 
-        @carto_user.dedicated_support?.should be_true
-        @carto_user.remove_logo?.should be_true
-        @carto_user.soft_geocoding_limit?.should be_true
+        @carto_user.soft_geocoding_limit?.should be_false
       end
+    end
+  end
+
+  describe '#default_dataset_privacy' do
+    it 'returns the equivalent visualization privacy' do
+      no_private_tables_user = FactoryGirl.build(:carto_user, private_tables_enabled: false)
+      no_private_tables_user.default_dataset_privacy.should eq Carto::Visualization::PRIVACY_PUBLIC
+
+      private_tables_user = FactoryGirl.build(:carto_user, private_tables_enabled: true)
+      private_tables_user.default_dataset_privacy.should eq Carto::Visualization::PRIVACY_PRIVATE
     end
   end
 end

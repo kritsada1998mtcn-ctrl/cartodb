@@ -3,13 +3,13 @@ Installation
 ============
 
 .. warning::
-  CartoDB is guaranteed to run without any issue in Ubuntu 12.04 x64. This documentation describes de process to install CartoDB in this specific OS version.
+  CartoDB works with Ubuntu 16.04 x64. This documentation describes the process to install CartoDB in this specific OS version.
 
   However this doesn't mean that it won't work with other Operating Systems or other Ubuntu. There are also many successful installations on Amazon EC2, Linode, dedicated instances and development machines running OS X and Ubuntu 12.04+.
 
 System requirements
 -------------------
-Besides the OS version mentioned in the introduction, there are some systems requirements needed before starting with the installation of the stack. Also this process assumes that you have enough permissions in the system to run successfully most part of the commands of this doc.
+Besides the OS version mentioned in the introduction, there are some system requirements needed before starting with the installation of the stack. Also this process assumes that you have enough permissions in the system to run successfully most part of the commands of this doc.
 
 System locales
 ~~~~~~~~~~~~~~
@@ -21,14 +21,31 @@ Installations assume you use UTF8. You can set the locale by doing this:
   sudo locale-gen en_US.UTF-8
   sudo update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
+APT tools
+~~~~~~~~~
+In order to easily install some packages repositories sources is suggested to install this tool:
+
+.. code-block:: bash
+
+  sudo apt-get install python-software-properties
+
 Build essentials
 ~~~~~~~~~~~~~~~~
 
-Althoug we try to maintain packaged versions of almost every part of the stack, there are some parts like gems or npm packages that need some development tools in the system in order to compile. You can install all the needed build tools by doing this:
+Although we try to maintain packaged versions of almost every part of the stack, there are some parts like gems or npm packages that need some development tools in the system in order to compile. You can install all the needed build tools by doing this:
 
 .. code-block:: bash
- 
+
   sudo apt-get install autoconf binutils-doc bison build-essential flex
+
+You will also need to install GCC 4.9 in order to build some Node modules later. You can install it doing this:
+
+.. code-block:: bash
+
+  sudo add-apt-repository ppa:cartodb/gcc && sudo apt-get update
+  sudo apt-get install gcc-4.9 g++-4.9
+  export CC=/usr/bin/gcc-4.9
+  export CXX=/usr/bin/g++-4.9
 
 GIT
 ~~~
@@ -39,52 +56,43 @@ You will need git commands in order to handle some repositories and install some
 
   sudo apt-get install git
 
-APT tools
-~~~~~~~~~
-In order to easily install some packages repositories sources is suggested to install this tool:
-
-.. code-block:: bash
-
-  sudo apt-get install python-software-properties 
-
-
 PostgreSQL
 ----------
 
 * Add PPA repository
 
   .. code-block:: bash
-  
-    sudo add-apt-repository ppa:cartodb/postgresql-9.3 && sudo apt-get update
+
+    sudo add-apt-repository ppa:cartodb/postgresql-9.5 && sudo apt-get update
 
 
 * Install client packages
 
   .. code-block:: bash
-  
+
     sudo apt-get install libpq5 \
                          libpq-dev \
-                         postgresql-client-9.3 \
+                         postgresql-client-9.5 \
                          postgresql-client-common
 
 * Install server packages
 
   .. code-block:: bash
-  
-    sudo apt-get install postgresql-9.3 \ 
-                         postgresql-contrib-9.3 \
-                         postgresql-server-dev-9.3 \
-                         postgresql-plpython-9.3
 
-  
+    sudo apt-get install postgresql-9.5 \
+                         postgresql-contrib-9.5 \
+                         postgresql-server-dev-9.5 \
+                         postgresql-plpython-9.5
 
 
-PostgreSQL access authorization is managed through pg_hba.conf configuration file, which is normally in /etc/postgresql/9.3/main/pg_hba.conf. Here it's defined how the users created in postgresql cluster can access the server. This involves several aspects like type of authentication (md5, no password, etc..) or source IP of the connection. In order to simplify the process of the installation we are going to allow connections with postgres user from localhost without authentication. Of course this can be configured in a different way at any moment but changes here should imply changes in database access configuration of CartoDB apps. 
+
+
+PostgreSQL access authorization is managed through pg_hba.conf configuration file, which is normally in /etc/postgresql/9.5/main/pg_hba.conf. Here it's defined how the users created in postgresql cluster can access the server. This involves several aspects like type of authentication (md5, no password, etc..) or source IP of the connection. In order to simplify the process of the installation we are going to allow connections with postgres user from localhost without authentication. Of course this can be configured in a different way at any moment but changes here should imply changes in database access configuration of CartoDB apps.
 
 This is the pg_hba.conf with the no password access from localhost:
 
   .. code-block:: bash
-  
+
     local   all             postgres                                trust
     local   all             all                                     trust
     host    all             all             127.0.0.1/32            trust
@@ -92,18 +100,18 @@ This is the pg_hba.conf with the no password access from localhost:
 For these changes to take effect, you'll need to restart postgres:
 
   .. code-block:: bash
-  
+
     sudo service postgresql restart
 
-  
+
 
 * Create some users in PostgreSQL. These users are used by some CartoDB apps internally
 
   .. code-block:: bash
-  
+
     sudo createuser publicuser --no-createrole --no-createdb --no-superuser -U postgres
     sudo createuser tileuser --no-createrole --no-createdb --no-superuser -U postgres
-    
+
 * Install CartoDB postgresql extension. This extension contains functions that are used by different parts of the CartoDB platform, included the Editor and the SQL and Maps API.
 
   .. code-block:: bash
@@ -112,40 +120,40 @@ For these changes to take effect, you'll need to restart postgres:
     cd cartodb-postgresql
     git checkout <LATEST cartodb-postgresql tag>
     sudo make all install
- 
+
 GIS dependencies
 ----------------
 
 * Add GIS PPA
 
   .. code-block:: bash
-  
+
     sudo add-apt-repository ppa:cartodb/gis && sudo apt-get update
 
 * Install Proj
-    
+
   .. code-block:: bash
-  
-    sudo apt-get install proj proj-bin proj-data libproj-dev 
+
+    sudo apt-get install proj proj-bin proj-data libproj-dev
 
 * Install JSON
 
   .. code-block:: bash
-  
+
     sudo apt-get install libjson0 libjson0-dev python-simplejson
 
 * Install GEOS
 
   .. code-block:: bash
-  
+
     sudo apt-get install libgeos-c1v5 libgeos-dev
 
 * Install GDAL
 
   .. code-block:: bash
-      
+
     sudo apt-get install gdal-bin libgdal1-dev libgdal-dev
-    sudo apt-get install ogr2ogr2-static-bin
+    sudo apt-get install gdal2.1-static-bin
 
 
 PostGIS
@@ -154,14 +162,14 @@ PostGIS
 * Install PostGIS
 
   .. code-block:: bash
-      
+
     sudo apt-get install libxml2-dev
-    sudo apt-get install liblwgeom-2.1.8 postgis postgresql-9.3-postgis-2.2 postgresql-9.3-postgis-scripts
+    sudo apt-get install liblwgeom-2.2.2 postgis postgresql-9.5-postgis-2.2 postgresql-9.5-postgis-scripts
 
 * Initialize template postgis database. We create a template database in postgresql that will contain the postgis extension. This way, every time CartoDB creates a new user database it just clones this template database
 
   .. code-block:: bash
-      
+
     sudo createdb -T template0 -O postgres -U postgres -E UTF8 template_postgis
     sudo createlang plpgsql -U postgres -d template_postgis
     psql -U postgres template_postgis -c 'CREATE EXTENSION postgis;CREATE EXTENSION postgis_topology;'
@@ -170,7 +178,7 @@ PostGIS
 * Run an installcheck to verify the database has been installed properly
 
   .. code-block:: bash
-      
+
    sudo PGUSER=postgres make installcheck # to run tests
 
   Check https://github.com/cartodb/cartodb-postgresql for further reference
@@ -178,9 +186,9 @@ PostGIS
 * Restart PostgreSQL after all this process
 
   .. code-block:: bash
-      
+
     sudo service postgresql restart
-  
+
 
 Redis
 -----
@@ -190,13 +198,13 @@ Redis 3+ is needed.
 * Add redis PPA
 
   .. code-block:: bash
-   
+
     sudo add-apt-repository ppa:cartodb/redis && sudo apt-get update
 
 * Install redis
 
   .. code-block:: bash
-   
+
     sudo apt-get install redis-server
 
 .. warning::
@@ -213,22 +221,34 @@ NodeJS is required by different parts of the stack. The more significant are the
 * Add the PPA
 
   .. code-block:: bash
-   
-    sudo add-apt-repository ppa:cartodb/nodejs-010 && sudo apt-get update
 
-* Install NodeJS 
+    sudo add-apt-repository ppa:cartodb/nodejs && sudo apt-get update
+
+* Install NodeJS
 
   .. code-block:: bash
-   
-    sudo apt-get install nodejs 
 
-  Note this should install both NodeJS 0.10.26 and npm 1.4.3. You can verify the installation went as expected with:
-  
+    sudo apt-get install nodejs
+
+  Note this should install both NodeJS 6.9.2 and npm 3.10.9. You can verify the installation went as expected with:
+
   .. code-block:: bash
-   
+
     nodejs -v
     npm -v
 
+If npm version is wrong you should update it:
+
+  .. code-block:: bash
+
+    npm install npm@3.10.9 -g
+
+We will also install some development libraries that will be necessary to build some Node modules:
+
+  .. code-block:: bash
+
+    sudo apt-get install libpixman-1-0 libpixman-1-dev
+    sudo apt-get install libcairo2-dev libjpeg-dev libgif-dev libpango1.0-dev
 
 SQL API
 -------
@@ -244,16 +264,16 @@ SQL API
 * Install npm dependencies
 
   .. code-block:: bash
-  
+
     npm install
 
 * Create configuration. The name of the filename of the configuration must be the same than the environment you are going to use to start the service. Let's assume it's development.
 
   .. code-block:: bash
-  
+
     cp config/environments/development.js.example config/environments/development.js
 
-  
+
 * Start the service. The second parameter is always the environment if the service. Remember to use the same you used in the configuration.
 
   .. code-block:: bash
@@ -275,27 +295,17 @@ MAPS API
 * Install npm dependencies
 
   .. code-block:: bash
-  
+
     npm install
-
-.. warning::
-    If this fails due to package cairo not found in the pkg-config search path, you can install it like this
-
-    ::
-
-        $  sudo apt-get install libpango1.0-dev
-
-    After this change, re-run npm install, and it should be OK.
-  
 
 
 * Create configuration. The name of the filename of the configuration must be the same than the environment you are going to use to start the service. Let's assume it's development.
 
   .. code-block:: bash
-  
+
     cp config/environments/development.js.example config/environments/development.js
 
-  
+
 * Start the service. The second parameter is always the environment of the service. Remember to use the same you used in the configuration.
 
   .. code-block:: bash
@@ -320,7 +330,7 @@ Ruby
   .. code-block:: bash
 
     sudo apt-get install libreadline6-dev openssl
-  
+
 * Install ruby 2.2.3. CartoDB has been deeply tested with Ruby 2.2.
 
   .. code-block:: bash
@@ -331,7 +341,7 @@ Ruby
 
   .. code-block:: bash
 
-    export PATH=$PATH:/opt/rubies/ruby-2.2.3/bin
+    export PATH=/opt/rubies/ruby-2.2.3/bin:$PATH
 
 * Install bundler. Bundler is an app used to manage ruby dependencies. It is needed by CartoDB's editor
 
@@ -374,14 +384,14 @@ Editor
 * Install dependencies
 
   .. code-block:: bash
-  
+
     sudo apt-get install imagemagick unp zip
     RAILS_ENV=development bundle install
     npm install
     sudo pip install --no-use-wheel -r python_requirements.txt
 
 .. warning::
-    If this fails due to the installation of the gdal package not finding Python.h, you'll need to do this:
+    If this fails due to the installation of the gdal package not finding Python.h or any other header file, you'll need to do this:
 
     ::
 
@@ -389,26 +399,32 @@ Editor
         export C_INCLUDE_PATH=/usr/include/gdal
         export PATH=$PATH:/usr/include/gdal
 
-  After this, re-run the pip install command, and it should work. If gdal keeps failing, see more information here: http://gis.stackexchange.com/questions/28966/python-gdal-package-missing-header-file-when-installing-via-pip
-  
+    After this, re-run the pip install command. Variables can be passed to sudo if exporting them and re-running ``pip install`` doesn't work:
+
+    .. code-block:: bash
+
+       sudo CPLUS_INCLUDE_PATH=/usr/include/gdal C_INCLUDE_PATH=/usr/include/gdal PATH=$PATH:/usr/include/gdal pip install --no-use-wheel -r python_requirements.txt
+
+    If gdal keeps failing, see more information here: http://gis.stackexchange.com/questions/28966/python-gdal-package-missing-header-file-when-installing-via-pip
+
 * Add the grunt command to the PATH
 
   .. code-block:: bash
-    
+
     export PATH=$PATH:$PWD/node_modules/grunt-cli/bin
 
 * Install all necesary gems
 
   .. code-block:: bash
-    
+
     bundle install
 
 
 * Precompile assets. Note that the last parameter is the environment used to run the application. It must be the same used in the Maps and SQL APIs
 
   .. code-block:: bash
-    
-    bundle exec grunt --environment development
+
+    bundle exec grunt --environment=development
 
 
 * Create configuration files
@@ -422,9 +438,8 @@ Editor
 
   .. code-block:: bash
 
+    RAILS_ENV=development bundle exec rake db:create
     RAILS_ENV=development bundle exec rake db:migrate
-    RAILS_ENV=development bundle exec rake db:setup
-
 
 * Start the redis-server that allows access to the SQL and Maps APIs:
 
@@ -441,5 +456,5 @@ Editor
 * In a different process/console start the resque process
 
   .. code-block:: bash
-  
+
     RAILS_ENV=development bundle exec ./script/resque

@@ -28,4 +28,23 @@ describe Carto::Group do
 
   end
 
+  describe 'organization behaviour' do
+    include_context 'organization with users helper'
+    include Carto::Factories::Visualizations
+
+    before(:all) do
+      @group = FactoryGirl.create(:random_group, organization_id: @organization.id)
+    end
+
+    after(:all) do
+      @group.destroy
+    end
+
+    it 'generates auth_tokens and save them for future accesses' do
+      token = @group.get_auth_token
+      token.should be
+      @group.reload
+      @group.get_auth_token.should eq token
+    end
+  end
 end

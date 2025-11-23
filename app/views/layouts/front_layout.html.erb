@@ -7,14 +7,16 @@
   <head>
     <meta charset="utf-8">
     <meta content="IE=edge,chrome=1" http-equiv="X-UA-Compatible">
-    <title>CartoDB | Login</title>
+    <title>CARTO | Login</title>
     <%= favicon_link_tag "/favicons/favicon.ico" %>
     <%= stylesheet_link_tag 'old_common.css', 'front.css', :media => 'all' %>
+    <%= insert_google_tag_manager('primary') %>
   </head>
   <body class="sessions">
+    <%= insert_google_tag_manager_no_script('primary') %>
     <%= yield %>
-    <%= yield :js %>
     <%= insert_trackjs() %>
+    <%= yield :js %>
     <%= insert_google_analytics('primary', true) %>
   </body>
 </html>

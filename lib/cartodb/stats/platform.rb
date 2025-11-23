@@ -9,7 +9,7 @@ module CartoDB
 
       # Total users that aren't FREE
       def pay_users
-        Carto::AccountType.new.pay_users
+        ::User.where("upper(account_type) != 'FREE'").count
       end
 
       # Total datasets
@@ -30,7 +30,7 @@ module CartoDB
       def shared_objects_among_orgs
         shared_objects = {}
         visualization_types_sql = "SELECT COUNT(*), visualizations.type FROM shared_entities, visualizations WHERE entity_id=visualizations.id::uuid GROUP BY type"
-        db = ::Rails::Sequel.configuration.environment_for(Rails.env)
+        db = ::SequelRails.configuration.environment_for(Rails.env)
         conn = Sequel.connect(db)
         conn.fetch(visualization_types_sql).all.each do |vt|
           if vt[:type] == 'table'
@@ -45,18 +45,18 @@ module CartoDB
 
       # Total visualizations
       def visualizations
-        Carto::Visualization.where("lower(type) = 'derived'").count
+        Carto::Visualization.where("type = 'derived'").count
       end
 
       # Total maps
       def maps
-        return Carto::Visualization.where("lower(type) != 'remote'").count
+        Carto::Visualization.where("type in ('derived', 'table', 'slide')").count
       end
 
       # Total active users
       def active_users
-        active_users = "SELECT COUNT(DISTINCT(user_id)) FROM visualizations WHERE lower(type)!='remote'"
-        db = ::Rails::Sequel.configuration.environment_for(Rails.env)
+        active_users = "select count(distinct(user_id)) from visualizations where type in ('derived', 'table', 'slide')"
+        db = ::SequelRails.configuration.environment_for(Rails.env)
         conn = Sequel.connect(db)
         au_count = conn.fetch(active_users).first[:count]
         conn.disconnect

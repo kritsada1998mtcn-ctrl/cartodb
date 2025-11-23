@@ -1,25 +1,33 @@
+<% require_dependency 'static_maps_url_helper' %>
+
 <%= content_for(:page_title) do %><%= @table.name.gsub(/_/," ") %><% end %>
 
-<%= content_for(:description) do %><%= @table.description ? "#{@table.description}. Map created by #{@name} in CartoDB" : "Map created by #{@name} in CartoDB" %><% end %>
+<%= content_for(:description) do %><%= @table.description ? "#{@table.description}. Map created by #{@name} in CARTO" : "Map created by #{@name} in CARTO" %><% end %>
 
 <%= content_for(:twitter_card) do %><%= Carto::StaticMapsURLHelper.new.url_for_static_map(request, @table.table_visualization, 560, 300) %><% end %>
 <%= content_for(:facebook_card) do %><%= Carto::StaticMapsURLHelper.new.url_for_static_map(request, @table.table_visualization, 1200, 630) %><% end %>
 
 <%= content_for(:css) do %>
-  <%= stylesheet_link_tag 'cartodb', 'common', 'public_table', 'public_map' %>
+  <% if @has_new_dashboard %>
+    <%= stylesheet_link_tag 'common', 'public_table_new', 'public_map' %>
+  <% else %>
+    <%= stylesheet_link_tag 'cartodb', 'common', 'public_table', 'public_map' %>
+  <% end %>
 <% end %>
 
 <% content_for(:js) do %>
   <% if @table.map.provider == 'googlemaps' %>
-    <script type="text/javascript"
-      src="//maps.googleapis.com/maps/api/js?sensor=false&v=3.12&<%= @user.google_maps_query_string %>">
-    </script>
+    <%= insert_google_maps(@user.google_maps_query_string) %>
   <% end %>
 
-  <%= javascript_include_tag 'cdb.js', 'templates.js', 'public_map_deps', 'new_public_table', 'public_table.js' %>
+  <% if @has_new_dashboard %>
+    <%= javascript_include_tag 'common_dashboard.js', 'public_table_new_vendor.js', 'public_table_new.js' %>
+  <% else %>
+    <%= javascript_include_tag 'cdb.js', 'templates.js', 'public_map_deps', 'new_public_table', 'public_table.js' %>
+  <% end %>
 
   <script>
-    var table_name          = '<%=raw @table.owner.sql_safe_database_schema %>.<%= @table.name %>';
+    var table_name          = '<%=raw @table.qualified_table_name %>';
     var table_id            = '<%= @table.id %>';
     var schema              = <%= safe_js_object @table.schema.to_json %>;
     var user_name           = '<%= @user.username %>';
@@ -39,26 +47,28 @@
       debug = true;
     <% end %>
 
-    cdb.config.set('debug', debug);
+    <% unless @has_new_dashboard %>
+      cdb.config.set('debug', debug);
 
-    $(function() {
-      <% if Cartodb.config[:graphite_public] %>
-        if (location.protocol.indexOf('https') === -1) {
-          jQuery.getScript('<%= javascript_path "statsc.js" %>', function(ready) {
-            statsc.connect('http://<%= Cartodb.config[:graphite_public]['host'] %>:<%= Cartodb.config[:graphite_public]['port'] %>/');
-              cartodb.core.Profiler.backend(function () {
-              statsc.send.apply(statsc, arguments);
+      $(function() {
+        <% if Cartodb.config[:graphite_public] %>
+          if (location.protocol.indexOf('https') === -1) {
+            jQuery.getScript('<%= javascript_path "statsc.js" %>', function(ready) {
+              statsc.connect('http://<%= Cartodb.config[:graphite_public]['host'] %>:<%= Cartodb.config[:graphite_public]['port'] %>/');
+                cartodb.core.Profiler.backend(function () {
+                statsc.send.apply(statsc, arguments);
+              })
+              // stop sending stats after 11 seconds
+              // statsc send stats in 5 secs interval so allow to send at least twice
+              setTimeout(function() {
+                  cartodb.core.Profiler.backend(null);
+              }, 11*1000);
+
             })
-            // stop sending stats after 11 seconds
-            // statsc send stats in 5 secs interval so allow to send at least twice
-            setTimeout(function() {
-                cartodb.core.Profiler.backend(null);
-            }, 11*1000);
-
-          })
-        }
-      <% end %>
-    });
+          }
+        <% end %>
+      });
+    <% end %>
   </script>
 
 <% end %>
@@ -66,24 +76,29 @@
 <%= content_for(:content) do %>
   <%= render 'admin/shared/public_header' %>
 
-  <div class="PublicMap-map js-map" id="map">
+  <div class="CDB-Text PublicMap-map js-map" id="map">
     <div class="Spinner Spinner--center js-spinner"></div>
 
-    <div class="panes pane_table u-hideOnTablet"></div>
-    <div class="panes pane_map u-hideOnTablet"></div>
-    <div class="panes panes_mobile u-showOnTablet"></div>
+    <% if @has_new_dashboard %>
+      <div class="panes pane_table"></div>
+      <div class="panes pane_map"></div>
+    <% else %>
+      <div class="panes pane_table u-hideOnTablet"></div>
+      <div class="panes pane_map u-hideOnTablet"></div>
+      <div class="panes panes_mobile u-showOnTablet"></div>
+    <% end %>
 
     <div class="navigation u-showOnTablet">
       <ul>
-        <li><a href="#/table" class=" tab selected u-valign"><i class="Navmenu-tableIcon CDB-IconFont CDB-IconFont-table u-iblock u-malign"></i></a></li>
-        <li><a href="#/map" class="u-valign"><i class="CDB-IconFont CDB-IconFont-map u-iblock u-malign"></i></a></li>
+        <li><a href="#/table" data-pane="table" class=" tab selected u-valign"><i class="Navmenu-tableIcon CDB-IconFont CDB-IconFont-table u-iblock u-malign"></i></a></li>
+        <li><a href="#/map" data-pane="map" class="u-valign"><i class="CDB-IconFont CDB-IconFont-map u-iblock u-malign"></i></a></li>
       </ul>
     </div>
   </div>
 
   <%# Legacy from current embed %>
   <div class="NotSupportedDialog" id="not_supported_dialog" style="display: none">
-    <h2 class="NotSupportedDialog-title">CartoDB</h2>
+    <h2 class="NotSupportedDialog-title">CARTO</h2>
     <p class="NotSupportedDialog-desc">This visualization only works in modern browsers. Upgrade yours and enjoy.</p>
     <ul class="NotSupportedDialog-list">
       <li class="NotSupportedDialog-item"><a class="NotSupportedDialog-itemLink NotSupportedDialog-itemLink--Safari" href="http://www.apple.com/safari/" class="safari">Safari</a></li>
@@ -94,7 +109,7 @@
 
   <div class="separator bottom"></div>
 
-  <div class="Navmenu js-Navmenu">
+  <div class="CDB-Text CDB-Size-medium Navmenu js-Navmenu">
     <div class="u-inner">
       <div class="PublicMap-block">
         <div class="PublicMap-gradient"></div>
@@ -150,8 +165,8 @@
 
             <% if !Cartodb.config[:cartodb_com_hosted].present? %>
               <li class="Navmenu-item u-hideOnTablet">
-                <a class="Button Button--main Navmenu-editLink Navmenu-editLink--edit Navmenu-editLink--oneclick is-active js-oneclick" href="http://oneclick.cartodb.com/?file=<%= CGI.escape( @export_sql_api_url ) %>&provider=<%= URI.encode(@table.owner.username) %>&logo=<%= URI.encode(@avatar_url) %>">Create map</a>
-                <a href="<%= CartoDB.url(self, 'public_tables_show', {id: @table.name}, @table.owner.organization ? @table.owner : nil) %>" class="Button Button--main Navmenu-editLink Navmenu-editLink--edit Navmenu-editLink--oneclick js-edit">Edit in CartoDB</a>
+                <a class="Button Button--main Navmenu-editLink Navmenu-editLink--edit Navmenu-editLink--oneclick is-active js-oneclick" href="https://oneclick.carto.com/?file=<%= CGI.escape( @export_sql_api_url ) %>&provider=<%= URI.encode(@table.owner.username) %>&logo=<%= URI.encode(@avatar_url) %>">Create map</a>
+                <a href="<%= CartoDB.url(self, 'public_tables_show', {id: @table.name}, @table.owner.organization ? @table.owner : nil) %>" class="Button Button--main Navmenu-editLink Navmenu-editLink--edit Navmenu-editLink--oneclick js-edit">Edit in CARTO</a>
               </li>
             <% end %>
           </ul>
@@ -160,14 +175,14 @@
     </div>
   </div>
 
-  <div class="PublicMap-secondary PublicMap-secondary--bottom">
+  <div class="CDB-Text PublicMap-secondary PublicMap-secondary--bottom">
     <div class="u-inner">
       <div class="PublicMap-block">
         <div class="PublicMap-leftBlock PublicMap-leftBlock--large">
           <div class="js-user-meta">
             <h1 class="PublicMap-title js-PublicMap-title Title Title--m"><%= @visualization.display_name_or_name %></h1>
-            <% if @visualization.description_clean %>
-              <div class="PublicMap-description"><%= raw @visualization.description_html_safe %></div>
+            <% if @visualization.description.present? %>
+              <div class="PublicMap-description"><%= raw markdown_html_safe(@visualization.description) %></div>
             <% end %>
 
             <div class="PublicMap-meta">
@@ -201,7 +216,7 @@
                   <li class="PublicMap-metaItem">
                     <i class="PublicMap-metaIcon CDB-IconFont CDB-IconFont-anchor"></i>
                     <%# Keep on one line to avoid unwanted spaces %>
-                    <span title="<%= @visualization.visualization.source %>"><%= raw @visualization.source_html_safe %></span>
+                    <span title="<%= @visualization.visualization.source %>"><%= raw markdown_html_safe(@visualization.source) %></span>
                   </li>
                 <% end %>
               </ul>
@@ -225,17 +240,17 @@
         <% @total_visualizations.last(3).each do |vis| %>
           <li class="MapsList-item">
             <div class="MapCard" data-vis-id="<%= vis.id %>" data-vis-owner-name="<%= vis.user[:username] %>">
-              <a href="<%= CartoDB.url(self, 'public_visualizations_public_map', {id: vis.id}, user) %>" class="MapCard-header js-header">
+              <a href="<%= CartoDB.url(self, 'public_visualizations_public_map', {id: vis.id}, vis.user) %>" class="MapCard-header js-header">
                 <div class="MapCard-loader"></div>
               </a>
               <div class="MapCard-content MapCard-content--compact">
                 <div class="MapCard-contentBody">
                   <div class="MapCard-contentBodyRow MapCard-contentBodyRow--flex">
-                    <h3 class="MapCard-title DefaultTitle">
+                    <h3 class="MapCard-title DefaultTitle CDB-Text is-semibold CDB-Size-large">
                       <a href="<%= CartoDB.url(self, 'public_visualizations_public_map', {id: vis.id}, vis.user) %>" class="DefaultTitle-link u-ellipsLongText" title="<%= vis.name %>"><%= vis.name %></a>
                     </h3>
                   </div>
-                  <div class="MapCard-contentFooterTimeDiff DefaultTimeDiff">
+                  <div class="MapCard-contentFooterTimeDiff DefaultTimeDiff CDB-Text CDB-Size-medium u-altTextColor">
                     <i class="CDB-IconFont CDB-IconFont-clock DefaultTimeDiff-icon"></i>
                     <%= time_ago_in_words(vis.updated_at) %> ago
                   </div>
@@ -260,22 +275,24 @@
     <% end %>
 
     <%# DISQUS %>
-    <div class="u-inner">
-      <div class="PublicMap-block PublicMap-info">
-        <div id="disqus_thread"></div>
-        <script type="text/javascript">
-          var disqus_shortname  = '<%= @disqus_shortname %>';
-          var disqus_identifier = '<%= @visualization.id %>';
+    <% if @table.owner.disqus_shortname.present? %>
+      <div class="u-inner">
+        <div class="PublicMap-block PublicMap-info">
+          <div id="disqus_thread"></div>
+          <script type="text/javascript">
+            var disqus_shortname  = '<%= @disqus_shortname %>';
+            var disqus_identifier = '<%= @visualization.id %>';
 
-          (function() {
-            var dsq = document.createElement('script'); dsq.type = 'text/javascript'; dsq.async = true;
-            dsq.src = '//' + disqus_shortname + '.disqus.com/embed.js';
-            (document.getElementsByTagName('head')[0] || document.getElementsByTagName('body')[0]).appendChild(dsq);
-          })();
-        </script>
+            (function() {
+              var dsq = document.createElement('script'); dsq.type = 'text/javascript'; dsq.async = true;
+              dsq.src = '//' + disqus_shortname + '.disqus.com/embed.js';
+              (document.getElementsByTagName('head')[0] || document.getElementsByTagName('body')[0]).appendChild(dsq);
+            })();
+          </script>
+        </div>
       </div>
     </div>
-  </div>
+  <% end %>
 
   <% if cartodb_com_hosted? %>
     <%= render 'admin/shared/footer', :light => true %>

@@ -4,13 +4,13 @@
     <%= favicon_link_tag "/favicons/favicon.ico" %>
     <title><%= yield :page_title %></title>
     <meta name="description" content="<%= yield :description %>">
-    <meta name="keywords" content="<%= @table.name.gsub(/ /,", ").gsub(/_/,", ") %>, datasets, maps, data visualization, spatial data, geospatial, cartodb">
+    <meta name="keywords" content="<%= @table.name.gsub(/ /,", ").gsub(/_/,", ") %>, datasets, maps, data visualization, spatial data, geospatial, carto">
     <meta name="author" content="<%= @table.owner.username %>">
     <meta charset='utf-8' />
     <meta name="viewport" content="initial-scale=1.0, user-scalable=no" />
 
     <meta property="og:title" content="<%= yield :title %>" />
-    <meta property="og:site_name" content="CartoDB" />
+    <meta property="og:site_name" content="CARTO" />
     <meta property="og:description" content="<%= yield :description %>" />
     <meta property="og:type" content="article" />
     <meta property="og:url" content="<%= request.original_url %>" />
@@ -32,15 +32,13 @@
     <meta name="twitter:image" content="<%= yield :twitter_card %>">
 
     <%= yield :css %>
-
-    <!--[if lt IE 9]>
-      <%= javascript_include_tag 'modernizr' %>
-    <![endif]-->
+    <%= insert_google_tag_manager('embeds') %>
   </head>
   <body class="public">
+    <%= insert_google_tag_manager_no_script('embeds') %>
     <%= yield :content %>
-    <%= yield :js %>
     <%= insert_trackjs('embeds') %>
+    <%= yield :js %>
     <%= insert_google_analytics('embeds', true) %>
     <%= insert_hubspot() %>
   </body>

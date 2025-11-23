@@ -21,31 +21,28 @@ describe Carto::Api::SynchronizationsController do
       @old_resque_inline_status = Resque.inline
       Resque.inline = false
       @user = create_user(
-        username: 'test',
-        email:    'client@example.com',
-        password: 'clientex',
         sync_tables_enabled: true
       )
       @api_key = @user.api_key
     end
 
     before(:each) do
-      @db = Rails::Sequel.connection
+      @db = SequelRails.connection
       Sequel.extension(:pagination)
 
-      CartoDB::Synchronization.repository  = DataRepository::Backend::Sequel.new(@db, :synchronizations)
+      CartoDB::Synchronization.repository = DataRepository::Backend::Sequel.new(@db, :synchronizations)
 
-      stub_named_maps_calls
+      bypass_named_maps
       delete_user_data @user
       @headers = {
-        'CONTENT_TYPE'  => 'application/json',
+        'CONTENT_TYPE' => 'application/json'
       }
-      host! 'test.localhost.lan'
+      host! "#{@user.username}.localhost.lan"
     end
 
     after(:all) do
       Resque.inline = @old_resque_inline_status
-      stub_named_maps_calls
+      bypass_named_maps
       @user.destroy
     end
 
@@ -89,7 +86,7 @@ describe Carto::Api::SynchronizationsController do
         last_response.status.should == 200
 
         response = JSON.parse(last_response.body)
-        response.fetch('state').should == 'created'
+        response.fetch('state').should == 'queued'
       end
     end
 
@@ -102,4 +99,3 @@ describe Carto::Api::SynchronizationsController do
   end
 
 end
-

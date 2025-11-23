@@ -3,7 +3,7 @@
 require 'active_record'
 
 require_relative '../../models/carto/shared_entity'
-require_relative '../../helpers/bounding_box_helper'
+require_dependency 'carto/bounding_box_utils'
 require_dependency 'carto/uuidhelper'
 
 # TODO: consider moving some of this to model scopes if convenient
@@ -48,6 +48,8 @@ class Carto::VisualizationQueryBuilder
   end
 
   def with_id_or_name(id_or_name)
+    raise 'VisualizationQueryBuilder: id or name supplied is nil' if id_or_name.nil?
+
     if is_uuid?(id_or_name)
       with_id(id_or_name)
     else
@@ -76,7 +78,7 @@ class Carto::VisualizationQueryBuilder
   end
 
   def without_raster
-    @excluded_kinds << CartoDB::Visualization::Member::KIND_RASTER
+    @excluded_kinds << Carto::Visualization::KIND_RASTER
     self
   end
 
@@ -124,15 +126,20 @@ class Carto::VisualizationQueryBuilder
   end
 
   def with_prefetch_table
-    with_eager_load_of(:table)
+    with_eager_load_of_nested_associations(map: :user_table)
   end
 
   def with_prefetch_permission
-    with_eager_load_of_nested_associations(:permission => :owner)
+    with_eager_load_of_nested_associations(permission: :owner)
   end
 
   def with_prefetch_external_source
     with_eager_load_of(:external_source)
+  end
+
+  def with_prefetch_synchronization
+    with_eager_load_of(:synchronization)
+    self
   end
 
   def with_type(type)
@@ -186,8 +193,29 @@ class Carto::VisualizationQueryBuilder
     self
   end
 
+  def with_organization_id(organization_id)
+    @organization_id = organization_id
+    self
+  end
+
+  # Published: see `Carto::Visualization#published?`
+  def with_published
+    @only_published = true
+    self
+  end
+
+  def with_version(version)
+    @version = version
+    self
+  end
+
   def build
     query = Carto::Visualization.scoped
+
+    if @name && !(@id || @user_id || @organization_id || @owned_by_or_shared_with_user_id || @shared_with_user_id)
+      CartoDB::Logger.error(message: "VQB query by name without user_id nor org_id")
+      raise 'VQB query by name without user_id nor org_id'
+    end
 
     if @id
       query = query.where(id: @id)
@@ -228,21 +256,25 @@ class Carto::VisualizationQueryBuilder
     if @owned_by_or_shared_with_user_id
       # TODO: sql strings are suboptimal and compromise compositability, but
       # I haven't found a better way to do this OR in Rails
-      query = query.where(' ("visualizations"."user_id" = (?) or "visualizations"."id" in (?))',
-          @owned_by_or_shared_with_user_id,
-          ::Carto::VisualizationQueryBuilder.new.with_shared_with_user_id(@owned_by_or_shared_with_user_id)
-                                            .build.uniq.pluck('visualizations.id')
-        )
+      shared_with_viz_ids = ::Carto::VisualizationQueryBuilder.new.with_shared_with_user_id(
+        @owned_by_or_shared_with_user_id).build.uniq.pluck('visualizations.id')
+      if shared_with_viz_ids.empty?
+        query = query.where(' "visualizations"."user_id" = (?)', @owned_by_or_shared_with_user_id)
+      else
+        query = query.where(' ("visualizations"."user_id" = (?) or "visualizations"."id" in (?))',
+                            @owned_by_or_shared_with_user_id, shared_with_viz_ids)
+      end
     end
 
     if @exclude_synced_external_sources
-      query = query.joins(%Q{
+      query = query.joins(%{
                             LEFT JOIN external_sources es
                               ON es.visualization_id = visualizations.id
                           })
-                   .joins(%Q{
+                   .joins(%{
                             LEFT JOIN external_data_imports edi
-                              ON  edi.external_source_id = es.id
+                              ON edi.external_source_id = es.id
+                              AND (SELECT state FROM data_imports WHERE id = edi.data_import_id) <> 'failure'
                               #{exclude_only_synchronized}
                           })
                    .where("edi.id IS NULL")
@@ -286,12 +318,37 @@ class Carto::VisualizationQueryBuilder
     end
 
     if @bounding_box
-      bbox_sql = BoundingBoxHelper.to_polygon(@bounding_box[:minx], @bounding_box[:miny], @bounding_box[:maxx], @bounding_box[:maxy])
+      bbox_sql = Carto::BoundingBoxUtils.to_polygon(
+        @bounding_box[:minx], @bounding_box[:miny], @bounding_box[:maxx], @bounding_box[:maxy]
+      )
       query = query.where("visualizations.bbox is not null AND visualizations.bbox && #{bbox_sql}")
     end
 
     if @only_with_display_name
       query = query.where("display_name is not null")
+    end
+
+    if @organization_id
+      query = query.joins(:user).where(users: { organization_id: @organization_id })
+    end
+
+    if @version
+      query = query.where(version: @version)
+    end
+
+    if @only_published || @privacy == Carto::Visualization::PRIVACY_PUBLIC
+      # "Published" is only required for builder maps
+      # This SQL check should match Ruby `Carto::Visualization#published?` definition
+      query = query.where(%{
+            visualizations.privacy <> '#{Carto::Visualization::PRIVACY_PRIVATE}'
+        and (
+               ((visualizations.version <> #{Carto::Visualization::VERSION_BUILDER}) or (visualizations.version is null))
+            or
+               visualizations.type <> '#{Carto::Visualization::TYPE_DERIVED}'
+            or
+               (exists (select 1 from mapcaps mc_pub where visualizations.id = mc_pub.visualization_id limit 1))
+            )
+      })
     end
 
     @include_associations.each { |association|
@@ -317,7 +374,7 @@ class Carto::VisualizationQueryBuilder
   end
 
   def build_paged(page = 1, per_page = 20)
-    self.build.offset((page - 1) * per_page).limit(per_page)
+    build.offset((page.to_i - 1) * per_page.to_i).limit(per_page.to_i)
   end
 
   private

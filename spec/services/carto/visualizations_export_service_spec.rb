@@ -1,8 +1,19 @@
 # encoding: utf-8
 
 require_relative '../../spec_helper'
+require 'helpers/unique_names_helper'
+require 'visualization/vizjson'
 
 describe Carto::VisualizationsExportService do
+  include UniqueNamesHelper
+  before(:all) do
+    @user = FactoryGirl.create(:valid_user, private_tables_enabled: true)
+  end
+
+  after(:all) do
+    @user.destroy
+  end
+
   before(:each) do
     bypass_named_maps
     ::User.any_instance
@@ -19,7 +30,7 @@ describe Carto::VisualizationsExportService do
   end
 
   it "Calls data export upon visualization deletion" do
-    visualization = create_vis($user_1)
+    visualization = create_vis(@user)
 
     Carto::VisualizationsExportService.any_instance
                                       .expects(:export)
@@ -30,7 +41,7 @@ describe Carto::VisualizationsExportService do
   end
 
   it "Exports data to DB" do
-    visualization = create_vis($user_1)
+    visualization = create_vis(@user)
 
     visualization_clone = visualization.dup
 
@@ -45,11 +56,11 @@ describe Carto::VisualizationsExportService do
   end
 
   it "Purges old backup entries when told to do so" do
-    visualization = create_vis($user_1)
+    visualization = create_vis(@user)
     visualization.delete
-    visualization = create_vis($user_1)
+    visualization = create_vis(@user)
     visualization.delete
-    visualization = create_vis($user_1)
+    visualization = create_vis(@user)
     visualization.delete
 
     old_date = Date.today - (Carto::VisualizationsExportService::DAYS_TO_KEEP_BACKUP * 2).days
@@ -58,11 +69,11 @@ describe Carto::VisualizationsExportService do
     purged_items = Carto::VisualizationsExportService.new.purge_old
 
     purged_items.should eq 3
-    Carto::VisualizationBackup.where(username: $user_1.username).count.should eq 0
+    Carto::VisualizationBackup.where(username: @user.username).count.should eq 0
   end
 
   it "Deletes backup after successfully restoring" do
-    visualization = create_vis($user_1)
+    visualization = create_vis(@user)
 
     visualization_clone = visualization.dup
 
@@ -79,19 +90,19 @@ describe Carto::VisualizationsExportService do
   end
 
   it "Imports data from DB" do
-    table_1 = create_table(user_id: $user_1.id)
-    table_2 = create_table(user_id: $user_1.id)
+    table_1 = create_table(user_id: @user.id)
+    table_2 = create_table(user_id: @user.id)
 
-    blender = Visualization::TableBlender.new($user_1, [table_1, table_2])
+    blender = Visualization::TableBlender.new(Carto::User.find(@user.id), [table_1, table_2])
     map = blender.blend
 
-    visualization = create_vis($user_1, map_id: map.id, description: 'description <strong>with tags</strong>')
+    visualization = create_vis(@user, map_id: map.id, description: 'description <strong>with tags</strong>')
 
     # Keep data for later comparisons
     base_layer = visualization.layers(:base).first
     visualization_clone = visualization.dup
 
-    original_data_layer_names = visualization.layers(:carto_and_torque).map { |layer| layer.options["table_name"] }
+    original_data_layer_names = visualization.layers(:data).map { |layer| layer.options["table_name"] }
 
     # As duplicating the vis only works fine with parent object, store also the vizjson for comparisons
     vizjson_options = {
@@ -123,7 +134,7 @@ describe Carto::VisualizationsExportService do
                                                       .to_json
     restored_vizjson = ::JSON.parse(restored_vizjson)
 
-    restored_data_layer_names = visualization.layers(:carto_and_torque).map { |layer| layer.options["table_name"] }
+    restored_data_layer_names = visualization.layers(:data).map { |layer| layer.options["table_name"] }
 
     # Base attributes checks
     restored_visualization.name.should eq visualization_clone.name
@@ -136,13 +147,32 @@ describe Carto::VisualizationsExportService do
     restored_vizjson['zoom'].should eq original_vizjson['zoom']
     restored_vizjson['overlays'].should eq original_vizjson['overlays']
 
-    (restored_vizjson["layers"][1]["options"]["named_map"]["layers"] -
-     original_vizjson["layers"][1]["options"]["named_map"]["layers"]).should eq []
+    restored_layer_ids = restored_vizjson["layers"].map { |l| l['id'] }
+    original_layer_ids = original_vizjson["layers"].map { |l| l['id'] }
+
+    # Restoring doesn't keep layer ids (restored layers are stored in the same table)
+    restored_layer_ids.count.should == original_layer_ids.count
+    restored_layer_ids.compact.sort.should_not == original_layer_ids.compact.sort
+
+    restored_named_map = restored_vizjson["layers"][1]["options"]["named_map"]
+    original_named_map = original_vizjson["layers"][1]["options"]["named_map"]
+    restored_named_map_layer_ids = restored_named_map['layers'].map { |l| l['id'] }
+    original_named_map_layer_ids = original_named_map['layers'].map { |l| l['id'] }
+    # Restoring doesn't keep layer ids (restored layers are stored in the same table)
+    restored_named_map_layer_ids.count.should == original_named_map_layer_ids.count
+    restored_named_map_layer_ids.compact.sort.should_not == original_named_map_layer_ids.compact.sort
+
+
+    # Clear layer named map layers ids
+    restored_named_map["layers"].each { |l| l['id'] = nil }
+    original_named_map["layers"].map { |l| l['id'] = nil }
+    (restored_named_map["layers"] -
+     original_named_map["layers"]).should eq []
 
     # Layer checks
     (restored_visualization.layers(:base).count > 0).should eq true
     restored_visualization.layers(:base).first["options"].should eq base_layer["options"]
-    restored_visualization.layers(:carto_and_torque).count.should eq 2
+    restored_visualization.layers(:data).count.should eq 2
     (restored_data_layer_names - original_data_layer_names).should eq []
   end
 
@@ -150,7 +180,7 @@ describe Carto::VisualizationsExportService do
     stubbed_version = -1
     Carto::VisualizationsExportService.any_instance.stubs(:export_version).returns(stubbed_version)
 
-    visualization = create_vis($user_1)
+    visualization = create_vis(@user)
     visualization_id = visualization.id
     visualization.delete
 
@@ -174,7 +204,7 @@ describe Carto::VisualizationsExportService do
   def create_vis(user, attributes = {})
     attrs = {
       user_id:                  user.id,
-      name:                     attributes.fetch(:name, "visualization #{rand(9999)}"),
+      name:                     attributes.fetch(:name, unique_name('viz')),
       map_id:                   attributes.fetch(:map_id, ::Map.create(user_id: user.id).id),
       description:              attributes.fetch(:description, 'bogus'),
       type:                     attributes.fetch(:type, 'derived'),

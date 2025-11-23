@@ -12,7 +12,26 @@ describe Unp do
       unp       = Unp.new
 
       unp.run(zipfile)
-      (Dir.entries(unp.temporary_directory).size > 2).should eq true
+      Dir.entries(unp.temporary_directory).should include('bogus1.csv', 'bogus2.csv')
+      FileUtils.rm_rf(unp.temporary_directory)
+    end
+
+    it 'extracts the contents of a carto file (see #11954)' do
+      zipfile   = zipfile_factory(filename: 'this_is_a_zip_file.carto')
+      unp       = Unp.new
+
+      unp.run(zipfile)
+      Dir.entries(unp.temporary_directory).should include('bogus1.csv', 'bogus2.csv')
+      FileUtils.rm_rf(unp.temporary_directory)
+    end
+
+    it 'extracts the contents of a carto file with rar in the name (see #11954)' do
+      zipfile   = zipfile_factory(filename: 'this_is_not_a_rar_file.carto')
+      unp       = Unp.new
+
+      unp.run(zipfile)
+      Dir.entries(unp.temporary_directory).should include('bogus1.csv', 'bogus2.csv')
+      FileUtils.rm_rf(unp.temporary_directory)
     end
 
     it 'populates a list of source files' do
@@ -31,7 +50,7 @@ describe Unp do
       unp.run(zipfile_factory)
       unp.source_files.length.should eq 2
     end
-  end #run
+  end
 
   describe '#without_unpacking' do
     it 'pushes a source file for the passed file path to the source files' do
@@ -41,7 +60,11 @@ describe Unp do
       unp.without_unpacking(zipfile_factory)
       unp.source_files.size.should eq 1
     end
-  end #withount_unpacking
+
+    it 'raises if the path does not belong to a file' do
+      expect { Unp.new.without_unpacking('/var/tmp') }.to raise_error NotAFileError
+    end
+  end
 
   describe '#compressed?' do
     it 'returns true if extension denotes a compressed file' do
@@ -50,7 +73,7 @@ describe Unp do
       unp.compressed?('bogus.gz').should eq true
       unp.compressed?('bogus.csv').should eq false
     end
-  end #compressed?
+  end
 
   describe '#process' do
     it 'adds a source_file for the path if extension supported' do
@@ -62,25 +85,24 @@ describe Unp do
       unp.source_files.should_not be_empty
       unp.source_files.first.should be_an_instance_of SourceFile
     end
-  end #process
+  end
 
   describe '#crawl' do
     it 'returns a list of full paths for files in the directory' do
-      fixture1  = '/var/tmp/bogus1.csv'
-      fixture2  = '/var/tmp/bogus2.csv'
-      FileUtils.touch(fixture1)
-      FileUtils.touch(fixture2)
+      Dir.mktmpdir do |path|
+        fixture1  = "#{path}/bogus1.csv"
+        fixture2  = "#{path}/bogus2.csv"
+        FileUtils.touch(fixture1)
+        FileUtils.touch(fixture2)
 
-      unp       = Unp.new
-      files     = unp.crawl('/var/tmp')
+        unp       = Unp.new
+        files     = unp.crawl(path)
 
-      files.should include(fixture1)
-      files.should include(fixture2)
-
-      FileUtils.rm(fixture1)
-      FileUtils.rm(fixture2)
+        files.should include(fixture1)
+        files.should include(fixture2)
+      end
     end
-  end #crawl
+  end
 
   describe '#extract' do
     it 'generates a temporary directory' do
@@ -106,20 +128,22 @@ describe Unp do
     it 'raises if unp could not extract the file' do
       expect { Unp.new.extract('/var/tmp/non_existent.zip') }.to raise_error ExtractionError
     end
-  end #extract
+  end
 
   describe '#source_file_for' do
     it 'returns a source_file for the passed path' do
       Unp.new.source_file_for('/var/tmp/foo.txt')
         .should be_an_instance_of SourceFile
     end
-  end #source_file_for
+  end
 
   describe '#command_for' do
     it 'returns the unp command line to be executed' do
       unp = Unp.new
 
-      unp.command_for('bogus').should match /.*unp.*bogus.*/
+      command = unp.command_for('bogus')
+      command.any? { |c| c.match /unp/ }.should be_true
+      command.should include 'bogus'
     end
 
     it 'raises if unp is not found' do
@@ -128,7 +152,7 @@ describe Unp do
 
       expect { unp.command_for('wadus') }.to raise_error InstallError
     end
-  end #command_for
+  end
 
   describe '#supported?' do
     it 'returns true if file extension is supported' do
@@ -137,7 +161,7 @@ describe Unp do
       unp.supported?('foo.doc').should eq false
       unp.supported?('foo.xls').should eq true
     end
-  end #supported?
+  end
 
   describe '#normalize' do
     it 'underscores the file name' do
@@ -157,7 +181,7 @@ describe Unp do
 
       File.exists?(fixture).should eq false
     end
-  end #normalize
+  end
 
   describe '#underscore' do
     it 'substitutes spaces for underscores in the file name' do
@@ -171,12 +195,12 @@ describe Unp do
       new_name  = '/var/tmp/foo.txt'
       File.open(fixture, 'w').close
     end
-  end #underscore
+  end
 
   describe '#rename' do
     it 'renames a file' do
       fixture   = "/var/tmp/#{Time.now.to_i}.txt"
-      new_name  = '/var/tmp/foo.txt'
+      new_name  = '/var/tmp/unp_spec_renamed.txt'
       File.open(fixture, 'w').close
 
       unp = Unp.new
@@ -197,7 +221,7 @@ describe Unp do
 
       File.exists?(fixture).should eq true
     end
-  end #rename
+  end
 
   describe '#generate_temporary_directory' do
     it 'creates a temporary directory' do
@@ -213,7 +237,7 @@ describe Unp do
       unp.generate_temporary_directory
       unp.temporary_directory.should_not eq nil
     end
-  end #generate_temporary_directory
+  end
 
   describe '#hidden?' do
     it 'returns true if filename starts with a dot' do
@@ -227,17 +251,17 @@ describe Unp do
       unp.hidden?('__bogus').should eq true
       unp.hidden?('_bogus').should eq false
     end
-  end #hidden?
+  end
 
   describe '#unp_failure?'  do
     it 'returns true if unp cannot read the file' do
-      Unp.new.unp_failure?('Cannot read', 0).should eq true
+      Unp.new.unp_failure?('Cannot read', -1).should eq true
     end
 
     it 'returns true if returned an error exit code' do
       Unp.new.unp_failure?('', 999).should eq true
     end
-  end #unp_failure?
+  end
 
   describe "configuration" do
     it "Uses a different configuration path if specified" do
@@ -248,9 +272,7 @@ describe Unp do
     end
   end
 
-  def zipfile_factory(dir='/var/tmp/bogus')
-    filename = 'bogus.zip'
-
+  def zipfile_factory(dir = '/var/tmp/bogus', filename: 'bogus.zip')
     zipfile = "#{dir}/#{filename}"
 
     FileUtils.rm(zipfile) if File.exists?(zipfile)
@@ -261,5 +283,4 @@ describe Unp do
 
     zipfile
   end
-end #Unp
-
+end

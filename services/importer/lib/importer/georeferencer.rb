@@ -5,7 +5,7 @@ require_relative './query_batcher'
 require_relative './content_guesser'
 
 require_relative '../../../../lib/cartodb/stats/importer'
-require_relative '../../../table-geocoder/lib/geocoder_usage_metrics'
+require_relative '../../../dataservices-metrics/lib/geocoder_usage_metrics'
 
 module CartoDB
   module Importer2
@@ -14,6 +14,7 @@ module CartoDB
       GEOMETRY_POSSIBLE_NAMES   = %w{ geometry the_geom wkb_geometry geom geojson wkt }
       DEFAULT_SCHEMA            = 'cdb_importer'
       THE_GEOM_WEBMERCATOR      = 'the_geom_webmercator'
+      DIRECT_STATEMENT_TIMEOUT  = 1.hour * 1000
 
       def initialize(db, table_name, options, schema=DEFAULT_SCHEMA, job=nil, geometry_columns=nil, logger=nil)
         @db         = db
@@ -43,8 +44,8 @@ module CartoDB
 
         the_geom_column_name = create_the_geom_from_geometry_column  ||
           create_the_geom_from_ip_guessing      ||
-          create_the_geom_from_country_guessing ||
           create_the_geom_from_namedplaces_guessing ||
+          create_the_geom_from_country_guessing ||
           create_the_geom_in(table_name)
 
         enable_autovacuum
@@ -72,7 +73,7 @@ module CartoDB
         geometry_column_name = geometry_column_in
         return false unless geometry_column_name
         job.log "Creating the_geom from #{geometry_column_name} column"
-        column = Column.new(db, table_name, geometry_column_name, schema, job)
+        column = Column.new(db, table_name, geometry_column_name, user, schema, job)
         column.mark_as_from_geojson_with_transform if @from_geojson_with_transform
         column.empty_lines_to_nulls
         column.geometrify
@@ -128,9 +129,9 @@ module CartoDB
           end
         rescue Exception => ex
           message = "create_the_geom_from_country_guessing failed: #{ex.message}"
-          Rollbar.report_message(message,
-                                 'warning',
-                                 {user_id: @job.logger.user_id, backtrace: ex.backtrace})
+          CartoDB::Logger.warning(exception: ex,
+                                  message: message,
+                                  user_id: @job.logger.user_id)
           job.log "WARNING: #{message}"
         end
         return false
@@ -153,9 +154,9 @@ module CartoDB
           end
         rescue Exception => ex
           message = "create_the_geom_from_namedplaces_guessing failed: #{ex.message}"
-          Rollbar.report_message(message,
-                                 'warning',
-                                 {user_id: @job.logger.user_id, backtrace: ex.backtrace})
+          CartoDB::Logger.warning(exception: ex,
+                                  message: message,
+                                  user_id: @job.logger.user_id)
           job.log "WARNING: #{message}"
         end
         return false
@@ -178,9 +179,9 @@ module CartoDB
           end
         rescue Exception => ex
           message = "create_the_geom_from_ip_guessing failed: #{ex.message}"
-          Rollbar.report_message(message,
-                                 'warning',
-                                 {user_id: @job.logger.user_id, backtrace: ex.backtrace})
+          CartoDB::Logger.warning(exception: ex,
+                                  message: message,
+                                  user_id: @job.logger.user_id)
           job.log "WARNING: #{message}"
           return false
         end
@@ -211,7 +212,7 @@ module CartoDB
           @tracker.call('geocoding')
           create_the_geom_in(table_name)
           orgname = user.organization.nil? ? nil : user.organization.name
-          usage_metrics = CartoDB::GeocoderUsageMetrics.new($geocoder_metrics, user.username, orgname)
+          usage_metrics = CartoDB::GeocoderUsageMetrics.new(user.username, orgname)
           config = @options[:geocoder].merge(
             table_schema: schema,
             table_name: table_name,
@@ -225,21 +226,22 @@ module CartoDB
             countries: country.present? ? "'#{country}'" : nil,
             usage_metrics: usage_metrics
           )
-          geocoder = CartoDB::InternalGeocoder::Geocoder.new(config)
-
+          geocoding = Geocoding.new config.slice(:kind, :geometry_type, :formatter, :table_name, :country_column, :country_code)
+          geocoding.user = user
+          geocoding.data_import_id = data_import.id unless data_import.nil?
+          geocoding.raise_on_save_failure = true
+          geocoder = CartoDB::InternalGeocoder::Geocoder.new(config.merge!(geocoding_model: geocoding))
+          geocoder.set_log(geocoding.log)
+          geocoding.force_geocoder(geocoder)
           begin
-            geocoding = Geocoding.new config.slice(:kind, :geometry_type, :formatter, :table_name, :country_column, :country_code)
-            geocoding.user = user
-            geocoder.set_log(geocoding.log)
-            geocoding.force_geocoder(geocoder)
-            geocoding.data_import_id = data_import.id unless data_import.nil?
-            geocoding.raise_on_save_failure = true
             geocoding.run_geocoding!(row_count)
             raise "Geocoding failed" if geocoding.state == 'failed'
           rescue => e
             config_info = config.select {|key, value| [:table_schema, :table_name, :qualified_table_name, :formatter, :geometry_type, :kind, :max_rows, :country_column, ].include?(key) }
-            Rollbar.report_message('Georeferencer could not register geocoding, fallback to geocoder.run',
-                                   'error', error_info: "user_id: #{user_id}, config: #{config_info}, exception: #{e.inspect} backtrace: #{e.backtrace.join('\n')}")
+            CartoDB::Logger.error(exception: e,
+                                  message: 'Georeferencer could not register geocoding, fallback to geocoder.run',
+                                  user_id: user_id,
+                                  config: config_info)
             geocoder.run
           end
 
@@ -294,12 +296,12 @@ module CartoDB
         return self unless column_exists_in?(table_name, THE_GEOM_WEBMERCATOR)
 
         job.log 'Dropping the_geom_webmercator column'
-        column = Column.new(db, table_name, THE_GEOM_WEBMERCATOR, schema, job)
+        column = Column.new(db, table_name, THE_GEOM_WEBMERCATOR, user, schema, job)
         column.drop
       end
 
       def get_column(column = :the_geom)
-        Column.new(db, table_name, column, schema, job)
+        Column.new(db, table_name, column, user, schema, job)
       end
 
       def get_geometry_type(column = :the_geom)
@@ -322,17 +324,13 @@ module CartoDB
       def handle_multipoint(qualified_table_name)
         # TODO: capture_exceptions=true
         job.log 'Converting detected multipoint to point'
-        QueryBatcher.new(
-            db,
-            job,
-            create_seq_field = true
-          ).execute_update(
-              %Q{
-                UPDATE #{qualified_table_name}
-                SET the_geom = ST_GeometryN(the_geom, 1)
-              },
-              schema, table_name
-          )
+
+        user.db_service.in_database_direct_connection(statement_timeout: DIRECT_STATEMENT_TIMEOUT) do |user_direct_conn|
+            user_direct_conn.run(%Q{
+                                    UPDATE #{qualified_table_name}
+                                    SET the_geom = ST_GeometryN(the_geom, 1)
+                                    })
+        end
       end
 
       def multipoint?
@@ -342,7 +340,7 @@ module CartoDB
           AS geometrytype
         }].first.fetch(:geometrytype) == 'MULTIPOINT'
 
-        job.log 'found MULTIPOING geometry' if is_multipoint
+        job.log 'found MULTIPOINT geometry' if is_multipoint
 
         is_multipoint
       rescue

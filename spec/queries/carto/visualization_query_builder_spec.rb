@@ -1,15 +1,23 @@
 # encoding: utf-8
 
 require_relative '../../spec_helper'
+require 'helpers/unique_names_helper'
 
 describe Carto::VisualizationQueryBuilder do
+  include UniqueNamesHelper
   include Rack::Test::Methods
   include Warden::Test::Helpers
+  include Carto::Factories::Visualizations
   include_context 'visualization creation helpers'
   include_context 'users helper'
 
+  def preload_activerecord_metadata
+    # Loads the model structures into memory, to avoid counting those as queries
+    @vqb.build.first.user_table.name
+  end
+
   before(:each) do
-    @vqb = Carto::VisualizationQueryBuilder.new
+    @vqb = Carto::VisualizationQueryBuilder.new.with_user_id(@user1.id)
 
     DBQueryMatchers.configure do |config|
       config.ignores = []
@@ -30,7 +38,7 @@ describe Carto::VisualizationQueryBuilder do
     table = create_random_table(@user1)
     table_visualization = table.table_visualization
     table_visualization.store
-    @vqb.build.map(&:id).should include table_visualization.id
+    Carto::VisualizationQueryBuilder.new.build.map(&:id).should include table_visualization.id
   end
 
   it 'searches for all visualizations for a user' do
@@ -40,7 +48,7 @@ describe Carto::VisualizationQueryBuilder do
     table_visualization1.store
     table_visualization2 = table2.table_visualization
     table_visualization2.store
-    ids = @vqb.with_user_id(@user1.id).build.map(&:id)
+    ids = Carto::VisualizationQueryBuilder.new.with_user_id(@user1.id).build.map(&:id)
     ids.should include table_visualization1.id
     ids.should_not include table_visualization2.id
   end
@@ -62,13 +70,16 @@ describe Carto::VisualizationQueryBuilder do
 
   it 'can prefetch table' do
     table1 = create_random_table(@user1)
+    table_visualization = table1.table_visualization
+
+    preload_activerecord_metadata
 
     expect {
-      @vqb.build.where(id: table1.table_visualization.id).first.table.name
+      @vqb.build.where(id: table_visualization.id).first.user_table.name
     }.to make_database_queries(count: 2..3)
 
     expect {
-      @vqb.with_prefetch_table.build.where(id: table1.table_visualization.id).first.table.name
+      @vqb.with_prefetch_table.build.where(id: table_visualization.id).first.user_table.name
     }.to make_database_queries(count: 1)
   end
 
@@ -93,55 +104,33 @@ describe Carto::VisualizationQueryBuilder do
     table3 = create_random_table(@user1)
 
     # Searches only using query builder itself
-    ids = @vqb.with_type(Carto::Visualization::TYPE_CANONICAL)
-              .with_order(:updated_at, :desc)
-              .build
-              .all.map(&:id)
+    ids = @vqb.with_type(Carto::Visualization::TYPE_CANONICAL).with_order(:updated_at, :desc).build.all.map(&:id)
     ids.should == [ table3.table_visualization.id, table2.table_visualization.id, table1.table_visualization.id ]
 
     # From here on, uses OffdatabaseQueryAdapter
 
     # Likes
 
-    table1.table_visualization.add_like_from(@user1.id)
-    table1.table_visualization.add_like_from(@user2.id)
-    table3.table_visualization.add_like_from(@user1.id)
+    table1.table_visualization.likes.create!(actor: @carto_user1)
+    table1.table_visualization.likes.create!(actor: @carto_user2)
+    table3.table_visualization.likes.create!(actor: @carto_user1)
 
-    ids = Carto::VisualizationQueryBuilder.new
-                                          .with_type(Carto::Visualization::TYPE_CANONICAL)
-                                          .with_order('likes', :desc)
-                                          .build
-                                          .all.map(&:id)
-
-    puts "#{table1.table_visualization.id} #{table1.table_visualization.likes.count}"
-    puts "#{table2.table_visualization.id} #{table2.table_visualization.likes.count}"
-    puts "#{table3.table_visualization.id} #{table3.table_visualization.likes.count}"
+    ids = @vqb.with_type(Carto::Visualization::TYPE_CANONICAL)
+              .with_order('likes', :desc)
+              .build
+              .all.map(&:id)
 
     ids.should == [ table1.table_visualization.id, table3.table_visualization.id, table2.table_visualization.id ]
 
-    Carto::VisualizationQueryBuilder.new
-                                    .with_type(Carto::Visualization::TYPE_CANONICAL)
-                                    .with_order('likes', :desc)
-                                    .build
-                                    .count.should == 3
+    @vqb.with_type(Carto::Visualization::TYPE_CANONICAL).with_order('likes', :desc).build.count.should == 3
 
     # Check with limit
-    ids = Carto::VisualizationQueryBuilder.new
-                                          .with_type(Carto::Visualization::TYPE_CANONICAL)
-                                          .with_order('likes', :desc)
-                                          .build
-                                          .limit(2)
-                                          .all.map(&:id)
+    ids = @vqb.with_type(Carto::Visualization::TYPE_CANONICAL).with_order('likes', :desc).build.limit(2).all.map(&:id)
     ids.should == [ table1.table_visualization.id, table3.table_visualization.id ]
 
     # Check with limit AND offset
-    ids = Carto::VisualizationQueryBuilder.new
-                                          .with_type(Carto::Visualization::TYPE_CANONICAL)
-                                          .with_order('likes', :desc)
-                                          .build
-                                          .offset(1)
-                                          .limit(2)
-                                          .all.map(&:id)
+    ids = @vqb.with_type(Carto::Visualization::TYPE_CANONICAL).with_order('likes', :desc).build
+              .offset(1).limit(2).all.map(&:id)
     ids.should == [ table3.table_visualization.id, table2.table_visualization.id ]
 
     # Mapviews
@@ -158,43 +147,37 @@ describe Carto::VisualizationQueryBuilder do
                             .with(@user1.username, {stat_tag: table3.table_visualization.id})
                             .returns({ "2015-04-15" => 12, "2015-04-14" => 20 })
 
-    ids = Carto::VisualizationQueryBuilder.new
-                                          .with_type(Carto::Visualization::TYPE_CANONICAL)
-                                          .with_order('mapviews', :desc)
-                                          .build
-                                          .all.map(&:id)
-    ids.should == [ table2.table_visualization.id, table3.table_visualization.id, table1.table_visualization.id ]
+    ids = @vqb.with_type(Carto::Visualization::TYPE_CANONICAL).with_order('mapviews', :desc).build.all.map(&:id)
+    ids.should == [table2.table_visualization.id, table3.table_visualization.id, table1.table_visualization.id]
 
     # Size
 
-   mocked_vis1 = Carto::Visualization.where(id: table1.table_visualization.id).first
-   mocked_vis2 = Carto::Visualization.where(id: table2.table_visualization.id).first
-   mocked_vis3 = Carto::Visualization.where(id: table3.table_visualization.id).first
+    mocked_vis1 = Carto::Visualization.where(id: table1.table_visualization.id).first
+    mocked_vis2 = Carto::Visualization.where(id: table2.table_visualization.id).first
+    mocked_vis3 = Carto::Visualization.where(id: table3.table_visualization.id).first
 
-   mocked_vis1.stubs(:size).returns(200)
-   mocked_vis2.stubs(:size).returns(1)
-   mocked_vis3.stubs(:size).returns(600)
+    mocked_vis1.stubs(:size).returns(200)
+    mocked_vis2.stubs(:size).returns(1)
+    mocked_vis3.stubs(:size).returns(600)
 
-   # Careful to not do anything else on this spec after this size assertions
-   ActiveRecord::Relation.any_instance.stubs(:all).returns([ mocked_vis3, mocked_vis1, mocked_vis2 ])
+    # Careful to not do anything else on this spec after this size assertions
+    ActiveRecord::Relation.any_instance.stubs(:all).returns([mocked_vis3, mocked_vis1, mocked_vis2])
 
-   ids = Carto::VisualizationQueryBuilder.new.with_type(Carto::Visualization::TYPE_CANONICAL)
-                                             .with_order('size', :desc)
-                                             .build.map(&:id)
-   ids.should == [ table3.table_visualization.id, table1.table_visualization.id, table2.table_visualization.id ]
+    ids = @vqb.with_type(Carto::Visualization::TYPE_CANONICAL).with_order('size', :desc).build.map(&:id)
+    ids.should == [table3.table_visualization.id, table1.table_visualization.id, table2.table_visualization.id]
 
     # NOTE: Not testing with multiple order criteria as currently the editor doesn't supports it so is not needed
   end
 
   it 'filters remote tables with syncs' do
 
-    stub_named_maps_calls
+    bypass_named_maps
 
     table = create_random_table(@user1)
 
     remote_vis_1 = CartoDB::Visualization::Member.new({
           user_id: @user1.id,
-          name:    "remote vis #{rand(9999)}",
+          name:    "remote vis #{unique_name('viz')}",
           map_id:  ::Map.create(user_id: @user1.id).id,
           type:    CartoDB::Visualization::Member::TYPE_REMOTE,
           privacy: CartoDB::Visualization::Member::PRIVACY_PRIVATE
@@ -202,7 +185,7 @@ describe Carto::VisualizationQueryBuilder do
 
     remote_vis_2 = CartoDB::Visualization::Member.new({
           user_id: @user1.id,
-          name:    "remote vis #{rand(9999)}",
+          name:    "remote vis #{unique_name('viz')}",
           map_id:  ::Map.create(user_id: @user1.id).id,
           type:    CartoDB::Visualization::Member::TYPE_REMOTE,
           privacy: CartoDB::Visualization::Member::PRIVACY_PRIVATE
@@ -210,7 +193,7 @@ describe Carto::VisualizationQueryBuilder do
 
     remote_vis_3 = CartoDB::Visualization::Member.new({
           user_id: @user1.id,
-          name:    "remote vis #{rand(9999)}",
+          name:    "remote vis #{unique_name('viz')}",
           map_id:  ::Map.create(user_id: @user1.id).id,
           type:    CartoDB::Visualization::Member::TYPE_REMOTE,
           privacy: CartoDB::Visualization::Member::PRIVACY_PRIVATE
@@ -307,7 +290,7 @@ describe Carto::VisualizationQueryBuilder do
   end
 
   it 'filters raster tables' do
-    stub_named_maps_calls
+    bypass_named_maps
 
     table = create_random_table(@user1)
     table_visualization = table.table_visualization
@@ -322,5 +305,79 @@ describe Carto::VisualizationQueryBuilder do
 
     visualizations.map(&:id).should include table_visualization.id
     visualizations.map(&:id).should_not include raster_table_visualization.id
+  end
+
+  it 'will not accept nil id or name' do
+    expect { @vqb.with_id_or_name(nil) }.to raise_error
+  end
+
+  describe '#with_published' do
+    it 'is implied by public search, so querying public filters public, unpublished' do
+      map, table, table_visualization, visualization = create_full_visualization(@carto_user1, visualization_attributes: { version: 3, privacy: Carto::Visualization::PRIVACY_PUBLIC })
+
+      visualizations = @vqb.with_privacy(Carto::Visualization::PRIVACY_PUBLIC).build
+      visualization.published?.should be false
+      visualizations.map(&:id).should_not include visualization.id
+
+      destroy_full_visualization(map, table, table_visualization, visualization)
+    end
+
+    it 'selects public v2' do
+      map, table, table_visualization, visualization = create_full_visualization(@carto_user1, visualization_attributes: { version: 2, privacy: Carto::Visualization::PRIVACY_PUBLIC })
+
+      visualizations = @vqb.with_published.build
+      visualization.published?.should be true
+      visualizations.map(&:id).should include visualization.id
+
+      destroy_full_visualization(map, table, table_visualization, visualization)
+    end
+
+    it 'selects nil version maps' do
+      map, table, table_visualization, visualization = create_full_visualization(@carto_user1, visualization_attributes: { version: nil, privacy: Carto::Visualization::PRIVACY_PUBLIC })
+
+      visualization.update_column(:version, nil)
+
+      visualizations = @vqb.with_published.build
+      visualization.published?.should be true
+      visualizations.map(&:id).should include visualization.id
+
+      destroy_full_visualization(map, table, table_visualization, visualization)
+    end
+
+    it 'selects public v3 datasets' do
+      map, table, table_visualization, visualization = create_full_visualization(@carto_user1, visualization_attributes: { version: 3, privacy: Carto::Visualization::PRIVACY_PUBLIC, type: Carto::Visualization::TYPE_CANONICAL })
+
+      visualizations = @vqb.with_published.build
+      visualization.published?.should be true
+      visualizations.map(&:id).should include visualization.id
+
+      destroy_full_visualization(map, table, table_visualization, visualization)
+    end
+
+    it 'does not select private v2 maps' do
+      @carto_user1.stubs(:private_maps_enabled?).returns(true)
+      map, table, table_visualization, visualization = create_full_visualization(@carto_user1, visualization_attributes: { version: 2, privacy: Carto::Visualization::PRIVACY_PRIVATE })
+
+      visualizations = @vqb.with_published.build
+      visualization.published?.should be false
+      visualizations.map(&:id).should_not include visualization.id
+
+      destroy_full_visualization(map, table, table_visualization, visualization)
+    end
+
+    it 'selects v3 mapcapped mapcapped' do
+      map, table, table_visualization, visualization = create_full_visualization(@carto_user1, visualization_attributes: { version: 3 })
+
+      visualizations = @vqb.with_published.build
+      visualization.published?.should be false
+      visualizations.map(&:id).should_not include visualization.id
+
+      Carto::Mapcap.create!(visualization_id: visualization.id)
+      visualizations = @vqb.with_published.build
+      visualization.published?.should be true
+      visualizations.map(&:id).should include visualization.id
+
+      destroy_full_visualization(map, table, table_visualization, visualization)
+    end
   end
 end

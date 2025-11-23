@@ -1,5 +1,4 @@
 # encoding: utf-8
-require_relative '../../app/helpers/bounding_box_helper'
 
 namespace :cartodb do
   namespace :tables do
@@ -11,13 +10,13 @@ namespace :cartodb do
       end
       puts "Setting bounding boxes for canonical of the user #{user_id}..."
       user = Carto::User.find(user_id)
-      table_names = Rails::Sequel.connection.fetch(
+      table_names = SequelRails.connection.fetch(
         %Q{SELECT name FROM user_tables WHERE user_tables.user_id = ?}, user_id
       )
       updated = 0
       table_names.each do |table_name|
         table = Helpers::TableLocator.new.get_by_id_or_name(table_name[:name], user)
-        BoundingBoxHelper.update_visualizations_bbox(table)
+        table.update_bounding_box
         updated += 1
       end
       puts "Updated #{updated} tables"
