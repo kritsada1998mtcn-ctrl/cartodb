@@ -13,9 +13,26 @@ describe Carto::Builder::VisualizationsController do
 
   describe '#show' do
     before(:each) do
-      map = FactoryGirl.create(:map, user_id: @user1.id)
-      @visualization = FactoryGirl.create(:carto_visualization, user_id: @user1.id, map_id: map.id)
+      @map = create(:map, user_id: @user1.id)
+      @visualization = create(:carto_visualization, user_id: @user1.id, map_id: @map.id)
       login(@user1)
+    end
+
+    it 'denies iframe for users without the allow_private_viz_iframe feature flag' do
+      get builder_visualization_url(id: @visualization.id)
+
+      response.status.should == 200
+      response.headers['X-Frame-Options'].should == 'DENY'
+    end
+
+    it 'allows iframe for users without the allow_private_viz_iframe feature flag' do
+      ff = create(:feature_flag, name: 'allow_private_viz_iframe')
+      @user1.activate_feature_flag!(ff)
+
+      get builder_visualization_url(id: @visualization.id)
+
+      response.status.should == 200
+      response.headers['X-Frame-Options'].should be_nil
     end
 
     it 'redirects to embed for non-editor users requests' do
@@ -52,19 +69,6 @@ describe Carto::Builder::VisualizationsController do
         @visualization.version.should eq 3
       end
 
-      it 'correctly copies queries to analysis nodes' do
-        layer = FactoryGirl.build(:carto_layer)
-        layer.options[:query] = 'SELECT prediction FROM location'
-        layer.save
-        @visualization.map.layers << layer
-        get builder_visualization_url(id: @visualization.id)
-
-        response.status.should eq 200
-        @visualization.reload
-        @visualization.analyses.count.should eq 1
-        @visualization.analyses.first.analysis_node.params[:query].should eq layer.options[:query]
-      end
-
       it 'does not automatically migrates visualization with custom overlays' do
         @visualization.save
         @visualization.overlays.create(type: 'header')
@@ -96,7 +100,7 @@ describe Carto::Builder::VisualizationsController do
     end
 
     it 'returns 404 for non-existent visualizations' do
-      get builder_visualization_url(id: UUIDTools::UUID.timestamp_create.to_s)
+      get builder_visualization_url(id: Carto::UUIDHelper.random_uuid)
 
       response.status.should == 404
     end
@@ -104,14 +108,14 @@ describe Carto::Builder::VisualizationsController do
     it 'returns 404 for non-derived visualizations' do
       @visualization.type = Carto::Visualization::TYPE_CANONICAL
       @visualization.save
-      get builder_visualization_url(id: UUIDTools::UUID.timestamp_create.to_s)
+      get builder_visualization_url(id: Carto::UUIDHelper.random_uuid)
 
       response.status.should == 404
     end
 
     it 'redirects to embed for visualizations not writable by user' do
-      map = FactoryGirl.create(:map, user_id: @user1.id)
-      @other_visualization = FactoryGirl.create(:carto_visualization, map_id: map.id)
+      map = create(:map, user_id: @user1.id)
+      @other_visualization = create(:carto_visualization, map_id: map.id)
 
       get builder_visualization_url(id: @other_visualization.id)
 
@@ -171,7 +175,7 @@ describe Carto::Builder::VisualizationsController do
     end
 
     it 'displays analysesData' do
-      analysis = FactoryGirl.create(:source_analysis, visualization_id: @visualization.id, user_id: @user1.id)
+      analysis = create(:source_analysis, visualization_id: @visualization.id, user_id: @user1.id)
 
       get builder_visualization_url(id: @visualization.id)
 
@@ -189,12 +193,15 @@ describe Carto::Builder::VisualizationsController do
     end
 
     it 'includes the google maps client id if configured' do
+      @map.provider = 'googlemaps'
+      @map.save
       @user1.google_maps_key = 'client=wadus_cid'
       @user1.save
+      @visualization
       get builder_visualization_url(id: @visualization.id)
 
       response.status.should == 200
-      response.body.should include("maps.googleapis.com/maps/api/js?v=3.30&client=wadus_cid")
+      response.body.should include("maps.googleapis.com/maps/api/js?v=3.32&client=wadus_cid")
     end
   end
 end

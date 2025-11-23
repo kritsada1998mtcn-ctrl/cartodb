@@ -1,5 +1,4 @@
-# encoding: utf-8
-
+require 'spec_helper_min'
 require_relative '../../lib/datasources'
 require_relative '../doubles/json_to_csv_converter'
 
@@ -50,4 +49,3 @@ describe CSVFileDumper do
   end
 
 end
-

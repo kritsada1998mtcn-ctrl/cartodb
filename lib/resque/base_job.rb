@@ -1,11 +1,10 @@
-# encoding: utf-8
-
 require 'sequel'
 require 'resque-metrics'
 
 module Resque
   class BaseJob
     extend ::Resque::Metrics
+    include Carto::Common::JobLogger
     MAX_RETRIES = 3
 
     @@queue = ''
@@ -36,7 +35,7 @@ module Resque
         else
           raise e
         end
-      rescue => e
+      rescue StandardError => e
         CartoDB.notify_exception(e)
         raise e
       end

@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require 'active_record'
 
 module Carto
@@ -8,5 +6,6 @@ module Carto
     belongs_to :user, class_name: Carto::User
     belongs_to :user_table, class_name: Carto::UserTable, foreign_key: :table_id, primary_key: :table_id
 
+    validates :name, presence: true
   end
 end

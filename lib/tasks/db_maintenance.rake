@@ -16,7 +16,7 @@ namespace :cartodb do
         begin
           user.link_outdated_tables
           printf "OK %-#{20}s (%-#{4}s/%-#{4}s)\n", user.username, i, count
-        rescue => e
+        rescue StandardError => e
           printf "FAIL %-#{20}s (%-#{4}s/%-#{4}s) #{e.message}\n", user.username, i, count
         end
         #sleep(1.0/5.0)
@@ -31,7 +31,7 @@ namespace :cartodb do
           user.this.update api_key: $users_metadata.HGET(user.key, 'map_key')
           raise 'No API key!!' if user.reload.api_key.blank?
           puts "(#{i+1} / #{count}) OK   #{user.username}"
-        rescue => e
+        rescue StandardError => e
           puts "(#{i+1} / #{count}) FAIL #{user.username} #{e.message}"
         end
       end
@@ -47,7 +47,7 @@ namespace :cartodb do
             layer.register_table_dependencies
             printf "OK (%-#{4}s/%-#{4}s)\n", i, count
           end
-        rescue => e
+        rescue StandardError => e
           printf "FAIL (%-#{4}s/%-#{4}s) #{e}\n", i, count
         end
       end
@@ -125,7 +125,7 @@ namespace :cartodb do
 
           log(sprintf("OK %-#{20}s %-#{20}s (%-#{4}s/%-#{4}s)\n", user.username, user.database_name, i+1, count), :remove_duplicate_indexes.to_s, database_host)
           sleep(sleep)
-        rescue => e
+        rescue StandardError => e
           log(sprintf("FAIL %-#{20}s (%-#{4}s/%-#{4}s) #{e.message}\n", user.username, i+1, count), :remove_duplicate_indexes.to_s, database_host)
           puts "FAIL:#{i} #{e.message}"
         end
@@ -197,7 +197,7 @@ namespace :cartodb do
 
           log(sprintf("OK %-#{20}s %-#{20}s (%-#{4}s/%-#{4}s)\n", user.username, user.database_name, i+1, count), :unregister_extraneous_cartodb_members.to_s, database_host)
           sleep(sleep)
-        rescue => e
+        rescue StandardError => e
           log(sprintf("FAIL %-#{20}s (%-#{4}s/%-#{4}s) #{e.message}\n", user.username, i+1, count), :unregister_extraneous_cartodb_members.to_s, database_host)
           puts "FAIL:#{i} #{e.message}"
         end
@@ -238,7 +238,7 @@ namespace :cartodb do
           user.db_service.load_cartodb_functions(statement_timeout, extension_version)
           log(sprintf("OK %-#{20}s %-#{20}s (%-#{4}s/%-#{4}s)", user.username, user.database_name, i+1, count), task_name, database_host)
           sleep(sleep)
-        rescue => e
+        rescue StandardError => e
           log(sprintf("FAIL %-#{20}s (%-#{4}s/%-#{4}s) #{e.message}", user.username, i+1, count), task_name, database_host)
           puts "FAIL:#{i} #{e.message}"
         end
@@ -272,7 +272,7 @@ namespace :cartodb do
             user.db_service.upgrade_cartodb_postgres_extension(statement_timeout, extension_version)
             log(sprintf("OK %-#{20}s %-#{20}s (%-#{4}s/%-#{4}s)", user.username, user.database_name, i+1, count), task_name, database_host)
           end
-        rescue => e
+        rescue StandardError => e
           log(sprintf("FAIL %-#{20}s (%-#{4}s/%-#{4}s) #{e.message}", user.username, i+1, count), task_name, database_host)
           puts "FAIL:#{i} #{e.message}"
         end
@@ -312,7 +312,7 @@ namespace :cartodb do
             user.db_service.create_function_invalidate_varnish
             log(sprintf("OK %-#{20}s %-#{20}s (%-#{4}s/%-#{4}s)\n", user.username, user.database_name, i+1, count), :load_varnish_trigger.to_s, database_host)
             sleep(sleep)
-          rescue => e
+          rescue StandardError => e
             log(sprintf("FAIL %-#{20}s (%-#{4}s/%-#{4}s) #{e.message}\n", user.username, i+1, count), :load_varnish_trigger.to_s, database_host)
             puts "FAIL:#{i} #{e.message}"
           end
@@ -331,7 +331,7 @@ namespace :cartodb do
         begin
           conn = user.in_database(as: :cluster_admin)
           conn.execute(grant_query)
-        rescue => e
+        rescue StandardError => e
           log("Failed to execute `#{grant_query}`", :grant_publicuser_to_all_users.to_s, user.database_host)
         ensure
           conn.close unless conn.nil?
@@ -383,10 +383,10 @@ namespace :cartodb do
 
     desc 'Set org role privileges in all organizations'
     task :set_org_privileges_in_cartodb_schema, [:org_name] => :environment do |_t, args|
-      org = ::Organization.find(name: args[:org_name])
+      org = Carto::Organization.find_by(name: args[:org_name])
       owner = org.owner
       if owner
-        owner.db_service.setup_organization_role_permissions
+        owner.sequel_user.db_service.setup_organization_role_permissions
       else
         puts 'Organization without owner'
       end
@@ -394,10 +394,10 @@ namespace :cartodb do
 
     desc 'Set org role privileges in all organizations'
     task set_all_orgs_privileges_in_cartodb_schema: :environment do |_t, _args|
-      Organization.each do |org|
+      Carto::Organization.find_each do |org|
         owner = org.owner
         if owner
-          owner.db_service.setup_organization_role_permissions
+          owner.sequel_user.db_service.setup_organization_role_permissions
         else
           puts "Organization without owner: #{org.name}"
         end
@@ -419,7 +419,7 @@ namespace :cartodb do
         begin
           puts "Setting user quota in db '#{user.database_name}' (#{user.id} #{user.username})"
           user.db_service.rebuild_quota_trigger
-        rescue => exception
+        rescue StandardError => exception
           puts "\nERRORED #{user.id} (#{user.username}): #{exception.message}\n"
         end
 
@@ -462,7 +462,7 @@ namespace :cartodb do
       usage = 'usage: rake cartodb:db:set_organization_quota[organization_name,quota_in_gb]'
       raise usage if args[:organization_name].blank? || args[:quota_in_gb].blank?
 
-      organization  = Organization.filter(:name=> args[:organization_name]).first
+      organization = Carto::Organization.where(name: args[:organization_name]).first
       quota = args[:quota_in_gb].to_i * 1024 * 1024 * 1024
       organization.quota_in_bytes = quota
       organization.save
@@ -475,7 +475,7 @@ namespace :cartodb do
       usage = 'usage: rake cartodb:db:set_organization_seats[organization_name,seats]'
       raise usage if args[:organization_name].blank? || args[:seats].blank?
 
-      organization  = Organization.filter(:name=> args[:organization_name]).first
+      organization = Carto::Organization.where(name: args[:organization_name]).first
       seats = args[:seats].to_i
       organization.seats = seats
       organization.save
@@ -488,7 +488,7 @@ namespace :cartodb do
       usage = 'usage: rake cartodb:db:set_organization_viewer_seats[organization_name,seats]'
       raise usage if args[:organization_name].blank? || args[:seats].blank?
 
-      organization = Organization.filter(name: args[:organization_name]).first
+      organization = Carto::Organization.where(name: args[:organization_name]).first
       seats = args[:seats].to_i
       organization.viewer_seats = seats
       organization.save
@@ -592,7 +592,7 @@ namespace :cartodb do
           user.in_database do |user_database|
             begin
               flatten_schema = user_database.schema(table.name.to_sym).flatten
-            rescue => e
+            rescue StandardError => e
               puts " Skipping table #{table.name}: #{e}"
               next
             end
@@ -653,7 +653,7 @@ namespace :cartodb do
                   SELECT cartodb._CDB_create_triggers('#{schema_name}'::TEXT, '#{table_name}'::REGCLASS);
                 })
               end
-            rescue => exception
+            rescue StandardError => exception
               puts "ERROR:  #{user.username} / #{user.id} : #{table_name} #{exception}"
             end
           end
@@ -676,7 +676,7 @@ namespace :cartodb do
           user.in_database do |user_database|
             begin
               has_the_geom = true if user_database.schema(table.name.to_sym).flatten.include?(:the_geom)
-            rescue => e
+            rescue StandardError => e
               puts " Skipping table #{table.name}: #{e}"
               next
             end
@@ -715,7 +715,7 @@ namespace :cartodb do
             puts "\t=> #{table.name} updated"
             begin
               table.set_trigger_cache_timestamp
-            rescue => e
+            rescue StandardError => e
               puts "\t=> [ERROR] #{table.name}: #{e.inspect}"
             end
           end
@@ -736,7 +736,7 @@ namespace :cartodb do
         begin
           user.db_service.create_public_db_user
           user.save_metadata
-        rescue
+        rescue StandardError
           puts "user #{user.username} already has the public user"
         end
       end
@@ -761,7 +761,7 @@ namespace :cartodb do
               # Just saving will trigger the permission creation
               vis.save!
               puts "OK #{vis.id}"
-            rescue => e
+            rescue StandardError => e
               owner_id = vis.user.nil? ? 'nil' : vis.user.id
               message = "FAIL u:#{owner_id} v:#{vis.id}: #{e.message}"
               puts message
@@ -855,9 +855,9 @@ namespace :cartodb do
       raise "You should provide a USERNAME" if ENV['USERNAME'].blank?
       user = ::User.where(:username => ENV['USERNAME']).first
       raise "User #{ENV['USERNAME']} does not exist" if user.nil?
-      organization = Organization.where(:name => ENV['ORGANIZATION_NAME']).first
+      organization = Carto::Organization.where(name: ENV['ORGANIZATION_NAME']).first
       if organization.nil?
-        organization = Organization.new
+        organization = Carto::Organization.new
         organization.name = ENV['ORGANIZATION_NAME']
         organization.display_name = ENV['ORGANIZATION_DISPLAY_NAME']
         organization.seats = ENV['ORGANIZATION_SEATS']
@@ -878,9 +878,9 @@ namespace :cartodb do
       raise "You should provide a ORGANIZATION_SEATS" if ENV['ORGANIZATION_SEATS'].blank?
       raise "You should provide a ORGANIZATION_QUOTA (in Bytes)" if ENV['ORGANIZATION_QUOTA'].blank?
 
-      organization = Organization.where(:name => ENV['ORGANIZATION_NAME']).first
+      organization = Carto::Organization.find_by(name: ENV['ORGANIZATION_NAME'])
       if organization.nil?
-        organization = Organization.new
+        organization = Carto::Organization.new
         organization.name = ENV['ORGANIZATION_NAME']
         organization.display_name = ENV['ORGANIZATION_DISPLAY_NAME']
         organization.seats = ENV['ORGANIZATION_SEATS']
@@ -917,21 +917,22 @@ namespace :cartodb do
       org_name = organization.name
 
       (first_index..last_index).each { |i|
-        username = "#{org_name}-#{i}"
+        # See Carto::StandardPasswordStrategy
+        username = "user-#{org_name}-#{i}"
         print "Creating user #{username}... "
         user = create_user(username, organization, bytes_per_user)
         puts "Done."
       }
     end
 
-    desc "Create an organization with an arbitrary number of users for test purposes. Owner user: <org-name>-admin. Users: <org-name>-<i>. You might need to set conn_validator_timeout to -1 in config/database.yml (development)"
+    desc "Create an organization with an arbitrary number of users for test purposes. Owner user: <org-name>-admin. Users: user-<org-name>-<i>. You might need to set conn_validator_timeout to -1 in config/database.yml (development)"
     task :create_test_organization, [:org_name, :n_users] => [:environment] do |t, args|
       org_name = args[:org_name]
       n_users = args[:n_users].to_i
       bytes_per_user = 50 * 1024 * 1024
 
       def create_organization(org_name, n_users, bytes_per_user)
-        organization = Organization.new
+        organization = Carto::Organization.new
         organization.name = org_name
         organization.display_name = org_name
         organization.seats = n_users * 2
@@ -958,7 +959,7 @@ namespace :cartodb do
       last_index = args[:last_index]
       bytes_per_user = 50 * 1024 * 1024
 
-      organization = Organization.where(name: org_name).first
+      organization = Carto::Organization.find_by(name: org_name)
       create_users(first_index, last_index, organization, bytes_per_user)
     end
 
@@ -976,7 +977,7 @@ namespace :cartodb do
           message = "OK %-#{20}s (%-#{4}s/%-#{4}s)\n" % [user.username, i, count]
           print message
           log(message, :reload_users_avatars.to_s)
-        rescue => e
+        rescue StandardError => e
           message = "FAIL %-#{20}s (%-#{4}s/%-#{4}s) #{e.message}\n" % [user.username, i, count]
           print message
           log(message, :reload_users_avatars.to_s)
@@ -994,7 +995,7 @@ namespace :cartodb do
             message = "OK %-#{20}s (%-#{4}s/%-#{4}s)\n" % [user.username, i, count]
             print message
             log(message, :grant_general_raster_permissions.to_s)
-          rescue => e
+          rescue StandardError => e
             message = "FAIL %-#{20}s (%-#{4}s/%-#{4}s) MSG:#{e.message}\n" % [user.username, i, count]
             print message
             log(message, :grant_general_raster_permissions.to_s)
@@ -1026,7 +1027,8 @@ namespace :cartodb do
       tables = JSON.parse(File.read(args['table_definition_json_path'].to_s))
       u.in_database({as: :superuser, no_cartodb_in_schema: true}) do |db|
         db.transaction do
-          server_name = "oracle_#{args[:oracle_url].sanitize}_#{Time.now.to_i}"
+          name = CartoDB::Importer2::StringSanitizer.sanitize(args[:oracle_url], transliterate_cyrillic: true)
+          server_name = "oracle_#{name}_#{Time.now.to_i}"
           db.run('CREATE EXTENSION oracle_fdw') unless db.fetch(%Q{
               SELECT count(*) FROM pg_extension WHERE extname='oracle_fdw'
           }).first[:count] > 0
@@ -1112,15 +1114,15 @@ namespace :cartodb do
 
     desc "Assign permissions to organization shared role. See #3859 and #3881. This is used to upgrade existing organizations to new permission schema. You can optionally speciy an organization name to restrict the execution to it."
     task :assign_org_permissions_to_org_role, [:organization_name] => :environment do |t, args|
-      organizations = args[:organization_name].present? ? Organization.where(name: args[:organization_name]).all : Organization.all
+      organizations = args[:organization_name].present? ? Carto::Organization.where(name: args[:organization_name]) : Carto::Organization.all
       puts "Updating #{organizations.count} organizations"
       organizations.each { |o|
         owner = o.owner
         if owner
           puts "#{o.name}\t#{o.id}\tOwner: #{owner.username}\t#{owner.id}"
           begin
-            owner.db_service.setup_organization_role_permissions
-          rescue => e
+            owner.sequel_user.db_service.setup_organization_role_permissions
+          rescue StandardError => e
             puts "Error: #{e.message}"
             CartoDB.notify_exception(e)
           end
@@ -1138,7 +1140,7 @@ namespace :cartodb do
           puts "#{o.id} Owner: #{owner.id} #{owner.username}\t\tName: #{o.name}"
           begin
             yield owner
-          rescue => e
+          rescue StandardError => e
             puts "Error: #{e.message}"
             CartoDB.notify_exception(e)
           end
@@ -1162,11 +1164,11 @@ namespace :cartodb do
 
     desc "Assign organization owner admin role at database. See CartoDB/cartodb-postgresql#104 and #5187"
     task :assign_org_owner_role, [:organization_name] => :environment do |t, args|
-      organizations = args[:organization_name].present? ? Organization.where(name: args[:organization_name]).all : Organization.all
+      organizations = args[:organization_name].present? ? Carto::Organization.where(name: args[:organization_name]) : Carto::Organization.all
       run_for_organizations_owner(organizations) do |owner|
         begin
-          owner.db_service.grant_admin_permissions
-        rescue => e
+          owner.sequel_user.db_service.grant_admin_permissions
+        rescue StandardError => e
           puts "ERROR for #{owner.organization.name}: #{e.message}"
         end
       end
@@ -1174,11 +1176,11 @@ namespace :cartodb do
 
     desc "Configure extension org metadata API endpoint, the one used by the extension to keep groups synched. See CartoDB/cartodb-postgresql#104 and CartoDB/cartodb/issues/5244"
     task :configure_extension_org_metadata_api_endpoint, [:organization_name] => :environment do |t, args|
-      organizations = args[:organization_name].present? ? Organization.where(name: args[:organization_name]).all : Organization.all
+      organizations = args[:organization_name].present? ? Carto::Organization.where(name: args[:organization_name]) : Carto::Organization.all
       run_for_organizations_owner(organizations) do |owner|
         begin
-          owner.db_service.configure_extension_org_metadata_api_endpoint
-        rescue => e
+          owner.sequel_user.db_service.configure_extension_org_metadata_api_endpoint
+        rescue StandardError => e
           puts "ERROR for #{owner.organization.name}: #{e.message}"
         end
       end
@@ -1193,11 +1195,11 @@ namespace :cartodb do
         # Double check before launch an update to all the orgs
         raise "ERROR: You haven't passed an organization name and/or put the :all_organizations flag to true"
       end
-      organizations = args[:organization_name].blank? ? ::Organization.all : ::Organization.where(name: args[:organization_name]).all
+      organizations = args[:organization_name].blank? ? Carto::Organization.all : Carto::Organization.where(name: args[:organization_name])
       raise "ERROR: Organization #{args[:organization_name]} don't exists" if organizations.blank? and not args[:all_organizations]
       run_for_organizations_owner(organizations) do |owner|
         begin
-          result = owner.db_service.install_and_configure_geocoder_api_extension
+          result = owner.sequel_user.db_service.install_and_configure_geocoder_api_extension
           puts "Owner #{owner.username}: #{result ? 'OK' : 'ERROR'}"
           # TODO Improved using the execute_on_users_with_index when orgs have a lot more users
           owner.organization.users.each do |u|
@@ -1206,7 +1208,7 @@ namespace :cartodb do
               puts "Organization user #{u.username}: #{result ? 'OK' : 'ERROR'}"
             end
           end
-        rescue => e
+        rescue StandardError => e
           puts "Error trying to configure geocoder extension for org #{owner.organization.name}: #{e.message}"
         end
       end
@@ -1227,7 +1229,7 @@ namespace :cartodb do
         begin
           result = user.db_service.install_and_configure_geocoder_api_extension
           puts "#{result ? 'OK' : 'ERROR'} #{user.username}"
-        rescue => e
+        rescue StandardError => e
           puts "Error trying to configure geocoder extension for user #{u.name}: #{e.message}"
         end
       elsif args[:all_users]
@@ -1238,7 +1240,7 @@ namespace :cartodb do
               result = user.db_service.install_and_configure_geocoder_api_extension
               puts "#{result ? 'OK' : 'ERROR'} #{user.username}"
             end
-          rescue => e
+          rescue StandardError => e
             puts "Error trying to configure geocoder extension for user #{u.name}: #{e.message}"
           end
         }, 1, 0.3)
@@ -1255,7 +1257,7 @@ namespace :cartodb do
       begin
         date_from = DateTime.parse(args[:date_from])
         date_to = DateTime.parse(args[:date_to])
-      rescue => e
+      rescue StandardError => e
         raise "Error converting argument dates, check the arguments"
       end
       execute_on_users_with_index(:migrate_current_geocoder_billing_to_redis.to_s, Proc.new { |user, i|
@@ -1272,7 +1274,7 @@ namespace :cartodb do
             usage_metrics.incr(:geocoder_cache, :total_requests, metric[:cache_hits], metric[:date])
             puts "Imported metrics for day #{metric[:date]} and user #{user.username}: #{metric}"
           end
-        rescue => e
+        rescue StandardError => e
           puts "Error trying to migrate user current billing cycle to redis #{user.username}: #{e.message}"
         end
       }, 1, 0.3)
@@ -1311,11 +1313,11 @@ namespace :cartodb do
     task :connect_aggregation_fdw_tables_to_org, [:orgname] => [:environment] do |task, args|
       args.with_defaults(:orgname => nil)
       raise 'Not a valid orgname' if args[:orgname].blank?
-      org = ::Organization.find(name: args[:orgname])
+      org = Carto::Organization.find_by(name: args[:orgname])
       org.users.each do |u|
         begin
           u.db_service.connect_to_aggregation_tables
-        rescue => e
+        rescue StandardError => e
           puts "Error trying to connect  #{u.username}: #{e.message}"
         end
       end
@@ -1332,7 +1334,7 @@ namespace :cartodb do
         if user.has_feature_flag?('editor-3')
           begin
             user.db_service.connect_to_aggregation_tables
-          rescue => e
+          rescue StandardError => e
             puts "Error trying to connect #{user.username}: #{e.message}"
             puts e.backtrace
           end
@@ -1350,37 +1352,9 @@ namespace :cartodb do
       User.where.use_cursor(rows_per_fetch: 100).each do |user|
         begin
           user.db_service.connect_to_aggregation_tables
-        rescue => e
+        rescue StandardError => e
           puts "Error trying to connect #{user.username}: #{e.message}"
           puts e.backtrace
-        end
-      end
-    end
-
-    # usage:
-    #   bundle exec rake cartodb:db:obs_quota_enterprise[1000]
-    desc 'Give data observatory quota to all the enterprise users'
-    task :obs_quota_enterprise, [:quota] => [:environment] do |task, args|
-      args.with_defaults(:quota => 1000)
-      raise 'Not a valid quota' if args[:quota].blank?
-      do_quota = args[:quota]
-      users = User.where("account_type ilike 'enterprise%' or account_type ilike 'partner'").all
-      puts "Number of enterprise users to process: #{users.size}"
-      users.each do |u|
-        begin
-          if u.organization_owner? && !u.organization.nil?
-            u.organization.obs_general_quota = do_quota if u.organization.obs_general_quota.to_i == 0
-            u.organization.obs_snapshot_quota = do_quota if u.organization.obs_snapshot_quota.to_i == 0
-            u.organization.save
-            puts "Organization #{u.organization.name} processed OK"
-          else
-            u.obs_general_quota = do_quota if u.obs_general_quota.to_i == 0
-            u.obs_snapshot_quota = do_quota if u.obs_snapshot_quota.to_i == 0
-            u.save
-            puts "User #{u.username} processed OK"
-          end
-        rescue => e
-          puts "Error trying to give DO quota to #{u.username}: #{e.message}"
         end
       end
     end
@@ -1395,15 +1369,31 @@ namespace :cartodb do
         begin
           user.in_database do |db|
             db.fetch("SELECT DISTINCT f_table_schema, f_table_name FROM geometry_columns WHERE f_table_name LIKE 'analysis%' AND type = 'MULTIPOLYGON'").map { |r| { schema: r[:f_table_schema], table: r[:f_table_name] } }.each do |entry|
-              geom_types = db.fetch("SELECT DISTINCT ST_GeometryType(the_geom) AS geom_type FROM \"#{entry[:schema]}\".\"#{entry[:table]}\"").map { |r| r[:geom_type] }
-              if geom_types.size == 2 && geom_types.include?('ST_Polygon') && geom_types.include?('ST_MultiPolygon')
-                db.execute("UPDATE \"#{entry[:schema]}\".\"#{entry[:table]}\" SET the_geom = ST_Multi(the_geom) where ST_GeometryType(the_geom) = 'ST_Polygon'")
-              elsif geom_types.size >= 2
-                puts "Unexpected type of geometries found for user #{user.username}. Table \"#{entry[:schema]}\".\"#{entry[:table]}\": #{geom_types.join(', ')}"
-              end
+              db.execute("UPDATE \"#{entry[:schema]}\".\"#{entry[:table]}\" SET the_geom = ST_Multi(the_geom) where ST_GeometryType(the_geom) = 'ST_Polygon'")
             end
           end
-        rescue => e
+        rescue StandardError => e
+          puts "Error processing user #{user.username}: #{e.inspect}"
+        end
+      end
+    end
+
+    desc 'Fix analysis table the_geom type for batch geocoding bug (dataservices-api#538)'
+    task fix_batch_geocoding_the_geom_type: [:environment] do
+      total_users = User.count
+      current = 0
+      User.where.use_cursor(rows_per_fetch: 100).each do |user|
+        puts "User #{current += 1} / #{total_users}"
+        next if user.organization && user.organization.owner != user # Filter out admin not owner users
+        begin
+          user.in_database(as: :superuser) do |db|
+            db.fetch("SELECT DISTINCT f_table_schema, f_table_name FROM geometry_columns " \
+                     "WHERE f_table_name LIKE 'analysis_1ea6dec9f3_%' AND type = 'MULTIPOLYGON'").each do |entry|
+              db.execute("ALTER TABLE \"#{entry[:f_table_schema]}\".\"#{entry[:f_table_name]}\" " \
+                         "ALTER COLUMN the_geom TYPE geometry(Point, 4326)")
+            end
+          end
+        rescue StandardError => e
           puts "Error processing user #{user.username}: #{e.inspect}"
         end
       end
@@ -1413,7 +1403,7 @@ namespace :cartodb do
       begin
         user.save_metadata
         puts "Updated redis metadata for user #{user.username}"
-      rescue => e
+      rescue StandardError => e
         puts "Error trying to update the user  metadata for user #{user.username}: #{e.message}"
       end
     end
@@ -1424,7 +1414,7 @@ namespace :cartodb do
           user.organization.save_metadata
           puts "Updated redis metadata for organization #{user.organization.name}"
         end
-      rescue => e
+      rescue StandardError => e
         puts "Error trying to update the user and/or org metadata for user #{user.username}: #{e.message}"
       end
     end

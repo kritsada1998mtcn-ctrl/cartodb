@@ -1,5 +1,3 @@
-# coding: UTF-8
-
 class HomeController < ApplicationController
   layout 'frontend'
 
@@ -7,23 +5,23 @@ class HomeController < ApplicationController
   STATUS[true] = 'ok'
   STATUS[false] = 'error'
 
-  OS_VERSION = "Description:\tUbuntu 12.04"
-  PG_VERSION = 'PostgreSQL 9.5'.freeze
-  POSTGIS_VERSION = '2.2'.freeze
-  CDB_VALID_VERSION = '0.22'.freeze
-  CDB_LATEST_VERSION = '0.22.0'.freeze
-  REDIS_VERSION = '3'.freeze
-  RUBY_BIN_VERSION = 'ruby 2.2.3'.freeze
-  NODE_VERSION = 'v0.10'.freeze
+  OS_VERSION = "Description:\tUbuntu 18.04"
+  PG_VERSION = 'PostgreSQL 12'.freeze
+  POSTGIS_VERSION = '3.0'.freeze
+  CDB_VALID_VERSION = '0.37.1'.freeze
+  CDB_LATEST_VERSION = '0.37.1'.freeze
+  REDIS_VERSION = '4'.freeze
+  RUBY_BIN_VERSION = 'ruby 2.2'.freeze
+  NODE_VERSION = 'v6.9.2'.freeze
   GEOS_VERSION = '3.5.0'.freeze
-  GDAL_VERSION = '2.1'.freeze
+  GDAL_VERSION = '2.2'.freeze
 
-  WINDSHAFT_VALID_VERSION = '3.6'.freeze
-  WINDSHAFT_LATEST_VERSION = '3.6.0'.freeze
+  WINDSHAFT_VALID_VERSION = '6.1'.freeze
+  WINDSHAFT_LATEST_VERSION = '6.1.1'.freeze
   RUN_WINDSHAFT_INSTRUCTIONS = 'Run Windshaft: <span class="code">cd /Windshaft-cartodb && node app.js development'\
     '</span>'.freeze
-  SQL_API_VALID_VERSION = '1.45'.freeze
-  SQL_API_LATEST_VERSION = '1.45.1'.freeze
+  SQL_API_VALID_VERSION = '2.1'.freeze
+  SQL_API_LATEST_VERSION = '2.1.1'.freeze
   RUN_SQL_API_INSTRUCTIONS = 'Run SQL API <span class="code">cd /CartoDB-SQL-API; node app.js development</span>'.freeze
   RUN_RESQUE_INSTRUCTIONS =  'Run Resque <span class="code">bundle exec script/resque</span>'.freeze
 
@@ -37,13 +35,14 @@ class HomeController < ApplicationController
     redis_ok = check_redis
     api_ok   = true
     head (db_ok && redis_ok && api_ok) ? 200 : 500
-  rescue => e
-    CartoDB::StdoutLogger.info 'status method failed', e.inspect
+  rescue StandardError => e
+    log_info(message: 'status method failed', exception: e)
     head 500
   end
 
   def app_diagnosis
-    return head(400) if Cartodb.config[:cartodb_com_hosted] == false
+    return head(:not_found) if Cartodb.config[:cartodb_com_hosted] == false ||
+                               Cartodb.config[:diagnosis_page_disabled] == true
 
     @diagnosis = [
       diagnosis_output('Configuration') { configuration_diagnosis },
@@ -78,8 +77,8 @@ class HomeController < ApplicationController
     ['', [
       "Environment: #{environment}",
       "Subdomainless URLs: #{Cartodb.config[:subdomainless_urls]}",
-      "Sample Editor URL: #{CartoDB.url(self, 'datasets_index', {}, user)}",
-      "Sample Editor APIs URL: #{CartoDB.url(self, 'api_v1_visualizations_index', {}, user)}"
+      "Sample Editor URL: #{CartoDB.url(self, 'datasets_index', user: user)}",
+      "Sample Editor APIs URL: #{CartoDB.url(self, 'api_v1_visualizations_index', user: user)}"
     ]]
   end
 
@@ -198,7 +197,7 @@ class HomeController < ApplicationController
 
   def safe_diagnosis(help = nil)
     yield
-  rescue => e
+  rescue StandardError => e
     [ STATUS[false], [ help, e.to_s ].compact ]
   end
 
@@ -257,7 +256,7 @@ class HomeController < ApplicationController
 
   def safe_json_get(url)
     JSON.parse(http_client.get(url).body)
-  rescue => e
+  rescue StandardError => e
     { 'error fetching info' => e.message }
   end
 

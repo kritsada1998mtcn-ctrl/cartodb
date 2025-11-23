@@ -1,42 +1,40 @@
 require 'spec_helper_min'
 require 'factories/carto_visualizations'
+require './spec/support/factories/organizations'
 
 describe Carto::OrganizationMetadataExportService do
   include NamedMapsHelper
   include Carto::Factories::Visualizations
-  include TableSharing
+  include CartoDB::Factories
 
-  def create_organization_with_dependencies
-    @sequel_organization = FactoryGirl.create(:organization_with_users)
-    @organization = Carto::Organization.find(@sequel_organization.id)
-    @owner = @organization.owner
-    @non_owner = @organization.users.reject(&:organization_owner?).first
-
-    @map, @table, @table_visualization, @visualization = create_full_visualization(@non_owner)
-    share_visualization_with_user(@table_visualization, @owner)
-
-    @asset = FactoryGirl.create(:organization_asset, organization: @organization)
-
-    @group = FactoryGirl.create(:carto_group, organization: @organization)
-    @group.add_user(@non_owner.username)
-
-    notification = FactoryGirl.create(:notification, organization: @organization)
-    notification.received_notifications.find_by_user_id(@owner.id).update_attribute(:read_at, DateTime.now)
-
-    CartoDB::GeocoderUsageMetrics.new(@owner.username, @organization.name).incr(:geocoder_here, :success_responses)
-
-    @organization.reload
+  let!(:organization) { create_organization_with_users }
+  let(:owner) { organization.owner }
+  let(:non_owner) { organization.users.reject(&:organization_owner?).first }
+  let!(:asset) { create(:organization_asset, organization: organization) }
+  let!(:group) do
+    group = create(:carto_group, organization: organization)
+    group.add_user(non_owner.username)
+    group
   end
+  let!(:notification) do
+    notification = create(:notification, organization: organization)
+    notification.received_notifications.find_by_user_id(owner.id).update_attribute(:read_at, DateTime.now)
+    notification
+  end
+  let(:table_visualization) { create_full_visualization(non_owner)[2] }
+  let!(:connector_provider) { create(:connector_provider) }
+  let(:user) { create(:carto_user) }
+  let!(:oauth_app) { create(:oauth_app, user: user) }
 
   def destroy_organization
     clean_redis
-    @organization.groups.each(&:destroy)
-    @organization.groups.clear
-    Organization[@organization.id].destroy_cascade
+    organization.groups.each(&:destroy)
+    organization.groups.clear
+    organization.reload.destroy_cascade
   end
 
   def clean_redis
-    gum = CartoDB::GeocoderUsageMetrics.new(@owner.username, @organization.name)
+    gum = CartoDB::GeocoderUsageMetrics.new(owner.username, organization.name)
     $users_metadata.DEL(gum.send(:user_key_prefix, :geocoder_here, :success_responses, DateTime.now))
     $users_metadata.DEL(gum.send(:org_key_prefix, :geocoder_here, :success_responses, DateTime.now))
   end
@@ -44,32 +42,41 @@ describe Carto::OrganizationMetadataExportService do
   let(:service) { Carto::OrganizationMetadataExportService.new }
 
   describe '#organization export' do
-    before(:all) do
-      create_organization_with_dependencies
-    end
-
-    after(:all) do
-      destroy_organization
+    before do
+      share_visualization_with_user(table_visualization, owner)
+      CartoDB::GeocoderUsageMetrics.new(owner.username, organization.name).incr(:geocoder_here, :success_responses)
+      create(:connector_configuration, connector_provider: connector_provider, organization: organization)
     end
 
     it 'exports' do
-      export = service.export_organization_json_hash(@organization)
+      export = service.export_organization_json_hash(organization)
 
-      expect_export_matches_organization(export[:organization], @organization)
+      expect_export_matches_organization(export[:organization], organization)
     end
 
     it 'includes all user model attributes' do
-      export = service.export_organization_json_hash(@organization)
+      export = service.export_organization_json_hash(organization)
+      # TODO: remove once columns are dropped from DB
+      deprecated_data_observatory_v1_attributes = [
+        :obs_snapshot_quota,
+        :obs_snapshot_block_price,
+        :soft_obs_snapshot_limit,
+        :obs_general_quota,
+        :obs_general_block_price,
+        :soft_obs_general_limit
+      ]
 
-      expect(export[:organization].keys).to include(*@organization.attributes.symbolize_keys.keys)
+      expect(export[:organization].keys).to(
+        include(*organization.attributes.symbolize_keys.keys - deprecated_data_observatory_v1_attributes)
+      )
     end
 
     it 'exports notifications and received notifications' do
-      export = service.export_organization_json_hash(@organization)
+      export = service.export_organization_json_hash(organization)
 
       exported_notifications = export[:organization][:notifications]
       exported_notifications.length.should eq 1
-      exported_notifications.first[:received_by].length.should eq @organization.users.length
+      exported_notifications.first[:received_by].length.should eq organization.users.length
     end
   end
 
@@ -79,44 +86,75 @@ describe Carto::OrganizationMetadataExportService do
 
       expect_export_matches_organization(full_export[:organization], organization)
     end
+
+    it 'imports 1.0.2 (without oauth_app_organizations)' do
+      organization = service.build_organization_from_hash_export(full_export_one_zero_two)
+
+      expect_export_matches_organization(full_export_one_zero_two[:organization], organization)
+      expect(organization.oauth_app_organizations).to be_empty
+    end
+
+    it 'imports 1.0.1 (without connector configurations)' do
+      organization = service.build_organization_from_hash_export(full_export_one_zero_one)
+
+      expect_export_matches_organization(full_export_one_zero_one[:organization], organization)
+      expect(organization.connector_configurations).to be_empty
+    end
+
+    it 'imports 1.0.0 (without password expiration)' do
+      organization = service.build_organization_from_hash_export(full_export_one_zero_zero)
+
+      expect_export_matches_organization(full_export_one_zero_zero[:organization], organization)
+      expect(organization.password_expiration_in_d).to be_nil
+    end
   end
 
   describe '#full export + import (organization, users and visualizations)' do
     it 'export + import organization, users and visualizations' do
       Dir.mktmpdir do |path|
-        create_organization_with_dependencies
-        service.export_to_directory(@organization, path)
-        source_organization = @organization.attributes
-        source_users = @organization.users.map(&:attributes)
-        source_groups = @organization.groups.map(&:attributes)
-        source_group_users = @group.users.map(&:id)
-        source_assets = @organization.assets.map(&:attributes)
+        share_visualization_with_user(table_visualization, owner)
+        CartoDB::GeocoderUsageMetrics.new(owner.username, organization.name).incr(:geocoder_here, :success_responses)
+        create(:connector_configuration, connector_provider: connector_provider, organization: organization)
+
+        organization.reload
+        service.export_to_directory(organization, path)
+        source_organization = organization.attributes
+        source_users = organization.users.order(username: :asc).map(&:attributes)
+        source_groups = organization.groups.map(&:attributes)
+        source_group_users = group.users.map(&:id)
+        source_assets = organization.assets.map(&:attributes)
         expect(source_assets).not_to be_empty
-        source_notifications = @organization.notifications.map(&:attributes)
-        source_received_notifications = @organization.notifications.map { |n|
+        source_notifications = organization.notifications.map(&:attributes)
+        source_received_notifications = organization.notifications.map { |n|
           [n.id, n.received_notifications.map(&:attributes)]
         }.to_h
 
         # Destroy, keeping the database
         clean_redis
         Table.any_instance.stubs(:remove_table_from_user_database)
-        @organization.notifications.each(&:destroy)
-        @organization.assets.each { |a| a.update_attribute(:storage_info, nil) } # Avoids remote deletion attempt
-        @organization.assets.each(&:delete)
-        @organization.assets.clear
-        @organization.users.flat_map(&:visualizations).each(&:destroy)
-        @organization.users.each(&:destroy)
-        @organization.groups.each(&:destroy)
-        @organization.groups.clear
-        @organization.destroy
+        organization.notifications.each(&:destroy)
+        organization.assets.each { |a| a.update_attribute(:storage_info, nil) } # Avoids remote deletion attempt
+        organization.assets.each(&:delete)
+        organization.assets.clear
+        organization.users.flat_map(&:visualizations).each(&:destroy)
+        organization.users.each do |u|
+          sequel_user = ::User[u.id]
+          sequel_user.client_application.access_tokens.each(&:destroy)
+          sequel_user.client_application.destroy
+          u.destroy
+        end
+        organization.groups.each(&:destroy)
+        organization.groups.clear
+        organization.destroy
 
         imported_organization = service.import_from_directory(path)
         service.import_metadata_from_directory(imported_organization, path)
+        imported_organization.reload
 
         compare_excluding_dates(imported_organization.attributes, source_organization)
 
         expect(imported_organization.users.count).to eq source_users.count
-        imported_organization.users.zip(source_users).each do |u1, u2|
+        imported_organization.users.order(username: :asc).zip(source_users).each do |u1, u2|
           compare_excluding_dates(u1.attributes, u2)
         end
 
@@ -195,6 +233,24 @@ describe Carto::OrganizationMetadataExportService do
     export[:notifications].zip(organization.notifications).each do |exported_notification, notification|
       expect_export_matches_notification(exported_notification, notification)
     end
+
+    if export[:connector_configurations]
+      expect(export[:connector_configurations].count).to eq organization.connector_configurations.size
+      export[:connector_configurations].zip(organization.connector_configurations).each do |exported_cc, cc|
+        expect_export_matches_connector_configuration(exported_cc, cc)
+      end
+    else
+      expect(organization.connector_configurations).to be_empty
+    end
+
+    if export[:oauth_app_organizations]
+      expect(export[:oauth_app_organizations].count).to eq organization.oauth_app_organizations.size
+      export[:oauth_app_organizations].zip(organization.oauth_app_organizations).each do |exported_oao, oao|
+        expect_export_matches_oauth_app_organization(exported_oao, oao)
+      end
+    else
+      expect(organization.oauth_app_organizations).to be_empty
+    end
   end
 
   def expect_export_matches_asset(exported_asset, asset)
@@ -234,6 +290,29 @@ describe Carto::OrganizationMetadataExportService do
     expect(exported_received_notification[:read_at]).to eq received_notification.read_at
   end
 
+  def expect_export_matches_connector_configuration(exported_cc, cc)
+    expect(exported_cc[:enabled]).to eq cc.enabled
+    expect(exported_cc[:max_rows]).to eq cc.max_rows
+    expect(exported_cc[:created_at]).to eq cc.created_at
+    expect(exported_cc[:updated_at]).to eq cc.updated_at
+    expect(exported_cc[:provider_name]).to eq cc.connector_provider.name
+  end
+
+  def expect_export_matches_oauth_app_organization(exported_oao, oao)
+    expect(exported_oao[:oauth_app_id]).to eq oao.oauth_app_id
+    expect(exported_oao[:seats]).to eq oao.seats
+    expect(exported_oao[:oauth_app_id]).to eq oao.oauth_app_id
+    expect(exported_oao[:oauth_app_id]).to eq oao.oauth_app_id
+
+    fake_oao = Carto::OauthAppOrganization.new(
+      created_at: exported_oao[:created_at],
+      updated_at: exported_oao[:updated_at]
+    )
+
+    expect(fake_oao.created_at).to eq oao.created_at
+    expect(fake_oao.updated_at).to eq oao.updated_at
+  end
+
   def expect_redis_restored(org)
     expect(CartoDB::GeocoderUsageMetrics.new(org.owner.username, org.name).get(:geocoder_here, :success_responses)).to eq(1)
     expect(CartoDB::GeocoderUsageMetrics.new(org.owner.username).get(:geocoder_here, :success_responses)).to eq(1)
@@ -241,7 +320,7 @@ describe Carto::OrganizationMetadataExportService do
 
   let(:full_export) do
     {
-      version: "1.0.0",
+      version: "1.0.3",
       organization: {
         id: "189d642c-c7da-40aa-bffd-517aa0eb7999",
         seats: 100,
@@ -257,7 +336,7 @@ describe Carto::OrganizationMetadataExportService do
         discus_shortname: "",
         twitter_organizationname: nil,
         geocoding_quota: 0,
-        map_view_quota: nil,
+        map_views_quota: nil,
         auth_token: "pgYcd8XnAn46HlczpvQcIw",
         geocoding_block_price: nil,
         map_view_block_price: nil,
@@ -277,10 +356,6 @@ describe Carto::OrganizationMetadataExportService do
         here_isolines_quota: 0,
         here_isolines_block_price: nil,
         strong_passwords_enabled: false,
-        obs_snapshot_quota: 0,
-        obs_snapshot_block_price: nil,
-        obs_general_quota: 999999999,
-        obs_general_block_price: nil,
         salesforce_datasource_enabled: false,
         viewer_seats: 100,
         geocoder_provider: "heremaps",
@@ -292,7 +367,10 @@ describe Carto::OrganizationMetadataExportService do
         mapzen_routing_block_price: nil,
         builder_enabled: true,
         auth_saml_configuration: {},
+        random_saml_username: false,
         no_map_logo: false,
+        password_expiration_in_d: 365,
+        inherit_owner_ffs: false,
         assets: [{
           public_url: "http://localhost.lan:3000/uploads/organization_assets/189d642c-c7da-40aa-bffd-517aa0eb7999/asset_download_148430456220170113-20961-67b7r0",
           kind: "organization_asset",
@@ -325,8 +403,43 @@ describe Carto::OrganizationMetadataExportService do
               }
             ]
           }
+        ],
+        connector_configurations: [
+          {
+            created_at: DateTime.now,
+            updated_at: DateTime.now,
+            enabled: true,
+            max_rows: 100000,
+            provider_name: connector_provider.name
+          }
+        ],
+        oauth_app_organizations: [
+          {
+            oauth_app_id: oauth_app.id,
+            seats: 5,
+            created_at: "2018-11-16T14:31:46+00:00",
+            updated_at: "2018-11-17T16:41:56+00:00"
+          }
         ]
       }
     }
+  end
+
+  let(:full_export_one_zero_two) do
+    organizations_hash = full_export[:organization].except!(:oauth_app_organizations)
+    full_export[:organization] = organizations_hash
+    full_export
+  end
+
+  let(:full_export_one_zero_one) do
+    organizations_hash = full_export_one_zero_two[:organization].except!(:connector_configurations)
+    full_export[:organization] = organizations_hash
+    full_export
+  end
+
+  let(:full_export_one_zero_zero) do
+    organizations_hash = full_export_one_zero_one[:organization].except!(:password_expiration_in_d)
+    full_export[:organization] = organizations_hash
+    full_export
   end
 end

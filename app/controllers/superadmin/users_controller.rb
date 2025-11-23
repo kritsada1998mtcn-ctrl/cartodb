@@ -2,19 +2,20 @@ require_relative '../../../lib/carto/http/client'
 require_dependency 'carto/uuidhelper'
 require_dependency 'carto/overquota_users_service'
 require_dependency 'carto/api/paged_searcher'
+require './lib/carto/user_creator'
+require './lib/carto/user_updater'
 
 class Superadmin::UsersController < Superadmin::SuperadminController
   include Carto::UUIDHelper
   include Carto::Api::PagedSearcher
-  include Carto::ControllerHelper
 
   respond_to :json
 
-  ssl_required :show, :create, :update, :destroy, :index
-  before_filter :get_user, only: [:update, :destroy, :show, :dump, :data_imports, :data_import]
-  before_filter :get_carto_user, only: [:synchronizations, :synchronization, :geocodings, :geocoding]
+  ssl_required :show, :index
+  before_action :get_user, only: [:show, :dump, :data_imports, :data_import]
+  before_action :get_carto_user, only: [:synchronizations, :synchronization, :geocodings, :geocoding]
 
-  rescue_from Carto::OrderParamInvalidError, with: :rescue_from_carto_error
+  rescue_from Carto::ParamInvalidError, with: :rescue_from_carto_error
 
   layout 'application'
 
@@ -35,63 +36,27 @@ class Superadmin::UsersController < Superadmin::SuperadminController
       respond_with(:superadmin, username_dbsize.map do |username, db_size_in_bytes|
         { 'username' => username, 'db_size_in_bytes' => db_size_in_bytes }
       end) and return
+    elsif params[:account_type].present? && params[:state].present?
+      users = ::User.where(account_type: params[:account_type], state: params[:state])
+      if params[:page].present?
+        page, per_page = page_per_page_params
+        users = users.limit(per_page).offset((page - 1) * per_page)
+      end
+      respond_with(:superadmin, users.map(&:activity))
     else
       users = ::User.all
       respond_with(:superadmin, users.map(&:data))
     end
   end
 
-  def create
-    @user = ::User.new
-
-    user_param = params[:user]
-    @user.set_fields_from_central(user_param, :create)
-    @user.enabled = true
-
-    @user.rate_limit_id = create_rate_limits(user_param[:rate_limit]).id if user_param[:rate_limit].present?
-    if @user.save
-      @user.reload
-      CartoDB::Visualization::CommonDataService.load_common_data(@user, self) if @user.should_load_common_data?
-      @user.set_relationships_from_central(user_param)
-    end
-    CartoGearsApi::Events::EventManager.instance.notify(
-      CartoGearsApi::Events::UserCreationEvent.new(
-        CartoGearsApi::Events::UserCreationEvent::CREATED_VIA_SUPERADMIN, @user
-      )
-    )
-    respond_with(:superadmin, @user)
-  end
-
-  def update
-    user_param = params[:user]
-    @user.set_fields_from_central(user_param, :update)
-    @user.set_relationships_from_central(user_param)
-    @user.regenerate_api_key(user_param[:api_key]) if user_param[:api_key].present?
-
-    @user.update_rate_limits(user_param[:rate_limit])
-    @user.save
-    respond_with(:superadmin, @user)
-  end
-
-  def destroy
-    @user.set_force_destroy if params[:force] == 'true'
-    @user.destroy
-    respond_with(:superadmin, @user)
-  rescue CartoDB::SharedEntitiesError => e
-    render json: { "error": "Error destroying user: #{e.message}", "errorCode": "userHasSharedEntities" }, status: 422
-  rescue => e
-    CartoDB::Logger.error(exception: e, message: 'Error destroying user', user: @user)
-    render json: { "error": "Error destroying user: #{e.message}", "errorCode": "" }, status: 422
-  end
-
   def dump
-    if Cartodb.config[:users_dumps].nil? || Cartodb.config[:users_dumps]["service"].nil? || Cartodb.config[:users_dumps]["service"]["port"].nil?
-      raise "There is not a dump method configured"
-    end
+    database_port = Cartodb.get_config(:users_dumps, 'service', 'port')
+    raise "There is not a dump method configured" unless database_port
+
     json_data = {database: @user.database_name, username: @user.username}
     http_client = Carto::Http::Client.get(self.class.name, log_requests: true)
     response = http_client.request(
-      "#{@user.database_host}:#{Cartodb.config[:users_dumps]["service"]["port"]}/scripts/db_dump",
+      "#{@user.database_host}:#{database_port}/scripts/db_dump",
       method: :post,
       headers: { "Content-Type" => "application/json" },
       body: json_data.to_json
@@ -119,8 +84,8 @@ class Superadmin::UsersController < Superadmin::SuperadminController
   end
 
   def data_imports
-    page, per_page, order = page_per_page_order_params(VALID_ORDER_PARAMS)
-    dataset = @user.data_imports_dataset.order(order.desc).paginate(page, per_page)
+    page, per_page, order, _order_direction = page_per_page_order_params(VALID_ORDER_PARAMS)
+    dataset = @user.data_imports_dataset.order(Sequel.desc(order)).paginate(page, per_page)
 
     dataset = dataset.where(state: params[:status]) if params[:status].present?
     total_entries = dataset.pagination_record_count
@@ -147,7 +112,7 @@ class Superadmin::UsersController < Superadmin::SuperadminController
   end
 
   def geocodings
-    page, per_page, order = page_per_page_order_params(VALID_ORDER_PARAMS)
+    page, per_page, order, _order_direction = page_per_page_order_params(VALID_ORDER_PARAMS)
     dataset = @user.geocodings.order("#{order} desc")
 
     dataset = dataset.where(state: params[:status]) if params[:status].present?
@@ -169,7 +134,7 @@ class Superadmin::UsersController < Superadmin::SuperadminController
   end
 
   def synchronizations
-    page, per_page, order = page_per_page_order_params(VALID_ORDER_PARAMS)
+    page, per_page, order, _order_direction = page_per_page_order_params(VALID_ORDER_PARAMS)
     dataset = @user.synchronizations.order("#{order} desc")
 
     dataset = dataset.where(state: params[:status]) if params[:status].present?
@@ -200,7 +165,7 @@ class Superadmin::UsersController < Superadmin::SuperadminController
   def get_user
     id = params[:id]
 
-    @user = if is_uuid?(id)
+    @user = if uuid?(id)
               ::User[params[:id]]
             else
               ::User.where(username: id).first
@@ -212,12 +177,6 @@ class Superadmin::UsersController < Superadmin::SuperadminController
   def get_carto_user
     @user = Carto::User.where(id: params[:id]).first
     render json: { error: 'User not found' }, status: 404 unless @user
-  end
-
-  def create_rate_limits(rate_limit_attributes)
-    rate_limit = Carto::RateLimit.from_api_attributes(rate_limit_attributes)
-    rate_limit.save!
-    rate_limit
   end
 
 end # Superadmin::UsersController

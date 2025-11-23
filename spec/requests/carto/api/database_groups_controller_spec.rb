@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require_relative '../../../spec_helper'
 require_relative '.././../../factories/organizations_contexts'
 require_relative '.././../../factories/visualization_creation_helpers'
@@ -18,26 +16,26 @@ describe Carto::Api::DatabaseGroupsController do
   describe 'Groups management', :order => :defined do
 
     it "Throws 401 error without http auth" do
-      post api_v1_databases_group_create_url(user_domain: @org_user_owner.username, database_name: @carto_organization.database_name), {}, http_json_headers
+      post api_v1_databases_group_create_url(user_domain: @org_user_owner.username, database_name: @organization.database_name), {}, http_json_headers
       response.status.should == 401
     end
 
     it '#creates a new group from name and role, and initializes display_name as name' do
       group_information = { name: 'org_group', database_role: 'g_org_database_group' }
-      post api_v1_databases_group_create_url(database_name: @carto_organization.database_name), group_information.to_json, org_metadata_api_headers
+      post api_v1_databases_group_create_url(database_name: @organization.database_name), group_information.to_json, org_metadata_api_headers
       response.status.should == 200
-      group = Carto::Group.where(organization_id: @carto_organization.id, database_role: group_information[:database_role], name: group_information[:name], display_name: group_information[:name]).first
+      group = Carto::Group.where(organization_id: @organization.id, database_role: group_information[:database_role], name: group_information[:name], display_name: group_information[:name]).first
       group.should_not be_nil
     end
 
     it '#creates return 409 if a group with that data has already been created' do
       group_information = { name: 'org_group', database_role: 'g_org_database_group' }
-      post api_v1_databases_group_create_url(database_name: @carto_organization.database_name), group_information.to_json, org_metadata_api_headers
+      post api_v1_databases_group_create_url(database_name: @organization.database_name), group_information.to_json, org_metadata_api_headers
       response.status.should == 409
     end
 
     it '#rename a new group from name and role' do
-      group = Carto::Group.where(organization_id: @carto_organization.id).first
+      group = @organization.groups.first
       group_information = { name: 'org_group_2', database_role: 'g_org_database_group_2' }
       put api_v1_databases_group_update_url(database_name: group.database_name, old_name: group.name), group_information.to_json, org_metadata_api_headers
       response.status.should == 200
@@ -51,19 +49,19 @@ describe Carto::Api::DatabaseGroupsController do
     it '#rename triggers 409 if it looks like renaming already occurred: existing new name, nonexisting old name' do
       group_old_information = { name: 'org_group', database_role: 'g_org_database_group' }
       group_new_information = { name: 'org_group_2', database_role: 'g_org_database_group_2' }
-      put api_v1_databases_group_update_url(database_name: @carto_organization.database_name, old_name: group_old_information[:name]), group_new_information.to_json, org_metadata_api_headers
+      put api_v1_databases_group_update_url(database_name: @organization.database_name, old_name: group_old_information[:name]), group_new_information.to_json, org_metadata_api_headers
       response.status.should == 409
     end
 
     it '#rename triggers 500 if renaming can\'t be done and there is no previous match' do
       group_old_information = { name: 'org_group', database_role: 'g_org_database_group' }
       group_new_information = { name: 'org_group_2', database_role: 'g_org_database_group_WRONG' }
-      put api_v1_databases_group_update_url(database_name: @carto_organization.database_name, old_name: group_old_information[:name]), group_new_information.to_json, org_metadata_api_headers
+      put api_v1_databases_group_update_url(database_name: @organization.database_name, old_name: group_old_information[:name]), group_new_information.to_json, org_metadata_api_headers
       response.status.should == 500
     end
 
     it '#add_users from username' do
-      group = Carto::Group.where(organization_id: @carto_organization.id).first
+      group = @organization.groups.first
       user_information = { username: @org_user_1.username }
       post api_v1_databases_group_add_users_url(database_name: group.database_name, name: group.name), user_information.to_json, org_metadata_api_headers
       response.status.should == 200
@@ -72,16 +70,16 @@ describe Carto::Api::DatabaseGroupsController do
     end
 
     it '#add_users returns 409 if username is already added' do
-      group = Carto::Group.where(organization_id: @carto_organization.id).first
+      group = @organization.groups.first
       user_information = { username: @org_user_1.username }
       post api_v1_databases_group_add_users_url(database_name: group.database_name, name: group.name), user_information.to_json, org_metadata_api_headers
       response.status.should == 409
     end
 
     it '#update_permission returns 404 for visualizations' do
-      v = FactoryGirl.create(:carto_visualization, user: @carto_org_user_1)
+      v = create(:carto_visualization, user: @carto_org_user_1)
 
-      group = Carto::Group.where(organization_id: @carto_organization.id).first
+      group = @organization.groups.first
       permission = { 'access' => 'r' }
       put api_v1_databases_group_update_permission_url(
         database_name: group.database_name,
@@ -95,7 +93,7 @@ describe Carto::Api::DatabaseGroupsController do
       bypass_named_maps
       @table_user_2 = create_table_with_options(@org_user_2)
 
-      group = Carto::Group.where(organization_id: @carto_organization.id).first
+      group = @organization.groups.first
       permission = { 'access' => 'r' }
       put api_v1_databases_group_update_permission_url(database_name: group.database_name, name: group.name, username: @org_user_2.username, table_name: @table_user_2['name']), permission.to_json, org_metadata_api_headers
       response.status.should == 200
@@ -104,14 +102,11 @@ describe Carto::Api::DatabaseGroupsController do
       permission.should_not be_nil
 
       expected_acl = [
-          {
-              type: Permission::TYPE_GROUP,
-              entity: {
-                  id:         group.id,
-                  name:       group.name
-              },
-              access: Permission::ACCESS_READONLY
-          }
+        {
+          type: Carto::Permission::TYPE_GROUP,
+          entity: { id: group.id, name: group.name },
+          access: Carto::Permission::ACCESS_READONLY
+        }
       ]
       permission.to_poro[:acl].should == expected_acl
 
@@ -136,7 +131,7 @@ describe Carto::Api::DatabaseGroupsController do
       bypass_named_maps
       @table_user_1 = create_table_with_options(@org_user_1)
 
-      group = Carto::Group.where(organization_id: @carto_organization.id).first
+      group = @organization.groups.first
       # First read, then write, to ensure there're no duplicates
       permission = { 'access' => 'r' }
       put api_v1_databases_group_update_permission_url(database_name: group.database_name, name: group.name, username: @org_user_1.username, table_name: @table_user_1['name']), permission.to_json, org_metadata_api_headers
@@ -150,14 +145,11 @@ describe Carto::Api::DatabaseGroupsController do
       permission.should_not be_nil
 
       expected_acl = [
-          {
-              type: Permission::TYPE_GROUP,
-              entity: {
-                  id:         group.id,
-                  name:       group.name
-              },
-              access: Permission::ACCESS_READWRITE
-          }
+        {
+          type: Carto::Permission::TYPE_GROUP,
+          entity: { id: group.id, name: group.name },
+          access: Carto::Permission::ACCESS_READWRITE
+        }
       ]
       permission.to_poro[:acl].should == expected_acl
     end
@@ -166,7 +158,7 @@ describe Carto::Api::DatabaseGroupsController do
       bypass_named_maps
       @table_user_1 = create_table_with_options(@org_user_1)
 
-      group = Carto::Group.where(organization_id: @carto_organization.id).first
+      group = @organization.groups.first
       permission = { 'access' => 'r' }
       put api_v1_databases_group_update_permission_url(database_name: group.database_name, name: group.name, username: @org_user_1.username, table_name: @table_user_1['name']), permission.to_json, org_metadata_api_headers
       response.status.should == 200
@@ -186,20 +178,26 @@ describe Carto::Api::DatabaseGroupsController do
     it '#update_permission granting read on a table to organization, group and user do not duplicate count' do
       bypass_named_maps
       @table_user_2 = create_table_with_options(@org_user_2)
-      put api_v1_permissions_update_url(user_domain: @org_user_2.username, api_key: @org_user_2.api_key, id: @table_user_2['table_visualization'][:permission][:id]),
-          { acl: [ {
-              type: CartoDB::Permission::TYPE_USER,
-              entity: { id:   @org_user_1.id },
-              access: CartoDB::Permission::ACCESS_READONLY
-            }, {
-              type: CartoDB::Permission::TYPE_ORGANIZATION,
-              entity: { id:   @organization.id },
-              access: CartoDB::Permission::ACCESS_READONLY
-            } ]
-          }.to_json, http_json_headers
+      request_payload = {
+        acl: [
+          {
+            type: Carto::Permission::TYPE_USER,
+            entity: { id: @org_user_1.id },
+            access: Carto::Permission::ACCESS_READONLY
+          },
+          {
+            type: Carto::Permission::TYPE_ORGANIZATION,
+            entity: { id: @organization.id },
+            access: Carto::Permission::ACCESS_READONLY
+          }
+        ]
+      }.to_json
+      permission_id = @table_user_2['table_visualization'][:permission][:id]
+      request_url_params = { user_domain: @org_user_2.username, api_key: @org_user_2.api_key, id: permission_id }
+      put api_v1_permissions_update_url(request_url_params), request_payload, http_json_headers
       response.status.should == 200
 
-      group = Carto::Group.where(organization_id: @carto_organization.id).first
+      group = @organization.groups.first
       permission = { 'access' => 'r' }
       put api_v1_databases_group_update_permission_url(database_name: group.database_name, name: group.name, username: @org_user_2.username, table_name: @table_user_2['name']), permission.to_json, org_metadata_api_headers
       response.status.should == 200
@@ -213,7 +211,7 @@ describe Carto::Api::DatabaseGroupsController do
     end
 
     it '#remove_users from username' do
-      group = Carto::Group.where(organization_id: @carto_organization.id).first
+      group = @organization.groups.first
       username = group.users.first.username
       delete api_v1_databases_group_remove_users_url(database_name: group.database_name, name: group.name, username: username), {}, org_metadata_api_headers
       response.status.should == 200
@@ -222,14 +220,14 @@ describe Carto::Api::DatabaseGroupsController do
     end
 
     it '#remove_users from username throws 404 if user is not found' do
-      group = Carto::Group.where(organization_id: @carto_organization.id).first
+      group = @organization.groups.first
       username = @org_user_1.username
       delete api_v1_databases_group_remove_users_url(database_name: group.database_name, name: group.name, username: username), {}, org_metadata_api_headers
       response.status.should == 404
     end
 
     it '#add_users from username accepts batches' do
-      group = Carto::Group.where(organization_id: @carto_organization.id).first
+      group = @organization.groups.first
       user_information = { users: [ @org_user_1.username, @org_user_2.username ] }
       post api_v1_databases_group_add_users_url(database_name: group.database_name, name: group.name), user_information.to_json, org_metadata_api_headers
       response.status.should == 200
@@ -239,7 +237,7 @@ describe Carto::Api::DatabaseGroupsController do
     end
 
     it '#remove_users from username accepts batches' do
-      group = Carto::Group.where(organization_id: @carto_organization.id).first
+      group = @organization.groups.first
       usernames = group.users.collect(&:username)
       delete_json api_v1_databases_group_remove_users_url(database_name: group.database_name, name: group.name), { users: usernames }, org_metadata_api_headers
       response.status.should == 200
@@ -250,14 +248,14 @@ describe Carto::Api::DatabaseGroupsController do
     end
 
     it '#destroy an existing group' do
-      group = Carto::Group.where(organization_id: @carto_organization.id).first
+      group = @organization.groups.first
       delete api_v1_databases_group_destroy_url(database_name: group.database_name, name: group.name), nil, org_metadata_api_headers
       response.status.should == 204
       Carto::Group.where(id: group.id).first.should be_nil
     end
 
     it '#destroy a nonexisting group returns 404' do
-      delete api_v1_databases_group_destroy_url(database_name: @carto_organization.database_name, name: 'org_group'), nil, org_metadata_api_headers
+      delete api_v1_databases_group_destroy_url(database_name: @organization.database_name, name: 'org_group'), nil, org_metadata_api_headers
       response.status.should == 404
     end
 

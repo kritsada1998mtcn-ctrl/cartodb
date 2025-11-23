@@ -18,7 +18,7 @@ module Carto
         before_filter :ensure_viewable, only: [:show]
         before_filter :ensure_protected_viewable,
                       :load_auth_tokens,
-                      :load_google_maps_qs, only: [:show, :show_protected]
+                      :load_google_maps_query_string, only: [:show, :show_protected]
 
         skip_before_filter :builder_users_only # This is supposed to be public even in beta
         skip_before_filter :verify_authenticity_token, only: [:show_protected]
@@ -26,11 +26,15 @@ module Carto
         layout false
 
         def show
-          @viz_owner_base_url = @visualization.user.public_url
+          @viz_owner = @visualization.user
 
           @layers_data = visualization_for_presentation.layers.map do |l|
             Carto::Api::LayerPresenter.new(l).to_embed_poro
           end
+
+          response.headers['X-Cache-Channel'] = "#{@visualization.varnish_key}:vizjson"
+          response.headers['Surrogate-Key'] = "#{CartoDB::SURROGATE_NAMESPACE_PUBLIC_PAGES} #{@visualization.surrogate_key}"
+          response.headers['Cache-Control'] = "no-cache,max-age=86400,must-revalidate,public"
 
           render 'show', layout: 'application_public_visualization_layout'
         end
@@ -62,8 +66,8 @@ module Carto
                          end
         end
 
-        def load_google_maps_qs
-          @google_maps_qs = @visualization.user.google_maps_query_string
+        def load_google_maps_query_string
+          @google_maps_query_string = @visualization.user.google_maps_query_string
         end
 
         def load_vizjson
@@ -107,7 +111,7 @@ module Carto
 
         def redirect_to_old_embed_if_v2
           if @visualization.version != 3
-            redirect_to CartoDB.url(self, 'public_visualizations_embed_map', id: @visualization.id)
+            redirect_to CartoDB.url(self, 'public_visualizations_embed_map', params: { id: @visualization.id })
           end
         end
       end

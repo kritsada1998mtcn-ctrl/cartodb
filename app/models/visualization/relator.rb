@@ -1,4 +1,3 @@
-# encoding: utf-8
 require_relative './stats'
 require_relative '../visualization/collection'
 require_relative './support_tables'
@@ -18,7 +17,7 @@ module CartoDB
 
       INTERFACE = %w{ overlays user table related_templates related_tables related_canonical_visualizations
                       layers stats mapviews total_mapviews data_layers synchronization synced? permission
-                      parent children support_tables prev_list_item next_list_item likes likes_count reload_likes
+                      parent children support_tables prev_list_item next_list_item likes reload_likes
                       estimated_row_count actual_row_count }.freeze
 
       def initialize(map, attributes = {})
@@ -135,15 +134,11 @@ module CartoDB
       end
 
       def permission
-        @permission ||= CartoDB::Permission.where(id: @permission_id).first unless @permission_id.nil?
+        @permission ||= Carto::Permission.find(@permission_id) if @permission_id
       end
 
       def likes
         @likes ||= likes_search.all.to_a
-      end
-
-      def likes_count
-        @likes_count ||= likes_search.count
       end
 
       def reload_likes
@@ -156,7 +151,7 @@ module CartoDB
       private
 
       def likes_search
-        Like.where(subject: @id)
+        Carto::Like.where(subject: @id)
       end
 
       def get_related_canonical_visualizations

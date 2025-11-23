@@ -1,4 +1,3 @@
-require_dependency 'google_plus_config'
 require_dependency 'account_creator'
 
 require_relative '../../lib/user_account_creator'
@@ -67,7 +66,7 @@ class SignupController < ApplicationController
       end
     end
 
-  rescue => e
+  rescue StandardError => e
     @user ||= ::User.new
     CartoDB.notify_exception(e, { new_user: account_creator.user.inspect })
     flash.now[:error] = e.message
@@ -93,7 +92,7 @@ class SignupController < ApplicationController
     else
       render_500
     end
-  rescue => e
+  rescue StandardError => e
     CartoDB.report_exception(e, "Creating user with HTTP authentication", new_user: account_creator.user.inspect)
     flash.now[:error] = e.message
     render_500
@@ -136,10 +135,10 @@ class SignupController < ApplicationController
   end
 
   def initialize_oauth_config
-    @oauth_configs = [google_plus_config, github_config].compact
+    @oauth_configs = [google_config, github_config].compact
   end
 
-  def google_plus_config
+  def google_config
     unless @organization && !@organization.auth_google_enabled
       @google_config = Carto::Oauth::Google::Config.instance(form_authenticity_token, google_oauth_url,
                                                              invitation_token: params[:invitation_token],
@@ -166,7 +165,7 @@ class SignupController < ApplicationController
     end
 
     if subdomain && subdomain != CartoDB.session_domain
-      @organization = ::Organization.where(name: subdomain).first
+      @organization = Carto::Organization.where(name: subdomain).first
     end
   end
 

@@ -4,8 +4,6 @@ require_dependency 'carto/uuidhelper'
 module Carto
   module Api
     class LayersController < ::Api::ApplicationController
-      include Carto::ControllerHelper
-
       ssl_required :show, :layers_by_map, :custom_layers_by_user, :map_index, :user_index, :map_show, :user_show,
                    :map_create, :user_create, :map_update, :user_update, :map_destroy, :user_destroy
 
@@ -120,7 +118,7 @@ module Carto
 
           render_jsonp Carto::Api::LayerPresenter.new(layer, viewer_user: current_user).to_poro
         else
-          CartoDB::Logger.error(message: 'Error creating layer', errors: layer.errors.full_messages)
+          log_error(message: 'Error creating layer', error_detail: layer.errors.full_messages)
           raise UnprocesableEntityError.new(layer.errors.full_messages)
         end
       end
@@ -152,7 +150,7 @@ module Carto
           render_jsonp Carto::Api::LayerPresenter.new(layers[0], viewer_user: current_user).to_poro
         end
       rescue RuntimeError => e
-        CartoDB::Logger.error(message: 'Error updating layer', exception: e)
+        log_error(message: 'Error updating layer', exception: e)
         render_jsonp({ description: e.message }, 400)
       end
 
@@ -162,7 +160,7 @@ module Carto
       end
 
       def layer_attributes(param)
-        param.slice(:options, :kind, :infowindow, :tooltip, :order)
+        param.slice(:options, :kind, :infowindow, :tooltip, :order).permit!
       end
 
       def ensure_current_user
@@ -238,8 +236,8 @@ module Carto
           move_layer_node_styles(from_layer, from_letter, to_layer, to_letter, to_source)
           update_source_layer_styles(from_layer, from_letter, to_letter, to_source)
         end
-      rescue => e
-        CartoDB::Logger.error(
+      rescue StandardError => e
+        log_error(
           message: 'Error updating layer node styles',
           exception: e,
           from_layer: from_layer,
@@ -265,11 +263,8 @@ module Carto
         if from_letter != to_letter
           # Dragging middle node: rename the moved node
           node_id_to_fix = to_source.gsub(to_letter, from_letter)
-          style_node = ::LayerNodeStyle.where(layer_id: from_layer.id, source_id: node_id_to_fix).first
-          if style_node
-            style_node.source_id = to_source
-            style_node.save
-          end
+          Carto::LayerNodeStyle.find_by(layer_id: from_layer.id, source_id: node_id_to_fix)
+                               &.update(source_id: to_source)
         else
           # Dragging head node: remove unneeded old styles in the old layer
           from_layer.reload

@@ -1,5 +1,3 @@
-# encoding: utf-8
-require_relative '../../../../spec/rspec_configuration'
 require_relative '../../../../spec/spec_helper'
 require_relative '../../lib/importer/runner'
 require_relative '../../lib/importer/job'
@@ -9,7 +7,6 @@ require_relative '../doubles/log'
 require_relative '../doubles/user'
 require_relative 'acceptance_helpers'
 require_relative 'cdb_importer_context'
-require_relative '../../../../spec/rspec_configuration'
 require_relative 'no_stats_context'
 
 describe 'gz and tgz regression tests' do

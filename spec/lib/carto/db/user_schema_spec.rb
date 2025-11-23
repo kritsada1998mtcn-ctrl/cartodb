@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require_relative '../../../spec_helper_min.rb'
 require 'carto/db/user_schema'
 
@@ -7,7 +5,7 @@ module Carto
   module Db
     describe UserSchema do
       before(:all) do
-        @user = ::User[FactoryGirl.create(:carto_user).id]
+        @user = ::User[create(:carto_user).id]
 
         @user_schema = Carto::Db::UserSchema.new(@user)
       end

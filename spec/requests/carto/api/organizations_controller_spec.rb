@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require_relative '../../../spec_helper'
 require_relative '../../../../app/controllers/carto/api/organizations_controller'
 require 'helpers/unique_names_helper'
@@ -22,7 +20,7 @@ describe Carto::Api::OrganizationsController do
 
     before(:all) do
       @org_user_3 = create_test_user(unique_name('user'), @organization)
-      @group_1 = FactoryGirl.create(:random_group, display_name: 'g_1', organization: @carto_organization)
+      @group_1 = create(:random_group, display_name: 'g_1', organization: @carto_organization)
       @group_1.add_user(@org_user_1.username)
     end
 
@@ -111,7 +109,7 @@ describe Carto::Api::OrganizationsController do
       url = api_v1_organization_groups_users_url(id: @organization.id, group_id: group.id, api_key: @org_user_owner.api_key)
       get_json url, @headers do |response|
         response.status.should == 200
-        ids = response.body[:users].map { |u| u['id'] }.uniq.sort
+        ids = response.body[:users].map { |u| u[:id] }.uniq.sort
         ids.count.should == group.users.count
         ids.should == group.users.map(&:id).uniq.sort
       end
@@ -123,7 +121,7 @@ describe Carto::Api::OrganizationsController do
       url = api_v1_organization_groups_users_url(id: @organization.id, group_id: group.id, api_key: @org_user_owner.api_key, q: user.email)
       get_json url, @headers do |response|
         response.status.should == 200
-        ids = response.body[:users].map { |u| u['id'] }
+        ids = response.body[:users].map { |u| u[:id] }
         ids.count.should == 1
         ids[0].should == user.id
       end

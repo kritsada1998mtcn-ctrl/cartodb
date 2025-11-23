@@ -1,10 +1,8 @@
-# encoding: utf-8
-
 require 'yaml'
-require_relative '../../../../spec/rspec_configuration'
 
 require_relative '../../lib/datasources'
 require_relative '../doubles/user'
+require 'spec_helper_min'
 
 include CartoDB::Datasources
 
@@ -16,7 +14,7 @@ describe DatasourcesFactory do
 
   describe '#provider_instantiations' do
     it 'tests all available provider instantiations' do
-      user = FactoryGirl.build(:user)
+      user = build(:user)
       user.stubs('has_feature_flag?').with('gnip_v2').returns(false)
       DatasourcesFactory.set_config(get_config)
 
@@ -27,7 +25,9 @@ describe DatasourcesFactory do
       dropbox_provider.is_a?(Url::Box).should eq true
 
       # Stubs Google Drive client for connectionless testing
-      Google::APIClient.any_instance.stubs(:discovered_api)
+      Google::Apis::DriveV2::DriveService.any_instance.stubs(:get_file)
+      Google::Apis::DriveV2::DriveService.any_instance.stubs(:export_file)
+      Google::Apis::DriveV2::DriveService.any_instance.stubs(:list_files)
       gdrive_provider = DatasourcesFactory.get_datasource(Url::GDrive::DATASOURCE_NAME, user)
       gdrive_provider.is_a?(Url::GDrive).should eq true
 
@@ -54,12 +54,12 @@ describe DatasourcesFactory do
     end
 
     it 'returns false for a random user' do
-      user = FactoryGirl.build(:carto_user, username: 'wadus')
+      user = build(:carto_user, username: 'wadus')
       DatasourcesFactory.customized_config?(twitter_datasource, user).should be_false
     end
 
     it 'returns true for a user with custom config' do
-      user = FactoryGirl.build(:carto_user, username: 'wadus')
+      user = build(:carto_user, username: 'wadus')
       @config['datasource_search']['twitter_search']['customized_user_list'] = [user.username]
       DatasourcesFactory.set_config(@config)
 
@@ -67,8 +67,8 @@ describe DatasourcesFactory do
     end
 
     it 'returns true for a user in an organization with custom config' do
-      organization = FactoryGirl.build(:organization, name: 'wadus-org')
-      user = FactoryGirl.build(:carto_user, username: 'nowadus', organization: organization)
+      organization = Carto::Organization.new(name: 'wadus-org')
+      user = build(:carto_user, username: 'nowadus', organization: organization)
       @config['datasource_search']['twitter_search']['customized_orgs_list'] = [organization.name]
       DatasourcesFactory.set_config(@config)
 

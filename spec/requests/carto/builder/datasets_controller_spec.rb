@@ -7,8 +7,8 @@ describe Carto::Builder::DatasetsController do
     before(:all) do
       CartoDB::UserModule::DBService.any_instance.stubs(:enable_remote_db_user).returns(true)
       bypass_named_maps
-      @user = FactoryGirl.build(:valid_user, builder_enabled: true).save
-      @table = FactoryGirl.create(:carto_user_table, :full, user_id: @user.id, map: @map)
+      @user = build(:valid_user, builder_enabled: true).save
+      @table = create(:carto_user_table, :full, user_id: @user.id, map: @map)
       @map = @table.map
       @visualization = @table.table_visualization
     end
@@ -36,14 +36,14 @@ describe Carto::Builder::DatasetsController do
     end
 
     it 'returns 404 for non-existent visualizations' do
-      get builder_dataset_url(id: UUIDTools::UUID.timestamp_create.to_s)
+      get builder_dataset_url(id: Carto::UUIDHelper.random_uuid)
 
       response.status.should == 404
     end
 
     it 'redirects to public view for visualizations not writable by user' do
       bypass_named_maps
-      @other_visualization = FactoryGirl.create(:carto_visualization, type: Carto::Visualization::TYPE_CANONICAL)
+      @other_visualization = create(:carto_visualization, type: Carto::Visualization::TYPE_CANONICAL)
 
       get builder_dataset_url(id: @other_visualization.id)
 
@@ -93,7 +93,7 @@ describe Carto::Builder::DatasetsController do
       get builder_dataset_url(id: @visualization.id)
 
       response.status.should == 200
-      response.body.should include("maps.googleapis.com/maps/api/js?v=3.30&client=wadus_cid")
+      response.body.should include("maps.googleapis.com/maps/api/js?v=3.32&client=wadus_cid")
     end
 
     it 'does not include google maps if the map does not need it' do

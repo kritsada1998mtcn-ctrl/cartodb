@@ -1,9 +1,4 @@
-# encoding: utf-8
-
-require 'rspec/mocks'
-require_relative '../../../spec_helper'
-require_relative '../../../../app/controllers/carto/api/database_groups_controller'
-require_relative '.././../../factories/visualization_creation_helpers'
+require 'spec_helper'
 
 # cURL samples:
 # - Rename group: curl -v -H "Content-Type: application/json" -X PUT -d '{ "display_name": "Demo Group" }' "http://central-org-b-admin.localhost.lan:3000/api/v1/organization/95c2c425-5c8c-4b20-8999-d79cd20c2f2c/groups/c662f7ee-aefb-4f49-93ea-1f671a77bb36?api_key=665646f527c3006b124c15a308bb98f4ed1f52e4"
@@ -30,13 +25,13 @@ describe Carto::Api::GroupsController do
         "google_maps_query_string" => @org_user_1.google_maps_query_string
       }
 
-      @group_1 = FactoryGirl.create(:random_group, display_name: 'g_1', organization: @carto_organization)
+      @group_1 = create(:random_group, display_name: 'g_1', organization: @carto_organization)
       @group_1_json = { 'id' => @group_1.id, 'organization_id' => @group_1.organization_id, 'name' => @group_1.name, 'display_name' => @group_1.display_name }
-      @group_2 = FactoryGirl.create(:random_group, display_name: 'g_2', organization: @carto_organization)
+      @group_2 = create(:random_group, display_name: 'g_2', organization: @carto_organization)
       @group_2_json = { 'id' => @group_2.id, 'organization_id' => @group_2.organization_id, 'name' => @group_2.name, 'display_name' => @group_2.display_name }
-      @group_3 = FactoryGirl.create(:random_group, display_name: 'g_3', organization: @carto_organization)
+      @group_3 = create(:random_group, display_name: 'g_3', organization: @carto_organization)
       @group_3_json = { 'id' => @group_3.id, 'organization_id' => @group_3.organization_id, 'name' => @group_3.name, 'display_name' => @group_3.display_name }
-      @headers = {'CONTENT_TYPE'  => 'application/json', :format => "json" }
+      @headers = { 'CONTENT_TYPE' => 'application/json', :format => "json", 'Accept' => 'application/json' }
     end
 
     after(:all) do
@@ -64,7 +59,7 @@ describe Carto::Api::GroupsController do
             groups: [ @group_1_json, @group_2_json, @group_3_json ],
             total_entries: 3
           }
-          response.body.should == expected_response
+          response.body.should == expected_response.deep_symbolize_keys
         end
       end
 
@@ -75,7 +70,7 @@ describe Carto::Api::GroupsController do
             groups: [ @group_2_json ],
             total_entries: 3
           }
-          response.body.should == expected_response
+          response.body.should == expected_response.deep_symbolize_keys
         end
       end
 
@@ -86,7 +81,7 @@ describe Carto::Api::GroupsController do
             groups: [ @group_2_json ],
             total_entries: 1
           }
-          response.body.should == expected_response
+          response.body.should == expected_response.deep_symbolize_keys
         end
       end
 
@@ -130,7 +125,7 @@ describe Carto::Api::GroupsController do
               groups: [ @group_1_json ],
               total_entries: 1
             }
-            response.body.should == expected_response
+            response.body.should == expected_response.deep_symbolize_keys
           end
         end
 
@@ -143,7 +138,7 @@ describe Carto::Api::GroupsController do
               ],
               total_entries: 1
             }
-            response.body.should == expected_response
+            response.body.should == expected_response.deep_symbolize_keys
           end
 
           get_json api_v1_user_groups_url(user_domain: @org_user_1.username, user_id: @org_user_1.id, api_key: @org_user_1.api_key, fetch_shared_tables_count: true, fetch_shared_maps_count: true, fetch_users: true), {}, @headers do |response|
@@ -158,14 +153,15 @@ describe Carto::Api::GroupsController do
               ],
               total_entries: 1
             }
-            response.body.should == expected_response
+            response.body.should == expected_response.deep_symbolize_keys
           end
         end
 
         it 'can fetch number of shared tables, maps and users when a table is shared' do
           bypass_named_maps
           table_user_2 = create_table_with_options(@org_user_2)
-          permission = CartoDB::Permission[Carto::Visualization.find(table_user_2['table_visualization'][:id]).permission.id]
+          visualization = Carto::Visualization.find(table_user_2['table_visualization'][:id])
+          permission = Carto::Permission.find(visualization.permission.id)
           permission.set_group_permission(@group_1, Carto::Permission::ACCESS_READONLY)
           permission.save
 
@@ -181,7 +177,7 @@ describe Carto::Api::GroupsController do
               ],
               total_entries: 1
             }
-            response.body.should == expected_response
+            response.body.should == expected_response.deep_symbolize_keys
           end
         end
 
@@ -280,9 +276,35 @@ describe Carto::Api::GroupsController do
 
       Carto::Group.expects(:add_users_group_extension_query).with(anything, group.name, [user.username])
 
-      post_json api_v1_organization_groups_add_users_url(user_domain: @admin_user.username, organization_id: @carto_organization.id, group_id: group.id, api_key: @admin_user.api_key), { user_id: user.id }, @headers do |response|
+      post_json api_v1_organization_groups_add_users_url(
+        user_domain: @admin_user.username,
+        organization_id: @carto_organization.id,
+        group_id: group.id,
+        api_key: @admin_user.api_key
+      ), {
+        user_id: user.id,
+        password_confirmation:  '00012345678'
+      }, @headers do |response|
         response.status.should == 200
         # INFO: since test doesn't actually trigger the extension we only check expectation on membership call
+      end
+    end
+
+    it 'fails to #add_users if wrong password_confirmation' do
+      group = @carto_organization.groups.first
+      user = @org_user_1
+
+      post_json api_v1_organization_groups_add_users_url(
+        user_domain: @admin_user.username,
+        organization_id: @carto_organization.id,
+        group_id: group.id,
+        api_key: @admin_user.api_key
+      ), {
+        user_id: user.id,
+        password_confirmation:  'wrong'
+      }, @headers do |response|
+        response.status.should == 403
+        response.body[:errors].should include "Confirmation password sent does not match your current password"
       end
     end
 
@@ -296,9 +318,39 @@ describe Carto::Api::GroupsController do
 
       Carto::Group.expects(:remove_users_group_extension_query).with(anything, group.name, [user.username])
 
-      delete_json api_v1_organization_groups_remove_users_url(user_domain: @admin_user.username, organization_id: @carto_organization.id, group_id: group.id, api_key: @admin_user.api_key, user_id: user.id), {}, @headers do |response|
+      delete_json api_v1_organization_groups_remove_users_url(
+        user_domain: @admin_user.username,
+        organization_id: @carto_organization.id,
+        group_id: group.id,
+        api_key: @admin_user.api_key,
+        user_id: user.id
+      ), {
+        password_confirmation: '00012345678'
+      }, @headers do |response|
         response.status.should == 200
         # INFO: since test doesn't actually trigger the extension we only check expectation on membership call
+      end
+    end
+
+    it 'fails #remove_users if wrong password_confirmation' do
+      group = @carto_organization.groups.first
+      user = @carto_org_user_1
+      group.users << user unless group.users.include?(user)
+      group.save
+      group.reload
+      group.users.include?(user)
+
+      delete_json api_v1_organization_groups_remove_users_url(
+        user_domain: @admin_user.username,
+        organization_id: @carto_organization.id,
+        group_id: group.id,
+        api_key: @admin_user.api_key,
+        user_id: user.id
+      ), {
+        password_confirmation: 'wrong'
+      }, @headers do |response|
+        response.status.should == 403
+        response.body[:errors].should include "Confirmation password sent does not match your current password"
       end
     end
 
@@ -307,9 +359,18 @@ describe Carto::Api::GroupsController do
       user_1 = @org_user_1
       user_2 = @org_user_2
 
-      Carto::Group.expects(:add_users_group_extension_query).with(anything, group.name, [user_1.username, user_2.username])
+      Carto::Group.expects(:add_users_group_extension_query)
+                  .with(anything, group.name, [user_1.username, user_2.username])
 
-      post_json api_v1_organization_groups_add_users_url(user_domain: @admin_user.username, organization_id: @carto_organization.id, group_id: group.id, api_key: @admin_user.api_key), { users: [ user_1.id, user_2.id ] }, @headers do |response|
+      post_json api_v1_organization_groups_add_users_url(
+        user_domain: @admin_user.username,
+        organization_id: @carto_organization.id,
+        group_id: group.id,
+        api_key: @admin_user.api_key
+      ), {
+        users: [user_1.id, user_2.id],
+        password_confirmation: '00012345678'
+      }, @headers do |response|
         response.status.should == 200
         # INFO: since test doesn't actually trigger the extension we only check expectation on membership call
       end
@@ -325,9 +386,18 @@ describe Carto::Api::GroupsController do
       group.users.include?(user_1)
       group.users.include?(user_2)
 
-      Carto::Group.expects(:remove_users_group_extension_query).with(anything, group.name, [user_1.username, user_2.username])
+      Carto::Group.expects(:remove_users_group_extension_query)
+                  .with(anything, group.name, [user_1.username, user_2.username])
 
-      delete_json api_v1_organization_groups_remove_users_url(user_domain: @admin_user.username, organization_id: @carto_organization.id, group_id: group.id, api_key: @admin_user.api_key), { users: [ user_1.id, user_2.id ] }, @headers do |response|
+      delete_json api_v1_organization_groups_remove_users_url(
+        user_domain: @admin_user.username,
+        organization_id: @carto_organization.id,
+        group_id: group.id,
+        api_key: @admin_user.api_key
+      ), {
+        users: [user_1.id, user_2.id],
+        password_confirmation: '00012345678'
+      }, @headers do |response|
         response.status.should == 200
         # INFO: since test doesn't actually trigger the extension we only check expectation on membership call
       end
@@ -338,7 +408,14 @@ describe Carto::Api::GroupsController do
 
       Carto::Group.expects(:destroy_group_extension_query).with(anything, group.name)
 
-      delete_json api_v1_organization_groups_destroy_url(user_domain: @admin_user.username, organization_id: @carto_organization.id, group_id: group.id, api_key: @admin_user.api_key), { }, @headers do |response|
+      delete_json api_v1_organization_groups_destroy_url(
+        user_domain: @admin_user.username,
+        organization_id: @carto_organization.id,
+        group_id: group.id,
+        api_key: @admin_user.api_key
+      ), {
+        password_confirmation: '00012345678'
+      }, @headers do |response|
         response.status.should == 204
 
         # Extension is simulated, so we delete the group manually
@@ -346,12 +423,30 @@ describe Carto::Api::GroupsController do
       end
     end
 
+    it 'cannot destroy group if wrong password_confirmation' do
+      group = @carto_organization.groups.first
+
+      delete_json api_v1_organization_groups_destroy_url(
+        user_domain: @admin_user.username,
+        organization_id: @carto_organization.id,
+        group_id: group.id,
+        api_key: @admin_user.api_key
+      ), {
+        password_confirmation: 'wrong'
+      }, @headers do |response|
+        response.status.should == 403
+        response.body[:errors].should include "Confirmation password sent does not match your current password"
+      end
+    end
   end
 
   describe 'with organization owner' do
     it_behaves_like 'Groups editor management' do
       before(:all) do
         @admin_user = @organization.owner
+        @admin_user.password = '00012345678'
+        @admin_user.password_confirmation = '00012345678'
+        @admin_user.save
       end
     end
   end
@@ -362,6 +457,9 @@ describe Carto::Api::GroupsController do
         @org_user_2.org_admin = true
         @org_user_2.save
         @admin_user = @org_user_2
+        @admin_user.password = '00012345678'
+        @admin_user.password_confirmation = '00012345678'
+        @admin_user.save
       end
     end
   end

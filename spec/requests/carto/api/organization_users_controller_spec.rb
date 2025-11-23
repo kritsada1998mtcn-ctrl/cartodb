@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require_relative '../../../spec_helper'
 require_relative '../../../../app/controllers/carto/api/organizations_controller'
 require 'helpers/unique_names_helper'
@@ -14,9 +12,7 @@ describe Carto::Api::OrganizationUsersController do
     [
       user.soft_geocoding_limit,
       user.soft_twitter_datasource_limit,
-      user.soft_here_isolines_limit,
-      user.soft_obs_snapshot_limit,
-      user.soft_obs_general_limit
+      user.soft_here_isolines_limit
     ]
   end
 
@@ -24,8 +20,6 @@ describe Carto::Api::OrganizationUsersController do
     user.soft_geocoding_limit = soft_limits[0]
     user.soft_twitter_datasource_limit = soft_limits[1]
     user.soft_here_isolines_limit = soft_limits[2]
-    user.soft_obs_snapshot_limit = soft_limits[3]
-    user.soft_obs_general_limit = soft_limits[4]
   end
 
   def replace_soft_limits(user, soft_limits)
@@ -40,8 +34,6 @@ describe Carto::Api::OrganizationUsersController do
                 soft_geocoding_limit: soft_limit,
                 soft_twitter_datasource_limit: soft_limit,
                 soft_here_isolines_limit: soft_limit,
-                soft_obs_snapshot_limit: soft_limit,
-                soft_obs_general_limit: soft_limit,
                 with_password: with_password)
   end
 
@@ -50,11 +42,10 @@ describe Carto::Api::OrganizationUsersController do
                   soft_geocoding_limit: false,
                   soft_twitter_datasource_limit: nil,
                   soft_here_isolines_limit: nil,
-                  soft_obs_snapshot_limit: nil,
-                  soft_obs_general_limit: nil,
                   viewer: nil,
                   org_admin: nil,
-                  email: "#{username}@carto.com")
+                  email: "#{username}@carto.com",
+                  force_password_change: false)
 
     params = {
       password: '2{Patrañas}',
@@ -67,10 +58,9 @@ describe Carto::Api::OrganizationUsersController do
     params[:soft_geocoding_limit] = soft_geocoding_limit unless soft_geocoding_limit.nil?
     params[:soft_twitter_datasource_limit] = soft_twitter_datasource_limit unless soft_twitter_datasource_limit.nil?
     params[:soft_here_isolines_limit] = soft_here_isolines_limit unless soft_here_isolines_limit.nil?
-    params[:soft_obs_snapshot_limit] = soft_obs_snapshot_limit unless soft_obs_snapshot_limit.nil?
-    params[:soft_obs_general_limit] = soft_obs_general_limit unless soft_obs_general_limit.nil?
     params[:viewer] = viewer if viewer
     params[:org_admin] = org_admin if org_admin
+    params[:force_password_change] = force_password_change
 
     params.except!(:password) unless with_password
     params
@@ -80,8 +70,6 @@ describe Carto::Api::OrganizationUsersController do
     user.soft_geocoding_limit.should eq value
     user.soft_twitter_datasource_limit.should eq value
     user.soft_here_isolines_limit.should eq value
-    user.soft_obs_snapshot_limit.should eq value
-    user.soft_obs_general_limit.should eq value
   end
 
   before(:all) do
@@ -100,6 +88,7 @@ describe Carto::Api::OrganizationUsersController do
 
   before(:each) do
     @old_soft_limits = soft_limits(@organization.owner)
+
     @old_whitelisted_email_domains = @organization.whitelisted_email_domains
   end
 
@@ -166,7 +155,42 @@ describe Carto::Api::OrganizationUsersController do
       post api_v2_organization_users_create_url(id_or_name: @organization.name), params
 
       last_response.status.should eq 410
-      last_response.body.include?('password is not present').should be true
+      last_response.body.include?("password can't be blank").should be true
+    end
+
+    it 'returns 410 if password is username' do
+      login(@organization.owner)
+
+      username = 'manolo'
+      params = { username: username, email: "#{username}@carto.com", password: username }
+      post api_v2_organization_users_create_url(id_or_name: @organization.name), params
+
+      last_response.status.should eq 410
+      last_response.body.include?('must be different than the user name').should be true
+    end
+
+    it 'returns 410 if password is a common one' do
+      login(@organization.owner)
+
+      username = 'manolo'
+      params = { username: username, email: "#{username}@carto.com", password: 'galina' }
+      post api_v2_organization_users_create_url(id_or_name: @organization.name), params
+
+      last_response.status.should eq 410
+      last_response.body.include?("can't be a common password").should be true
+    end
+
+    it 'returns 410 if password is not strong' do
+      Carto::Organization.any_instance.stubs(:strong_passwords_enabled).returns(true)
+      login(@organization.owner)
+
+      username = 'manolo'
+      params = { username: username, email: "#{username}@carto.com", password: 'galina' }
+      post api_v2_organization_users_create_url(id_or_name: @organization.name), params
+
+      last_response.status.should eq 410
+      last_response.body.include?('must be at least 8 characters long').should be true
+      Carto::Organization.any_instance.unstub(:strong_passwords_enabled)
     end
 
     it 'correctly creates a user' do
@@ -220,12 +244,12 @@ describe Carto::Api::OrganizationUsersController do
         response.status.should eq 200
         response.body[:username].should eq username
         response.body[:email].should eq email
-      end
 
-      @organization.reload
-      last_user_created = @organization.users.find { |u| u.username == username }
-      last_user_created.username.should eq username
-      last_user_created.email.should eq email
+        @organization.reload
+        last_user_created = @organization.users.find { |u| u.username == username }
+        last_user_created.username.should eq username
+        last_user_created.email.should eq email
+      end
     end
 
     it 'assigns soft_geocoding_limit to false by default' do
@@ -296,7 +320,7 @@ describe Carto::Api::OrganizationUsersController do
       expect(last_response.body).to include 'org_admin can only be set by organization owner'
     end
 
-    it 'can enable soft geocoding_limit, twitter_datasource_limit, here_isolines_limit, obs_snapshot_limit and obs_general_limit if owner has them' do
+    it 'can enable soft geocoding_limit, twitter_datasource_limit, here_isolines_limit if owner has them' do
       replace_soft_limits(@organization.owner, [true, true, true, true, true])
 
       login(@organization.owner)
@@ -315,7 +339,7 @@ describe Carto::Api::OrganizationUsersController do
       last_user_created.destroy
     end
 
-    it 'can disable soft geocoding_limit, twitter_datasource_limit, here_isolines_limit, obs_snapshot_limit and obs_general_limit if owner has them' do
+    it 'can disable soft geocoding_limit, twitter_datasource_limit, here_isolines_limit if owner has them' do
       replace_soft_limits(@organization.owner, [true, true, true, true, true])
 
       login(@organization.owner)
@@ -334,7 +358,7 @@ describe Carto::Api::OrganizationUsersController do
       last_user_created.destroy
     end
 
-    it 'cannot enable soft geocoding_limit, twitter_datasource_limit, here_isolines_limit, obs_snapshot_limit or obs_general_limit if owner has not them' do
+    it 'cannot enable soft geocoding_limit, twitter_datasource_limit, here_isolines_limit if owner has not them' do
       replace_soft_limits(@organization.owner, [false, false, false, false, false])
 
       login(@organization.owner)
@@ -344,10 +368,36 @@ describe Carto::Api::OrganizationUsersController do
 
       last_response.status.should eq 410
       errors = JSON.parse(last_response.body)
-      errors.count.should eq 5
+      errors.count.should eq 3
 
       @organization.reload
       @organization.users.find { |u| u.username == username }.should be_nil
+    end
+
+    describe 'with password expiration' do
+      before(:all) do
+        @organization.password_expiration_in_d = 10
+        @organization.save
+      end
+
+      after(:all) do
+        @organization.password_expiration_in_d = nil
+        @organization.save
+      end
+
+      it 'can create users with expired passwords' do
+        login(@organization.owner)
+        username = unique_name('user')
+        params = user_params(username, org_admin: true, with_password: true, force_password_change: true)
+        post_json api_v2_organization_users_create_url(id_or_name: @organization.name), params do |response|
+          response.status.should eq 200
+        end
+
+        @organization.reload
+        last_user_created = @organization.users.find { |u| u.username == username }
+        expect(last_user_created.password_expired?).to(be(true))
+        last_user_created.destroy
+      end
     end
   end
 
@@ -419,18 +469,60 @@ describe Carto::Api::OrganizationUsersController do
       login(@organization.owner)
 
       user_to_update = @organization.non_owner_users[0]
-      user_to_update.password = '12345678'
-      user_to_update.password_confirmation = '12345678'
-      last_change = user_to_update.last_password_change_date
+      user_to_update.password = '00012345678'
+      user_to_update.password_confirmation = '00012345678'
       user_to_update.save
+      user_to_update.reload
+      last_change = user_to_update.last_password_change_date
 
-      params = { password: '12345678' }
+      params = { password: '00012345678' }
       put api_v2_organization_users_update_url(id_or_name: @organization.name, u_username: user_to_update.username),
           params
 
       last_response.status.should == 410
       user_to_update.reload
       expect(user_to_update.last_password_change_date.utc.to_s).to eq last_change.utc.to_s
+    end
+
+    it 'fails to update password if the same as username' do
+      login(@organization.owner)
+
+      user_to_update = @organization.non_owner_users[0]
+
+      params = { password: user_to_update.username }
+      put api_v2_organization_users_update_url(id_or_name: @organization.name, u_username: user_to_update.username),
+          params
+
+      last_response.status.should == 410
+      last_response.body.should include 'must be different than the user name'
+    end
+
+    it 'fails to update password if it is a common one' do
+      login(@organization.owner)
+
+      user_to_update = @organization.non_owner_users[0]
+
+      params = { password: 'galina' }
+      put api_v2_organization_users_update_url(id_or_name: @organization.name, u_username: user_to_update.username),
+          params
+
+      last_response.status.should == 410
+      last_response.body.should include "can't be a common password"
+    end
+
+    it 'fails to update password if strongs passwords enabled' do
+      Carto::Organization.any_instance.stubs(:strong_passwords_enabled).returns(true)
+      login(@organization.owner)
+
+      user_to_update = @organization.non_owner_users[0]
+
+      params = { password: 'galina' }
+      put api_v2_organization_users_update_url(id_or_name: @organization.name, u_username: user_to_update.username),
+          params
+
+      last_response.status.should == 410
+      last_response.body.should include 'password must be at least 8 characters long'
+      Carto::Organization.any_instance.unstub(:strong_passwords_enabled)
     end
 
     it 'should update email' do
@@ -574,7 +666,7 @@ describe Carto::Api::OrganizationUsersController do
       user_to_update.quota_in_bytes.should == 2048
     end
 
-    it 'can enable soft geocoding_limit, twitter_datasource_limit, here_isolines_limit, obs_snapshot_limit and obs_general_limit if owner has them' do
+    it 'can enable soft geocoding_limit, twitter_datasource_limit, here_isolines_limit if owner has them' do
       replace_soft_limits(@organization.owner, [true, true, true, true, true])
 
       login(@organization.owner)
@@ -590,7 +682,7 @@ describe Carto::Api::OrganizationUsersController do
       verify_soft_limits(user_to_update, true)
     end
 
-    it 'can disable soft geocoding_limit, twitter_datasource_limit, here_isolines_limit, obs_snapshot_limit and obs_general_limit if owner has them' do
+    it 'can disable soft geocoding_limit, twitter_datasource_limit, here_isolines_limit if owner has them' do
       replace_soft_limits(@organization.owner, [true, true, true, true, true])
 
       login(@organization.owner)
@@ -605,7 +697,7 @@ describe Carto::Api::OrganizationUsersController do
       verify_soft_limits(user_to_update, false)
     end
 
-    it 'cannot enable soft geocoding_limit, twitter_datasource_limit, here_isolines_limit, obs_snapshot_limit and obs_general_limit if owner has not them' do
+    it 'cannot enable soft geocoding_limit, twitter_datasource_limit, here_isolines_limit if owner has not them' do
       replace_soft_limits(@organization.owner, [false, false, false, false, false])
 
       login(@organization.owner)
@@ -618,7 +710,7 @@ describe Carto::Api::OrganizationUsersController do
 
       last_response.status.should eq 410
       errors = JSON.parse(last_response.body)
-      errors.count.should eq 5
+      errors.count.should eq 3
 
       user_to_update.reload
       verify_soft_limits(user_to_update, false)
@@ -724,7 +816,7 @@ describe Carto::Api::OrganizationUsersController do
     it 'should delete users as admin' do
       login(@org_user_2)
 
-      victim = FactoryGirl.create(:valid_user, organization: @organization)
+      victim = create(:valid_user, organization: @organization)
       delete api_v2_organization_users_delete_url(id_or_name: @organization.name,
                                                   u_username: victim.username)
 
@@ -736,7 +828,7 @@ describe Carto::Api::OrganizationUsersController do
     it 'should not delete other admins as admin' do
       login(@org_user_2)
 
-      victim = FactoryGirl.create(:valid_user, organization: @organization, org_admin: true)
+      victim = create(:valid_user, organization: @organization, org_admin: true)
       delete api_v2_organization_users_delete_url(id_or_name: @organization.name,
                                                   u_username: victim.username)
 
@@ -756,49 +848,37 @@ describe Carto::Api::OrganizationUsersController do
     end
 
     describe 'with Central' do
-      before(:each) do
+      include_context 'with MessageBroker stubs'
+
+      let(:organization) { create(:organization_with_users) }
+      let(:user) { organization.non_owner_users.first }
+
+      before do
         ::User.any_instance.unstub(:delete_in_central)
-        Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(true)
-        @organization.reload
-        @user_to_be_deleted = @organization.non_owner_users.first
+        Cartodb::Central.stubs(:message_broker_sync_enabled?).returns(true)
       end
 
-      def mock_delete_request(code)
-        response_mock = mock
-        response_mock.stubs(:code).returns(code)
-        response_mock.stubs(:body).returns('{"errors": []}')
-        Carto::Http::Request.any_instance.stubs(:run).returns(response_mock)
-      end
+      it 'requests user deletion to Central' do
+        TopicDouble.any_instance.expects(:publish).once.with(
+          :delete_org_user,
+          { organization_name: organization.name, username: user.username }
+        )
 
-      it 'should delete users in Central' do
-        ::User.any_instance.stubs(:destroy).once
-        mock_delete_request(204)
-        login(@organization.owner)
+        login(organization.owner)
 
-        delete api_v2_organization_users_delete_url(id_or_name: @organization.name,
-                                                    u_username: @user_to_be_deleted.username)
+        delete api_v2_organization_users_delete_url(id_or_name: organization.name,
+                                                    u_username: user.username)
 
         last_response.status.should eq 200
       end
 
-      it 'should delete users missing from Central' do
-        ::User.any_instance.stubs(:destroy).once
-        mock_delete_request(404)
-        login(@organization.owner)
-
-        delete api_v2_organization_users_delete_url(id_or_name: @organization.name,
-                                                    u_username: @user_to_be_deleted.username)
-
-        last_response.status.should eq 200
-      end
-
-      it 'should not delete users from Central that failed to delete in the box' do
+      it 'does not request deletion to Central if deletion failed in the cloud' do
         ::User.any_instance.stubs(:delete_in_central).never
-        ::User.any_instance.stubs(:destroy).raises("BOOM")
-        login(@organization.owner)
+        ::User.any_instance.stubs(:destroy).raises('BOOM')
+        login(organization.owner)
 
-        delete api_v2_organization_users_delete_url(id_or_name: @organization.name,
-                                                    u_username: @user_to_be_deleted.username)
+        delete api_v2_organization_users_delete_url(id_or_name: organization.name,
+                                                    u_username: user.username)
 
         last_response.status.should eq 500
       end
@@ -848,6 +928,24 @@ describe Carto::Api::OrganizationUsersController do
       login(@org_user_1)
 
       get api_v2_organization_users_index_url(id_or_name: @organization.name)
+      last_response.status.should == 401
+    end
+
+    it 'returns 401 when session is not valid' do
+      organization = create_organization_with_owner
+      user = create(:valid_user, organization: organization, org_admin: true)
+
+      login_response = post_session(user: user, password: 'kkkkkkkkk', organization: organization)
+      set_cookies_for_next_request(login_response)
+
+      get api_v2_organization_users_index_url(id_or_name: organization.name)
+      last_response.status.should == 200
+
+      user.invalidate_all_sessions!
+
+      set_cookies_for_next_request(login_response)
+
+      get api_v2_organization_users_index_url(id_or_name: organization.name)
       last_response.status.should == 401
     end
 

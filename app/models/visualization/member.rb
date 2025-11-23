@@ -1,13 +1,11 @@
-# encoding: utf-8
 require 'forwardable'
 require 'virtus'
 require 'json'
+require 'cartodb-common'
 require_relative '../markdown_render'
 require_relative './presenter'
 require_relative './name_checker'
-require_relative '../permission'
 require_relative './relator'
-require_relative './like'
 require_relative '../table/privacy_manager'
 require_relative '../../../services/minimal-validation/validator'
 require_relative '../../helpers/embed_redis_cache'
@@ -26,31 +24,34 @@ module CartoDB
       include CacheHelper
       include Carto::VisualizationDependencies
 
-      PRIVACY_PUBLIC       = 'public'        # published and listable in public user profile
-      PRIVACY_PRIVATE      = 'private'       # not published (viz.json and embed_map should return 404)
-      PRIVACY_LINK         = 'link'          # published but not listen in public profile
-      PRIVACY_PROTECTED    = 'password'      # published but password protected
+      PRIVACY_PUBLIC       = 'public'.freeze        # published and listable in public user profile
+      PRIVACY_PRIVATE      = 'private'.freeze       # not published (viz.json and embed_map should return 404)
+      PRIVACY_LINK         = 'link'.freeze          # published but not listen in public profile
+      PRIVACY_PROTECTED    = 'password'.freeze      # published but password protected
 
-      TYPE_CANONICAL  = 'table'
-      TYPE_DERIVED    = 'derived'
-      TYPE_SLIDE      = 'slide'
-      TYPE_REMOTE = 'remote'
+      TYPE_CANONICAL  = 'table'.freeze
+      TYPE_DERIVED    = 'derived'.freeze
+      TYPE_SLIDE      = 'slide'.freeze
+      TYPE_REMOTE = 'remote'.freeze
+      TYPE_KUVIZ = 'kuviz'.freeze
+      TYPE_APP = 'app'.freeze
 
-      KIND_GEOM   = 'geom'
-      KIND_RASTER = 'raster'
+      VALID_TYPES = [TYPE_CANONICAL, TYPE_DERIVED, TYPE_SLIDE, TYPE_REMOTE, TYPE_KUVIZ, TYPE_APP].freeze
 
-      PRIVACY_VALUES  = [ PRIVACY_PUBLIC, PRIVACY_PRIVATE, PRIVACY_LINK, PRIVACY_PROTECTED ]
-      TEMPLATE_NAME_PREFIX = 'tpl_'
+      KIND_GEOM   = 'geom'.freeze
+      KIND_RASTER = 'raster'.freeze
 
-      PERMISSION_READONLY = CartoDB::Permission::ACCESS_READONLY
-      PERMISSION_READWRITE = CartoDB::Permission::ACCESS_READWRITE
+      PRIVACY_VALUES = [PRIVACY_PUBLIC, PRIVACY_PRIVATE, PRIVACY_LINK, PRIVACY_PROTECTED].freeze
+      TEMPLATE_NAME_PREFIX = 'tpl_'.freeze
 
-      AUTH_DIGEST = '1211b3e77138f6e1724721f1ab740c9c70e66ba6fec5e989bb6640c4541ed15d06dbd5fdcbd3052b'
-      TOKEN_DIGEST = '6da98b2da1b38c5ada2547ad2c3268caa1eb58dc20c9144ead844a2eda1917067a06dcb54833ba2'
+      PERMISSION_READONLY = Carto::Permission::ACCESS_READONLY
+      PERMISSION_READWRITE = Carto::Permission::ACCESS_READWRITE
+
+      TOKEN_DIGEST = '6da98b2da1b38c5ada2547ad2c3268caa1eb58dc20c9144ead844a2eda1917067a06dcb54833ba2'.freeze
 
       VERSION_BUILDER = 3
 
-      DEFAULT_OPTIONS_VALUE = '{}'
+      DEFAULT_OPTIONS_VALUE = '{}'.freeze
 
       # Upon adding new attributes modify also:
       # services/data-repository/spec/unit/backend/sequel_spec.rb -> before do
@@ -153,6 +154,7 @@ module CartoDB
       end
 
       def valid?
+        validator.errors.store(:type, "Visualization type is not valid") unless valid_type?
         validator.errors.store(:user, "Viewer users can't store visualizations") if user.viewer
 
         validator.validate_presence_of(name: name, privacy: privacy, type: type, user_id: user_id)
@@ -162,7 +164,7 @@ module CartoDB
 
         if privacy == PRIVACY_PROTECTED
           validator.validate_presence_of_with_custom_message(
-            { encrypted_password: encrypted_password, password_salt: password_salt },
+            { encrypted_password: encrypted_password },
             "password can't be blank")
         end
 
@@ -203,6 +205,10 @@ module CartoDB
         validator.valid?
       end
 
+      def valid_type?
+        VALID_TYPES.include?(type)
+      end
+
       def fetch
         data = repository.fetch(id)
         raise KeyError if data.nil?
@@ -217,59 +223,11 @@ module CartoDB
       end
 
       def delete_from_table
-        delete(true)
+        delete
       end
 
-      def delete(from_table_deletion = false)
-        raise CartoDB::InvalidMember.new(user: "Viewer users can't delete visualizations") if user.viewer
-
-        # from_table_deletion would be enough for canonical viz-based deletes,
-        # but common data loading also calls this delete without the flag to true, causing a call without a Map
-        begin
-          if user.has_feature_flag?(Carto::VisualizationsExportService::FEATURE_FLAG_NAME) && map
-            Carto::VisualizationsExportService.new.export(id)
-          end
-        rescue => exception
-          # Don't break deletion flow
-          CartoDB.notify_error(exception.message, error: exception.inspect, user: user, visualization_id: id)
-        end
-
-        repository.transaction do
-          unlink_self_from_list!
-
-          support_tables.delete_all
-
-          overlays.map(&:destroy)
-          safe_sequel_delete do
-            # "Mark" that this vis id is the destructor to avoid cycles: Vis -> Map -> relatedvis (Vis again)
-            related_map = map
-            related_map.being_destroyed_by_vis_id = id
-            related_map.destroy
-          end if map
-          safe_sequel_delete { table.destroy } if type == TYPE_CANONICAL && table && !from_table_deletion
-          safe_sequel_delete do
-            children.map do |child|
-              # Refetch each item before removal so Relator reloads prev/next cursors
-              child.fetch.delete
-            end
-          end
-
-          # Avoid invalidating if the visualization has already been destroyed
-          # This happens deleting a canonical visualization, which triggers a table deletion,
-          # which triggers a second deletion of the same visualization
-          carto_vis = carto_visualization
-          if carto_vis
-            Carto::NamedMaps::Api.new(carto_vis).destroy
-            invalidate_cache
-          end
-
-          safe_sequel_delete { permission.destroy_shared_entities } if permission
-          safe_sequel_delete { repository.delete(id) }
-          safe_sequel_delete { permission.destroy } if permission
-          attributes.keys.each { |key| send("#{key}=", nil) }
-        end
-
-        self
+      def delete
+        Carto::Visualization.find_by(id: id)&.destroy
       end
 
       # A visualization is linked to a table when it uses that table in a layergroup (but is not the canonical table)
@@ -420,6 +378,14 @@ module CartoDB
         type == TYPE_SLIDE
       end
 
+      def kuviz?
+        type == TYPE_KUVIZ
+      end
+
+      def app?
+        type == TYPE_APP
+      end
+
       def invalidate_cache
         invalidate_redis_cache
         invalidate_varnish_vizjson_cache
@@ -442,8 +408,9 @@ module CartoDB
 
       def password=(value)
         if value && value.size > 0
-          @password_salt = generate_salt if @password_salt.nil?
-          @encrypted_password = password_digest(value, @password_salt)
+          @password_salt = ""
+          @encrypted_password = Carto::Common::EncryptionService.encrypt(password: value,
+                                                                         secret: Cartodb.config[:password_secret])
           self.dirty = true
         end
       end
@@ -453,7 +420,8 @@ module CartoDB
       end
 
       def password_valid?(password)
-        has_password? && (password_digest(password, @password_salt) == @encrypted_password)
+        Carto::Common::EncryptionService.verify(password: password, secure_password: @encrypted_password,
+                                                salt: @password_salt, secret: Cartodb.config[:password_secret])
       end
 
       def remove_password
@@ -463,11 +431,7 @@ module CartoDB
 
       # To be stored with the named map
       def make_auth_token
-        digest = secure_digest(Time.now, (1..10).map{ rand.to_s })
-        10.times do
-          digest = secure_digest(digest, TOKEN_DIGEST)
-        end
-        digest
+        Carto::Common::EncryptionService.make_token(length: 64)
       end
 
       def get_auth_token
@@ -549,46 +513,8 @@ module CartoDB
         fetch
       end
 
-      def unlink_self_from_list!
-        repository.transaction do
-          unless self.prev_id.nil?
-            prev_item = prev_list_item
-            prev_item.next_id = self.next_id
-            prev_item.store
-          end
-          unless self.next_id.nil?
-            next_item = next_list_item
-            next_item.prev_id = self.prev_id
-            next_item.store
-          end
-          self.prev_id = nil
-          self.next_id = nil
-        end
-      end
-
-      # @param user_id String UUID of the actor that likes the visualization
-      # @throws AlreadyLikedError
-      def add_like_from(user_id)
-        Like.create(actor: user_id, subject: id)
-        reload_likes
-        self
-      rescue Sequel::DatabaseError => exception
-        if exception.message =~ /duplicate key/i
-          raise AlreadyLikedError
-        else
-          raise exception
-        end
-      end
-
-      def remove_like_from(user_id)
-        item = likes.select { |like| like.actor == user_id }
-        item.first.destroy unless item.first.nil?
-        reload_likes
-        self
-      end
-
-      def liked_by?(user_id)
-        !(likes.select { |like| like.actor == user_id }.first.nil?)
+      def liked_by?(user)
+        !likes.select { |like| like.actor == user.id }.first.nil?
       end
 
       # @param viewer_user ::User
@@ -735,10 +661,8 @@ module CartoDB
 
         # Ensure a permission is set before saving the visualization
         if permission.nil?
-          perm = CartoDB::Permission.new
-          perm.owner = user
-          perm.save
-          @permission_id = perm.id
+          permission = Carto::Permission.create(owner: user)
+          @permission_id = permission.id
         end
         repository.store(id, attributes.to_hash)
 
@@ -758,7 +682,7 @@ module CartoDB
           attributes[:privacy] = @old_privacy
           repository.store(id, attributes.to_hash)
         end
-      rescue => exception
+      rescue StandardError => exception
         CartoDB.notify_exception(exception, user: user, message: "Error restoring previous visualization privacy")
         raise exception
       end
@@ -823,7 +747,7 @@ module CartoDB
           support_tables.rename(old_name, name, recreate_constraints=true, seek_parent_name=old_name)
         end
         self
-      rescue => exception
+      rescue StandardError => exception
         if name_changed && !(exception.to_s =~ /relation.*does not exist/)
           revert_name_change(old_name)
         end
@@ -839,7 +763,7 @@ module CartoDB
       def revert_name_change(previous_name)
         self.name = previous_name
         store
-      rescue => exception
+      rescue StandardError => exception
         raise CartoDB::InvalidMember.new(exception.to_s)
       end
 
@@ -884,23 +808,6 @@ module CartoDB
       def configuration
         return {} unless defined?(Cartodb)
         Cartodb.config
-      end
-
-      def password_digest(password, salt)
-        digest = AUTH_DIGEST
-        10.times do
-          digest = secure_digest(digest, salt, password, AUTH_DIGEST)
-        end
-        digest
-      end
-
-      def generate_salt
-        secure_digest(Time.now, (1..10).map{ rand.to_s })
-      end
-
-      def secure_digest(*args)
-        #noinspection RubyArgCount
-        Digest::SHA256.hexdigest(args.flatten.join)
       end
 
       def safe_sequel_delete

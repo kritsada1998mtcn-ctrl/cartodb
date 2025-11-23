@@ -21,7 +21,7 @@ module CartoDB
       # Returns a hash with reserved seats and used seats
       def seats_among_orgs
         seats_used = ::User.where('organization_id IS NOT NULL').count
-        seats_reserved = Organization.sum(:seats)
+        seats_reserved = Carto::Organization.sum(:seats)
         return {'used' => seats_used, 'reserved' => seats_reserved}
       end
 
@@ -62,12 +62,6 @@ module CartoDB
         conn.disconnect
         return au_count
       end
-
-      # Total likes
-      def likes
-        return Carto::Like.count
-      end
-
     end
   end
 end

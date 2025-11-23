@@ -10,6 +10,7 @@ require_dependency 'visualization/name_generator'
 require_dependency 'visualization/table_blender'
 require_dependency 'carto/visualization_migrator'
 require_dependency 'carto/google_maps_api'
+require_dependency 'carto/ghost_tables_manager'
 
 module Carto
   module Api
@@ -17,46 +18,46 @@ module Carto
       include VisualizationSearcher
       include PagedSearcher
       include Carto::UUIDHelper
-      include Carto::ControllerHelper
       include VisualizationsControllerHelper
       include Carto::VisualizationMigrator
 
       ssl_required :index, :show, :create, :update, :destroy, :google_maps_static_image
-      ssl_allowed  :vizjson2, :vizjson3, :likes_count, :likes_list, :is_liked, :list_watching, :static_map,
+      ssl_allowed  :vizjson2, :vizjson3, :list_watching, :static_map,
         :notify_watching, :list_watching, :add_like, :remove_like
 
       # TODO: compare with older, there seems to be more optional authentication endpoints
-      skip_before_filter :api_authorization_required, only: [:show, :index, :vizjson2, :vizjson3, :is_liked, :add_like,
+      skip_before_filter :api_authorization_required, only: [:show, :index, :vizjson2, :vizjson3, :add_like,
                                                              :remove_like, :notify_watching, :list_watching,
                                                              :static_map, :show]
 
       # :update and :destroy are correctly handled by permission check on the model
       before_filter :ensure_user_can_create, only: [:create]
 
-      before_filter :optional_api_authorization, only: [:show, :index, :vizjson2, :vizjson3, :is_liked, :add_like,
+      before_filter :optional_api_authorization, only: [:show, :index, :vizjson2, :vizjson3, :add_like,
                                                         :remove_like, :notify_watching, :list_watching, :static_map]
 
       before_filter :id_and_schema_from_params
 
-      before_filter :load_visualization, only: [:likes_count, :likes_list, :is_liked, :add_like, :remove_like, :show,
+      before_filter :load_visualization, only: [:add_like, :remove_like, :show,
                                                 :list_watching, :notify_watching, :static_map, :vizjson2, :vizjson3,
                                                 :update, :destroy, :google_maps_static_image]
 
       before_filter :ensure_username_matches_visualization_owner, only: [:show, :static_map, :vizjson2, :vizjson3,
                                                                          :list_watching, :notify_watching, :update,
-                                                                         :likes_count, :likes_list, :is_liked,
                                                                          :destroy, :google_maps_static_image]
 
       before_filter :ensure_visualization_owned, only: [:destroy, :google_maps_static_image]
       before_filter :ensure_visualization_is_likeable, only: [:add_like, :remove_like]
+      before_filter :link_ghost_tables, only: [:index]
+      before_filter :load_common_data, only: [:index]
 
-      rescue_from Carto::OrderParamInvalidError, with: :rescue_from_carto_error
       rescue_from Carto::LoadError, with: :rescue_from_carto_error
       rescue_from Carto::UnauthorizedError, with: :rescue_from_carto_error
       rescue_from Carto::UUIDParameterFormatError, with: :rescue_from_carto_error
       rescue_from Carto::ProtectedVisualizationLoadError, with: :rescue_from_protected_visualization_load_error
 
-      VALID_ORDER_PARAMS = [:updated_at, :size, :mapviews, :likes].freeze
+      VALID_ORDER_PARAMS = %i(name updated_at size mapviews favorited estimated_row_count privacy
+                              dependent_visualizations).freeze
 
       def show
         presenter = VisualizationPresenter.new(
@@ -65,103 +66,68 @@ module Carto
           show_user: params[:fetch_user] == 'true',
           show_user_basemaps: params[:show_user_basemaps] == 'true',
           show_liked: params[:show_liked] == 'true',
-          show_likes: params[:show_likes] == 'true',
           show_permission: params[:show_permission] == 'true',
           show_stats: params[:show_stats] == 'true',
           show_auth_tokens: params[:show_auth_tokens] == 'true',
-          password: params[:password]
+          password: params[:password],
+          with_dependent_visualizations: params[:with_dependent_visualizations].to_i || 0
         )
 
         render_jsonp(::JSON.dump(presenter.to_poro))
-      rescue => e
-        CartoDB::Logger.error(exception: e)
+      rescue StandardError => e
+        log_error(exception: e)
         head(404)
       end
 
       def index
-        page, per_page, order = page_per_page_order_params(VALID_ORDER_PARAMS)
-        types, total_types = get_types_parameters
+        offdatabase_orders = Carto::VisualizationQueryOrderer::SUPPORTED_OFFDATABASE_ORDERS.map(&:to_sym)
+        valid_order_combinations = VALID_ORDER_PARAMS - offdatabase_orders
+        opts = { valid_order_combinations: valid_order_combinations }
+        page, per_page, order, order_direction = page_per_page_order_params(VALID_ORDER_PARAMS, opts)
+        types = get_types_parameters
+
         vqb = query_builder_with_filter_from_hash(params)
 
         presenter_cache = Carto::Api::PresenterCache.new
         presenter_options = presenter_options_from_hash(params).merge(related: false)
 
-        # TODO: undesirable table hardcoding, needed for disambiguation. Look for
-        # a better approach and/or move it to the query builder
-        response = {
-          visualizations: vqb.with_order("visualizations.#{order}", :desc).build_paged(page, per_page).map { |v|
-              VisualizationPresenter.new(v, current_viewer, self, presenter_options)
-                                    .with_presenter_cache(presenter_cache).to_poro
-          },
-          total_entries: vqb.build.count
-        }
-        if current_user && (params[:load_totals].to_s != 'false')
-          # Prefetching at counts removes duplicates
-          response.merge!({
-            total_user_entries: VisualizationQueryBuilder.new.with_types(total_types).with_user_id(current_user.id).build.count,
-            total_likes: VisualizationQueryBuilder.new.with_types(total_types).with_liked_by_user_id(current_user.id).build.count,
-            total_shared: VisualizationQueryBuilder.new.with_types(total_types).with_shared_with_user_id(current_user.id).with_user_id_not(current_user.id).with_prefetch_table.build.count
-          })
-        end
+        visualizations = vqb.with_order(order, order_direction)
+                            .build_paged(page, per_page).map do |v|
+          VisualizationPresenter.new(v, current_viewer, self, presenter_options)
+                                .with_presenter_cache(presenter_cache).to_poro
+        end.compact
+
+        response = { visualizations: visualizations, total_entries: vqb.count }
+        response.merge!(calculate_totals(types)) if current_user && params[:load_totals].to_s != 'false'
+        response.merge!(calculate_do_totals(vqb, types)) if params[:load_do_totals].to_s == 'true'
+
         render_jsonp(response)
       rescue CartoDB::BoundingBoxError => e
         render_jsonp({ error: e.message }, 400)
-      rescue Carto::OrderParamInvalidError => e
+      rescue Carto::ParamInvalidError, Carto::ParamCombinationInvalidError => e
         render_jsonp({ error: e.message }, e.status)
-      rescue => e
-        CartoDB::Logger.error(exception: e)
+      rescue StandardError => e
+        log_error(exception: e)
         render_jsonp({ error: e.message }, 500)
       end
 
-      def likes_count
-        render_jsonp({
-          id: @visualization.id,
-          likes: @visualization.likes.count
-        })
-      end
-
-      def likes_list
-        render_jsonp({
-          id: @visualization.id,
-          likes: @visualization.likes.map { |like| { actor_id: like.actor } }
-        })
-      end
-
-      def is_liked
-        render_jsonp({
-          id: @visualization.id,
-          likes: @visualization.likes.count,
-          liked: current_viewer ? @visualization.liked_by?(current_viewer.id) : false
-        })
-      end
-
       def add_like
-        current_viewer_id = current_viewer.id
-
-        @visualization.add_like_from(current_viewer_id)
-
-        unless @visualization.is_owner?(current_viewer)
-          protocol = request.protocol.sub('://', '')
-          vis_url =
-            Carto::StaticMapsURLHelper.new.url_for_static_map_with_visualization(@visualization, protocol, 600, 300)
-          @visualization.send_like_email(current_viewer, vis_url)
-        end
-
+        @visualization.add_like_from(current_viewer)
         render_jsonp(
           id: @visualization.id,
-          likes: @visualization.likes.count,
-          liked: @visualization.liked_by?(current_viewer_id)
+          liked: @visualization.liked_by?(current_viewer)
         )
+      rescue Carto::Visualization::UnauthorizedLikeError
+        render_jsonp({ text: "You don't have enough permissions to favorite this visualization" }, 403)
       rescue Carto::Visualization::AlreadyLikedError
-        render(text: "You've already liked this visualization", status: 400)
+        render_jsonp({ text: "You've already favorited this visualization" }, 400)
       end
 
       def remove_like
-        current_viewer_id = current_viewer.id
-
-        @visualization.remove_like_from(current_viewer_id)
-
-        render_jsonp(id: @visualization.id, likes: @visualization.likes.count, liked: false)
+        @visualization.remove_like_from(current_viewer)
+        render_jsonp(id: @visualization.id, liked: @visualization.liked_by?(current_viewer))
+      rescue Carto::Visualization::UnauthorizedLikeError
+        render_jsonp({ text: "You don't have enough permissions to favorite this visualization" }, 403)
       end
 
       def notify_watching
@@ -257,8 +223,9 @@ module Carto
         end
 
         render_jsonp(Carto::Api::VisualizationPresenter.new(vis, current_viewer, self).to_poro)
-      rescue => e
-        CartoDB::Logger.error(message: "Error creating visualization", visualization_id: vis.try(:id), exception: e)
+      rescue StandardError => e
+        log_error(message: "Error creating visualization", exception: e)
+        raise e if e.is_a?(Carto::UnauthorizedError)
         render_jsonp({ errors: vis.try(:errors).try(:full_messages) }, 400)
       end
 
@@ -301,9 +268,11 @@ module Carto
         end
 
         render_jsonp(Carto::Api::VisualizationPresenter.new(vis, current_viewer, self).to_poro)
-      rescue => e
-        CartoDB::Logger.error(message: "Error updating visualization", visualization_id: vis.id, exception: e)
-        render_jsonp({ errors: vis.errors.full_messages.empty? ? ['Error updating'] : vis.errors.full_messages }, 400)
+      rescue StandardError => e
+        log_error(message: "Error updating visualization", exception: e)
+        error_code = vis.errors.include?(:privacy) ? 403 : 400
+        render_jsonp({ errors: vis.errors.full_messages.empty? ? ['Error updating'] : vis.errors.full_messages },
+                     error_code)
       end
 
       def destroy
@@ -333,9 +302,8 @@ module Carto
         @visualization.destroy
 
         head 204
-      rescue => exception
-        CartoDB::Logger.error(message: 'Error deleting visualization', exception: exception,
-                              visualization: @visualization)
+      rescue StandardError => exception
+        log_error(message: 'Error deleting visualization', exception: exception)
         render_jsonp({ errors: [exception.message] }, 400)
       end
 
@@ -351,15 +319,15 @@ module Carto
         )
 
         render(json: { url: gmaps_api.sign_url(@visualization.user, base_url) })
-      rescue => e
-        CartoDB::Logger.error(message: 'Error generating Google API URL', exception: e)
+      rescue StandardError => e
+        log_error(message: 'Error generating Google API URL', exception: e)
         render(json: { errors: 'Error generating static image URL' }, status: 400)
       end
 
       private
 
       # excluded:
-      #   :id, :map_id, :type, :created_at, :external_source, :url, :version, :likes, :liked, :table, :user_id
+      #   :id, :map_id, :type, :created_at, :external_source, :url, :version, :table, :user_id
       #   :synchronization, :uses_builder_features, :auth_tokens, :transition_options, :prev_id, :next_id, :parent_id
       #   :active_child, :permission
       VALID_UPDATE_ATTRIBUTES = [:name, :display_name, :active_layer_id, :tags, :description, :privacy, :updated_at,
@@ -375,7 +343,7 @@ module Carto
       def render_vizjson(vizjson)
         set_vizjson_response_headers_for(@visualization)
         render_jsonp(vizjson)
-      rescue => exception
+      rescue StandardError => exception
         CartoDB.notify_exception(exception)
         raise exception
       end
@@ -483,6 +451,82 @@ module Carto
                                                 privacy: blender.blended_privacy,
                                                 user_id: current_user.id,
                                                 overlays: Carto::OverlayFactory.build_default_overlays(current_user)))
+      end
+
+      def link_ghost_tables
+        return unless current_user && current_user.has_feature_flag?('ghost_tables')
+
+        # This call will trigger ghost tables synchronously if there's risk of displaying a stale table
+        # or asynchronously otherwise.
+        Carto::GhostTablesManager.new(current_user.id).link_ghost_tables
+      end
+
+      def load_common_data
+        return true unless current_user.present?
+        begin
+          visualizations_api_url = CartoDB::Visualization::CommonDataService.build_url(self)
+          ::Resque.enqueue(::Resque::UserDBJobs::CommonData::LoadCommonData, current_user.id, visualizations_api_url) if current_user.should_load_common_data?
+        rescue Exception => e
+          # We don't block the load of the dashboard because we aren't able to load common dat
+          CartoDB.notify_exception(e, {user:current_user})
+          return true
+        end
+      end
+
+      def calculate_totals(total_types)
+        # Prefetching at counts removes duplicates
+        {
+          total_user_entries: VisualizationQueryBuilder.new
+                                                       .with_types(total_types)
+                                                       .with_user_id(current_user.id)
+                                                       .count,
+          total_locked: VisualizationQueryBuilder.new
+                                                 .with_types(total_types)
+                                                 .with_user_id(current_user.id)
+                                                 .with_locked(true)
+                                                 .count,
+          total_likes: VisualizationQueryBuilder.new
+                                                .with_types(total_types)
+                                                .with_liked_by_user_id(current_user.id)
+                                                .with_locked(false)
+                                                .count,
+          total_shared: VisualizationQueryBuilder.new
+                                                 .with_types(total_types)
+                                                 .with_shared_with_user_id(current_user.id)
+                                                 .with_user_id_not(current_user.id)
+                                                 .with_locked(false)
+                                                 .count
+        }
+      end
+
+      def calculate_do_totals(vqb, total_types)
+        subscription_count = if params[:subscribed] == 'true'
+                               vqb.count
+                             else
+                               do_total_filtered_query(total_types).find_each.lazy
+                                                                   .count { |v| v.subscription.present? }
+                             end
+
+        sample_count = if params[:sample] == 'true'
+                         vqb.count
+                       else
+                         do_total_filtered_query(total_types).find_each.lazy
+                                                             .count { |v| v.sample.present? }
+                       end
+
+        { total_subscriptions: subscription_count, total_samples: sample_count }
+      end
+
+      def do_total_filtered_query(total_types)
+        VisualizationQueryBuilder.new
+                                 .with_types(total_types)
+                                 .with_user_id(current_user.id)
+                                 .filtered_query
+                                 .includes(map: { user_table: :data_import })
+      end
+
+      def log_context
+        @visualization.present? ? super.merge(visualization: @visualization&.attributes&.slice(:id)) : super
       end
     end
   end

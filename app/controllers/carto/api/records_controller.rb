@@ -1,5 +1,3 @@
-# encoding: UTF-8
-
 require_relative '../../../models/carto/permission'
 
 module Carto
@@ -18,8 +16,8 @@ module Carto
       # This endpoint is not used by the editor but by users. Do not remove
       def show
         render_jsonp(@user_table.service.record(params[:id]))
-      rescue => e
-        CartoDB::Logger.error(message: 'Error loading record', exception: e,
+      rescue StandardError => e
+        log_error(message: 'Error loading record', exception: e,
                               record_id: params[:id], user_table: @user_table)
         render_jsonp({ errors: ["Record #{params[:id]} not found"] }, 404)
       end
@@ -27,7 +25,7 @@ module Carto
       def create
         primary_key = @user_table.service.insert_row!(filtered_row)
         render_jsonp(@user_table.service.record(primary_key))
-      rescue => e
+      rescue StandardError => e
         render_jsonp({ errors: [e.message] }, 400)
       end
 
@@ -41,8 +39,8 @@ module Carto
             else
               render_jsonp({ errors: ["row identified with #{params[:cartodb_id]} not found"] }, 404)
             end
-          rescue => e
-            CartoDB::Logger.warning(message: 'Error updating record', exception: e)
+          rescue StandardError => e
+            log_warning(message: 'Error updating record', exception: e)
             render_jsonp({ errors: [translate_error(e.message.split("\n").first)] }, 400)
           end
         else
@@ -59,12 +57,12 @@ module Carto
 
         current_user.in_database
                     .select
-                    .from(@user_table.service.name.to_sym.qualify(schema_name.to_sym))
+                    .from(Sequel.qualify(schema_name.to_sym, @user_table.service.name.to_sym))
                     .where(cartodb_id: id)
                     .delete
 
         head :no_content
-      rescue
+      rescue StandardError
         render_jsonp({ errors: ["row identified with #{params[:cartodb_id]} not found"] }, 404)
       end
 

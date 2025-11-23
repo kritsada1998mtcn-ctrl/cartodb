@@ -1,10 +1,6 @@
-# encoding: utf-8
-
 module Carto
   module Api
     class MetricsController < ::Api::ApplicationController
-      include Carto::ControllerHelper
-
       ssl_required :create
 
       skip_before_filter :api_authorization_required

@@ -25,9 +25,8 @@
     "db_size_in_megabytes": 59.45,
     "remaining_table_quota": null,
     "remaining_byte_quota": 1011404800.0,
-    "api_calls": [15.0, 26.0],
-    "api_calls_quota": 10000,
-    "api_calls_block_price": null,
+    "map_views": 1000,
+    "map_views_quota": 10000,
     "geocoding": {
       "quota": 0,
       "block_price": null,
@@ -49,18 +48,6 @@
     "geocoder_provider": null,
     "isolines_provider": null,
     "routing_provider": null,
-    "obs_snapshot": {
-      "quota": 0,
-      "block_price": null,
-      "monthly_use": 0,
-      "hard_limit": true
-    },
-    "obs_general": {
-      "quota": 0,
-      "block_price": null,
-      "monthly_use": 0,
-      "hard_limit": true
-    },
     "twitter": {
       "enabled": null,
       "quota": 0,
@@ -116,7 +103,7 @@
     "maxZoom": "18",
     "name": "Positron",
     "className": "positron_rainbow_labels",
-    "attribution": "\u00a9 <a href=\"http://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors \u00a9 <a href=\"https://carto.com/attributions\">CARTO</a>",
+    "attribution": "\u00a9 <a href=\"http://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors \u00a9 <a href=\"https://carto.com/about-carto/\">CARTO</a>",
     "labels": {
       "url": "http://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}.png"
     }
@@ -131,8 +118,6 @@
     "trackjs_customer": null,
     "trackjs_enabled": null,
     "trackjs_app_key": null,
-    "google_analytics_ua": null,
-    "google_analytics_domain": null,
     "hubspot_enabled": true,
     "intercom_app_id": null,
     "dropbox_api_key": null,

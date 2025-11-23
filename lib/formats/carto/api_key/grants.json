@@ -5,12 +5,16 @@
     "required": [
       "type"
     ],
+    "additionalProperties": false,
     "properties": {
       "type": {
         "type": "string",
         "enum": [
           "apis",
-          "database"
+          "database",
+          "dataservices",
+          "user",
+          "data-observatory"
         ]
       },
       "apis": {
@@ -19,8 +23,38 @@
           "type": "string",
           "enum": [
             "sql",
-            "maps"
+            "maps",
+            "do"
           ]
+        }
+      },
+      "schemas": {
+        "type": "array",
+        "additionalProperties": false,
+        "items": {
+          "type": "object",
+          "required": [
+            "name",
+            "permissions"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "schema": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "permissions": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "create"
+                ]
+              }
+            }
+          }
         }
       },
       "tables": {
@@ -33,12 +67,16 @@
             "name",
             "permissions"
           ],
+          "additionalProperties": false,
           "properties": {
             "schema": {
               "type": "string"
             },
             "name": {
               "type": "string"
+            },
+            "owner": {
+              "type": "boolean"
             },
             "permissions": {
               "type": "array",
@@ -52,11 +90,39 @@
                 ]
               }
             }
-          },
-          "additionalProperties": false
+          }
+        }
+      },
+      "services": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": [
+            "geocoding",
+            "routing",
+            "isolines",
+            "observatory"
+          ]
+        }
+      },
+      "data": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": [
+            "profile"
+          ]
+        }
+      },
+      "table_metadata": {
+        "type": "array"
+      },
+      "datasets": {
+        "type": "array",
+        "items": {
+          "type": "string"
         }
       }
-    },
-    "additionalProperties": false
+    }
   }
 }

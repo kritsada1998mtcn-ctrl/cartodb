@@ -1,7 +1,6 @@
-# encoding: utf-8
-
 require_relative 'segment'
 require_relative 'hubspot'
+require_relative 'pubsub'
 
 module Carto
   module Tracking
@@ -22,7 +21,7 @@ module Carto
           record_id = @hash[record_id_key]
 
           record_class_name.constantize.find(record_id)
-        rescue
+        rescue StandardError
           record_id ? (raise Carto::LoadError.new("#{record_class_name} not found. Id: #{record_id}")) : nil
         end
 
@@ -38,6 +37,19 @@ module Carto
           Carto::Tracking::Formats::Segment.new(user: user,
                                                 visualization: visualization,
                                                 widget: widget,
+                                                hash: @hash).to_hash
+        end
+
+        def to_pubsub
+          user = @hash['user_id'].present? ? fetch_record!(:user) : nil
+          visualization = fetch_record!(:visualization)
+          widget = fetch_record!(:widget)
+          event_version = fetch_record!(:event_version)
+
+          Carto::Tracking::Formats::PubSub.new(user: user,
+                                                visualization: visualization,
+                                                widget: widget,
+                                                event_version: event_version,
                                                 hash: @hash).to_hash
         end
 

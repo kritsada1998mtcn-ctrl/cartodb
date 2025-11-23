@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require_relative './carto_json_serializer'
 require_relative '../../controllers/carto/api/legend_presenter'
 require_dependency 'carto/legend_definition_validator'
@@ -16,11 +14,11 @@ module Carto
       size: %w(bubble)
     }.freeze
 
-    serialize :definition, ::Carto::CartoJsonSerializer
-    serialize :conf, ::Carto::CartoJsonSerializer
+    serialize :definition, ::Carto::CartoJsonSymbolizerSerializer
+    serialize :conf, ::Carto::CartoJsonSymbolizerSerializer
 
     validates :definition, carto_json_symbolizer: true
-    serialize :conf, ::Carto::CartoJsonSerializer
+    serialize :conf, ::Carto::CartoJsonSymbolizerSerializer
     validates :type, :layer, presence: true
     validates :type, inclusion: { in: VALID_LEGEND_TYPES }, allow_nil: true
 

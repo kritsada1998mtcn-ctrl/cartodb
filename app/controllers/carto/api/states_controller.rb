@@ -1,10 +1,6 @@
-# encoding: utf-8
-
 module Carto
   module Api
     class StatesController < ::Api::ApplicationController
-      include Carto::ControllerHelper
-
       ssl_required :update
 
       before_filter :load_visualization,

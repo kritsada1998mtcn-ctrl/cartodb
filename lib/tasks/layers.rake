@@ -32,7 +32,7 @@ namespace :carto do
           owner = l.maps.first.user
           affected_visualizations << "#{v.id} | #{v.name} | updated: #{v.updated_at} | user: #{owner.username} | type: #{v.type}"
           puts "id: #{l.id} | visualization: #{v.id} | vis_type: #{v.type} | updated_at: #{l.updated_at} | user: #{owner.username}"
-        rescue
+        rescue StandardError
           puts "Ignoring orphan layer #{l.id}"
         end
       end
@@ -65,7 +65,7 @@ namespace :carto do
             attribution.gsub!('cartodb.com', 'carto.com')
             attribution.gsub!('http://carto', 'https://carto')
             attribution.gsub!(
-              'OpenStreetMap</a> contributors &copy; <a href=\"https://carto.com/attributions\">CARTO</a>',
+              'OpenStreetMap</a> contributors &copy; <a href=\"https://carto.com/about-carto/\">CARTO</a>',
               'OpenStreetMap</a> contributors')
           end
           category = layer.options['category']
@@ -73,13 +73,13 @@ namespace :carto do
             layer.options['category'] = 'CARTO'
           end
           layer.save
-        rescue => e
+        rescue StandardError => e
           errors += 1
           STDERR.puts "Error updating layer #{layer.id}: #{e.inspect}. #{e.backtrace.join(',')}"
         end
       end
 
-      puts "Finished. Total: #{total}. Errors: #{errors}"
+      puts "Finished. Total: #{total}. Errors: #{errors}" unless Rails.env.test?
     end
 
     desc "Nokia -> HERE layer update (platform #2815)"
@@ -115,13 +115,13 @@ namespace :carto do
           end
 
           raise 'MapcappedVisualizationUpdater returned false' unless success
-        rescue => e
+        rescue StandardError => e
           errors += 1
           STDERR.puts "Error updating layer #{layer.id}: #{e.inspect}. #{e.backtrace.join(',')}"
         end
       end
 
-      puts "Finished. Total: #{total}. Errors: #{errors}"
+      puts "Finished. Total: #{total}. Errors: #{errors}" unless Rails.env.test?
     end
 
     module LayersRake
@@ -198,7 +198,7 @@ namespace :carto do
         end
       end
 
-      puts "Finished. Total: #{total}. Updated: #{updated}. Errors: #{errors}"
+      puts "Finished. Total: #{total}. Updated: #{updated}. Errors: #{errors}" unless Rails.env.test?
     end
   end
 end

@@ -1,6 +1,4 @@
-# encoding: utf-8
 require_relative '../../../spec/spec_helper'
-require_relative '../../../spec/rspec_configuration.rb'
 require_relative '../lib/hires_batch_geocoder'
 
 # TODO rename to hires_batch_geocoder_spec.rb or split into batch/non-batch
@@ -18,7 +16,7 @@ describe CartoDB::HiresBatchGeocoder do
         'mailto' => ''
       })
     @working_dir = Dir.mktmpdir
-    @geocoding_model = FactoryGirl.create(:geocoding, kind: 'high-resolution', formatter: '{street}',
+    @geocoding_model = create(:geocoding, kind: 'high-resolution', formatter: '{street}',
                                           remote_id: 'wadus')
   end
 

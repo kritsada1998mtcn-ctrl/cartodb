@@ -1,5 +1,3 @@
-# encoding: UTF-8
-
 require 'json'
 require_relative './carto_json_serializer'
 
@@ -41,19 +39,14 @@ class Carto::Analysis < ActiveRecord::Base
     user_id = user.id
 
     layer_options = layer.options
-    username = layer_options[:user_name] || layer.user.username
     table_name = layer_options[:table_name]
-
-    qualified_table_name = if layer.user.organization_user?
-                             safe_schema_and_table_quoting(username, table_name)
-                           else
-                             table_name
-                           end
+    table_schema = layer.user_tables.find_by(name: table_name).user.database_schema
+    qualified_table_name = safe_schema_and_table_quoting(table_schema, table_name)
 
     analysis_definition = {
       id: 'abcdefghijklmnopqrstuvwxyz'[index] + '0',
       type: 'source',
-      params: { query: layer.default_query(user) },
+      params: { query: layer.default_query(user, layer.user.database_schema) },
       options: { table_name: qualified_table_name }
     }
 

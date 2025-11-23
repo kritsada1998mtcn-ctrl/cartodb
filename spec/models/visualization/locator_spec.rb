@@ -1,10 +1,4 @@
-# encoding: utf-8
-require 'rspec/core'
-require 'rspec/expectations'
-require 'rspec/mocks'
-require 'sequel'
-
-require_relative '../../spec_helper'
+require 'spec_helper'
 require_relative '../../../app/models/visualization/locator'
 require_relative '../../../app/models/visualization'
 require_relative '../../../app/models/visualization/member'
@@ -29,9 +23,9 @@ describe Visualization::Locator do
 
     Visualization.repository  = DataRepository::Backend::Sequel.new(@db, :visualizations)
 
-    @user_id = UUIDTools::UUID.timestamp_create.to_s
+    @user_id = Carto::UUIDHelper.random_uuid
 
-    @map_id = UUIDTools::UUID.timestamp_create.to_s
+    @map_id = Carto::UUIDHelper.random_uuid
 
     # For relator->permission
     @user_mock = create_mocked_user

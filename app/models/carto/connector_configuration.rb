@@ -1,11 +1,9 @@
-# encoding: UTF-8
-
 require 'carto/connector'
 
 class Carto::ConnectorConfiguration < ActiveRecord::Base
   belongs_to :connector_provider, class_name: Carto::ConnectorProvider
-  belongs_to :user, class_name: Carto::User
-  belongs_to :organization, class_name: Carto::Organization
+  belongs_to :user, class_name: Carto::User, inverse_of: :connector_configurations
+  belongs_to :organization, class_name: Carto::Organization, inverse_of: :connector_configurations
 
   # A ConnectorConfiguration can belong to either user or an organization, but not both;
   # it may also be a default configuration (no user or organization).
@@ -64,5 +62,16 @@ class Carto::ConnectorConfiguration < ActiveRecord::Base
       end
       config
     end
+  end
+
+  # default statement timeout in ms used for imports
+  DEFAULT_CONNECTOR_TIMEOUT = 1.hour * 1000
+  # FIXME: should we unify with DataImport::DIRECT_STATEMENT_TIMEOUT
+  # and CartoDB::Synchronization::Adapter::STATEMENT_TIMEOUT ?
+
+  # statement timeout in ms used for imports
+  def timeout
+    # this is currently not in the connector_configurations table and is taken from global app configuration
+    Cartodb.get_config(:connectors, connector_provider.name, 'timeout') || DEFAULT_CONNECTOR_TIMEOUT
   end
 end

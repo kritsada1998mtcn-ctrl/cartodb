@@ -1,6 +1,3 @@
-# encoding: utf-8
-require_relative '../../simplecov_helper'
-require_relative '../../rspec_configuration'
 require_relative '../../../app/models/table/column_typecaster'
 
 describe CartoDB::ColumnTypecaster do

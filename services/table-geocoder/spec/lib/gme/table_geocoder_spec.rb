@@ -1,11 +1,9 @@
-# encoding: utf-8
 require 'open3'
 require_relative '../../../lib/gme/table_geocoder'
 require_relative '../../../../../lib/url_signer'
 require_relative '../../../lib/gme/exceptions'
 require_relative '../../factories/pg_connection'
 require_relative '../../../../../spec/spec_helper.rb'
-require_relative '../../../../../spec/rspec_configuration.rb'
 
 describe Carto::Gme::TableGeocoder do
   before(:all) do
@@ -15,7 +13,7 @@ describe Carto::Gme::TableGeocoder do
     @log = mock
     @log.stubs(:append)
     @log.stubs(:append_and_store)
-    @geocoding_model = FactoryGirl.create(:geocoding, kind: 'high-resolution', formatter: '{street}')
+    @geocoding_model = create(:geocoding, kind: 'high-resolution', formatter: '{street}')
 
     @mandatory_args = {
       connection: connection_stub,
@@ -242,6 +240,6 @@ describe Carto::Gme::TableGeocoder do
 
   def load_csv(path)
     @db.run("CREATE TABLE #{@table_name} (the_geom geometry, cartodb_id integer, name text, iso3 text)")
-    @db.run("COPY #{@table_name.lit}(cartodb_id, name, iso3) FROM '#{path}' DELIMITER ',' CSV")
+    @db.run("COPY #{Sequel.lit(@table_name)}(cartodb_id, name, iso3) FROM '#{path}' DELIMITER ',' CSV")
   end
 end

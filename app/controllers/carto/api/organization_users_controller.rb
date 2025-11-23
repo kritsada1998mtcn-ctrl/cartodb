@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require_relative './user_presenter'
 
 module Carto
@@ -15,7 +13,7 @@ module Carto
       before_filter :ensure_edit_permissions, only: [:show, :update, :destroy]
 
       def index
-        presentations = @organization.users.each do |user|
+        presentations = @organization.users.map do |user|
           Carto::Api::UserPresenter.new(user, current_viewer: current_viewer).to_eumapi_poro
         end
 
@@ -52,20 +50,16 @@ module Carto
           account_creator.with_soft_here_isolines_limit(create_params[:soft_here_isolines_limit])
         end
 
-        if create_params[:soft_obs_snapshot_limit].present?
-          account_creator.with_soft_obs_snapshot_limit(create_params[:soft_obs_snapshot_limit])
-        end
-
-        if create_params[:soft_obs_general_limit].present?
-          account_creator.with_soft_obs_general_limit(create_params[:soft_obs_general_limit])
-        end
-
         if create_params[:soft_twitter_datasource_limit].present?
           account_creator.with_soft_twitter_datasource_limit(create_params[:soft_twitter_datasource_limit])
         end
 
         if create_params[:soft_mapzen_routing_limit].present?
           account_creator.with_soft_mapzen_routing_limit(create_params[:soft_mapzen_routing_limit])
+        end
+
+        if create_params[:force_password_change] == true
+          account_creator.with_force_password_change
         end
 
         unless account_creator.valid_creation?(current_viewer)
@@ -80,7 +74,7 @@ module Carto
                                                 .to_eumapi_poro
 
         render_jsonp presentation, 200
-      rescue => e
+      rescue StandardError => e
         CartoDB.notify_exception(e, user: account_creator.user.inspect)
 
         render_jsonp('An error has ocurred. Please contact support', 500)
@@ -127,8 +121,8 @@ module Carto
         force_destroy = params[:force].present?
 
         if !force_destroy && @user.has_shared_entities?
-          error_message = "Can't delete @user. 'Has shared entities"
-          render_jsonp(error_message, 410 ) and return
+          error_message = "Can't delete user. Has shared entities"
+          render_jsonp(error_message, 401) and return
         end
 
         @user.set_force_destroy if force_destroy
@@ -137,9 +131,9 @@ module Carto
 
         render_jsonp 'User deleted', 200
       rescue CartoDB::CentralCommunicationFailure => e
-        CartoDB::Logger.error(exception: e, message: 'Central error deleting user from EUMAPI', user: @user)
+        log_error(exception: e, message: 'Central error deleting user from EUMAPI', target_user: @user)
         render_jsonp "User couldn't be deleted", 500
-      rescue => e
+      rescue StandardError => e
         render_jsonp "User couldn't be deleted: #{e.message}", 500
       end
 
@@ -151,8 +145,6 @@ module Carto
         :quota_in_bytes,
         :soft_geocoding_limit,
         :soft_here_isolines_limit,
-        :soft_obs_general_limit,
-        :soft_obs_snapshot_limit,
         :soft_twitter_datasource_limit,
         :soft_mapzen_routing_limit,
         :viewer,
@@ -162,18 +154,12 @@ module Carto
       # TODO: Use native strong params when in Rails 4+
       def create_params
         @create_params ||=
-          permit(COMMON_MUTABLE_ATTRIBUTES + [:username])
+          permit(COMMON_MUTABLE_ATTRIBUTES + [:username, :force_password_change])
       end
 
       # TODO: Use native strong params when in Rails 4+
       def update_params
         @update_params ||= permit(COMMON_MUTABLE_ATTRIBUTES)
-      end
-
-      def ensure_edit_permissions
-        unless @user.editable_by?(current_viewer)
-          render_jsonp({ errors: ['You do not have permissions to edit that user'] }, 401)
-        end
       end
     end
   end

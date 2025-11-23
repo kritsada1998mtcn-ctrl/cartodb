@@ -1,5 +1,3 @@
-# coding: UTF-8
-
 require_relative '../../spec_helper'
 
 include CartoDB
@@ -7,7 +5,7 @@ include CartoDB
 describe CartoDB::PlatformLimits::Importer::UserConcurrentSyncsAmount do
   describe '#importer-limits' do
     before(:all) do
-      @user = FactoryGirl.create(:valid_user)
+      @user = create(:valid_user)
     end
 
     after(:all) do

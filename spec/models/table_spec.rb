@@ -1,5 +1,3 @@
-# coding: UTF-8
-
 # NOTE that these tests are very sensitive to precisce versions of GDAL (1.9.0)
 # 747 # Table post import processing tests should add a point the_geom column after importing a CSV
 # 1210 # Table merging two+ tables should import and then export file twitters.csv
@@ -31,7 +29,7 @@ def create_import(user, file_name, name=nil)
   end
 
   @data_import.data_source =  file_name
-  @data_import.send :dispatch
+  @data_import.run_import!
   @data_import
 end
 
@@ -218,7 +216,7 @@ describe Table do
                 "maxZoom" => "18",
                 "name" => "Waduson",
                 "className" => "waduson",
-                "attribution" => "© <a href=\"http://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors © <a href= \"https://carto.com/attributions\">CARTO</a>"
+                "attribution" => "© <a href=\"http://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors © <a href= \"https://carto.com/about-carto/\">CARTO</a>"
               }
             }
           }
@@ -247,7 +245,7 @@ describe Table do
           map.layers[0].options["maxZoom"].should == "18"
           map.layers[0].options["name"].should == "Waduson"
           map.layers[0].options["className"].should == "waduson"
-          map.layers[0].options["attribution"].should == "© <a href=\"http://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors © <a href= \"https://carto.com/attributions\">CARTO</a>"
+          map.layers[0].options["attribution"].should == "© <a href=\"http://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors © <a href= \"https://carto.com/about-carto/\">CARTO</a>"
           map.layers[0].order.should == 0
 
           map.visualization.overlays.count.should eq 5
@@ -267,7 +265,7 @@ describe Table do
                 "maxZoom" => "18",
                 "name" => "Waduson",
                 "className" => "waduson",
-                "attribution" => "© <a href=\"http://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors © <a href= \"https://carto.com/attributions\">CARTO</a>",
+                "attribution" => "© <a href=\"http://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors © <a href= \"https://carto.com/about-carto/\">CARTO</a>",
                 "labels" => {
                   "urlTemplate" => "http://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}.png",
                   "urlTemplate2x" => "http://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}@2x.png"
@@ -291,7 +289,7 @@ describe Table do
           table.map.layers[0].options["maxZoom"].should == "18"
           table.map.layers[0].options["name"].should == "Waduson"
           table.map.layers[0].options["className"].should == "waduson"
-          table.map.layers[0].options["attribution"].should == "© <a href=\"http://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors © <a href= \"https://carto.com/attributions\">CARTO</a>"
+          table.map.layers[0].options["attribution"].should == "© <a href=\"http://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors © <a href= \"https://carto.com/about-carto/\">CARTO</a>"
           table.map.layers[0].order.should == 0
 
           table.map.layers[2].options["urlTemplate"].should == "http://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}.png"
@@ -301,7 +299,7 @@ describe Table do
           table.map.layers[2].options["maxZoom"].should == "18"
           table.map.layers[2].options["name"].should == "Waduson Labels"
           table.map.layers[2].options["className"].should be_nil
-          table.map.layers[2].options["attribution"].should == "© <a href=\"http://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors © <a href= \"https://carto.com/attributions\">CARTO</a>"
+          table.map.layers[2].options["attribution"].should == "© <a href=\"http://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors © <a href= \"https://carto.com/about-carto/\">CARTO</a>"
           table.map.layers[2].options["type"].should == "Tiled"
           table.map.layers[2].options["labels"].should be_nil
           table.map.layers[2].order.should == 2
@@ -310,7 +308,7 @@ describe Table do
 
       it "should return a sequel interface" do
         table = create_table :user_id => @user.id
-        table.sequel.class.should == Sequel::Postgres::Dataset
+        table.sequel.is_a?(Sequel::Postgres::Dataset).should be_true
       end
 
       it "should have a privacy associated and it should be private by default" do
@@ -554,7 +552,7 @@ describe Table do
         table.name = 'Wadus table #23'
         table.save
         table.reload
-        table.name.should == "Wadus table #23".sanitize
+        table.name.should == CartoDB::Importer2::StringSanitizer.sanitize("Wadus table #23")
         @user.in_database do |user_database|
           user_database.table_exists?('wadus_table'.to_sym).should be_false
           user_database.table_exists?('wadus_table_23'.to_sym).should be_true
@@ -563,7 +561,7 @@ describe Table do
         table.name = ''
         table.save
         table.reload
-        table.name.should == "Wadus table #23".sanitize
+        table.name.should == CartoDB::Importer2::StringSanitizer.sanitize("Wadus table #23")
         @user.in_database do |user_database|
           user_database.table_exists?('wadus_table_23'.to_sym).should be_true
         end
@@ -682,16 +680,11 @@ describe Table do
 
         CartoDB::Varnish.any_instance.stubs(:send_command).returns(true)
         @doomed_table = create_table(user_id: @user.id)
-        @automatic_geocoding = FactoryGirl.create(:automatic_geocoding, table_id: @doomed_table.id)
         @doomed_table.destroy
       end
 
       before(:each) do
         bypass_named_maps
-      end
-
-      it "should remove the automatic_geocoding" do
-        expect { @automatic_geocoding.reload }.to raise_error
       end
 
       it "should remove the table from the user database" do
@@ -709,7 +702,7 @@ describe Table do
 
       it "should update denormalized counters" do
         @user.reload
-        Tag.count.should == 0
+        Carto::Tag.count.should == 0
         UserTable.count == 0
       end
 
@@ -734,31 +727,31 @@ describe Table do
         delete_user_data @user
         table = create_table :user_id => @user.id, :tags => "tag 1, tag 2,tag 3, tag 3"
 
-        Tag.count.should == 3
+        Carto::Tag.count.should == 3
 
-        tag1 = Tag[:name => 'tag 1']
+        tag1 = Carto::Tag.where(name: 'tag 1').first
         tag1.user_id.should  == @user.id
         tag1.table_id.should == table.id
 
-        tag2 = Tag[:name => 'tag 2']
+        tag2 = Carto::Tag.where(name: 'tag 2').first
         tag2.user_id.should  == @user.id
         tag2.table_id.should == table.id
 
-        tag3 = Tag[:name => 'tag 3']
+        tag3 = Carto::Tag.where(name: 'tag 3').first
         tag3.user_id.should  == @user.id
         tag3.table_id.should == table.id
 
         table.tags = "tag 1"
         table.save_changes
 
-        Tag.count.should == 1
-        tag1 = Tag[:name => 'tag 1']
+        Carto::Tag.count.should == 1
+        tag1 = Carto::Tag.where(name: 'tag 1').first
         tag1.user_id.should  == @user.id
         tag1.table_id.should == table.id
 
         table.tags = "    "
         table.save_changes
-        Tag.count.should == 0
+        Carto::Tag.count.should == 0
       end
 
       it "can add a column of a CartoDB::TYPE type" do
@@ -1240,7 +1233,7 @@ describe Table do
 
         table = create_table(user_table: UserTable[data_import.table_id], user_id: @user.id)
         table.should_not be_nil, "Import failure: #{data_import.log}"
-        update_data = {:upo___nombre_partido=>"PSOEE"}
+        update_data = {:upo_nombre_partido=>"PSOEE"}
         id = 5
 
         lambda {
@@ -1248,7 +1241,7 @@ describe Table do
         }.should_not raise_error
 
         res = table.sequel.where(:cartodb_id => 5).first
-        res[:upo___nombre_partido].should == "PSOEE"
+        res[:upo_nombre_partido].should == "PSOEE"
       end
 
       it "should be able to insert data in rows with column names with multiple underscores" do
@@ -1260,14 +1253,14 @@ describe Table do
         table.should_not be_nil, "Import failure: #{data_import.log}"
 
         pk = nil
-        insert_data = {:upo___nombre_partido=>"PSOEE"}
+        insert_data = {:upo_nombre_partido=>"PSOEE"}
 
         lambda {
           pk = table.insert_row!(insert_data)
         }.should_not raise_error
 
         res = table.sequel.where(:cartodb_id => pk).first
-        res[:upo___nombre_partido].should == "PSOEE"
+        res[:upo_nombre_partido].should == "PSOEE"
       end
 
       # No longer used, now we automatically rename reserved word columns
@@ -1326,6 +1319,17 @@ describe Table do
     end
 
     context "post import processing tests" do
+      before(:all) do
+        @old_user_timeout = @user.user_timeout
+        @old_user_db_timeout = @user.database_timeout
+      end
+
+      after(:each) do
+        @user.user_timeout = @old_user_timeout
+        @user.database_timeout = @old_user_db_timeout
+        @user.save
+      end
+
       it "should optimize the table" do
         fixture = fake_data_path("SHP1.zip")
         Table.any_instance.expects(:optimize).once
@@ -1335,10 +1339,11 @@ describe Table do
       it "should assign table_id" do
         fixture = fake_data_path("SHP1.zip")
         data_import = create_import(@user, fixture)
-        data_import.table.table_id.should_not be_nil
+        data_import.table_id.should_not be_nil
       end
 
       it "should add a the_geom column after importing a CSV" do
+        delete_user_data @user
         data_import = DataImport.create( :user_id       => @user.id,
                                          :data_source   => fake_data_path('twitters.csv') )
         data_import.run_import!
@@ -1349,6 +1354,20 @@ describe Table do
         table.rows_counted.should == 7
 
         table.schema.should include([:the_geom, "geometry", "geometry", "geometry"])
+      end
+
+      it "should not fail when the analyze is executed in update_table_geom_pg_stats and raises a PG::UndefinedColumn" do
+        next unless @user.in_database.table_exists?('raster_overviews')
+        delete_user_data @user
+        data_import = DataImport.create(user_id: @user.id,
+                                        data_source: fake_data_path('import_raster.tif.zip'))
+        data_import.run_import!
+
+        table = Table.new(user_table: UserTable[data_import.table_id])
+        table.should_not be_nil, "Import failure: #{data_import.log}"
+        table.name.should match(/^import_raster/)
+
+        table.update_table_geom_pg_stats
       end
 
       it "should not drop a table that exists when upload fails" do
@@ -1409,7 +1428,7 @@ describe Table do
       it "should add a cartodb_id serial column as primary key when importing a file without a column with name cartodb_id" do
         fixture       = fake_data_path("gadm4_export.csv")
         data_import   = create_import(@user, fixture)
-        table         = data_import.table
+        table         = Table.new(user_table: UserTable[data_import.table_id])
         table.should_not be_nil, "Import failure: #{data_import.log.inspect}"
         table_schema  = @user.in_database.schema(table.name)
 
@@ -1421,30 +1440,6 @@ describe Table do
         cartodb_id_schema[:primary_key].should == true
         cartodb_id_schema[:allow_null].should == false
       end
-
-      # Legacy test commented: Invalid data on cartodb_id will provoke an import failure and this behavior
-      # is tested in the data_import specs.
-      #
-      # it "should add a 'cartodb_id_' column when importing a file with invalid data on the cartodb_id column" do
-      #   data_import = DataImport.create( :user_id       => @user.id,
-      #                                    :data_source   =>  '/../db/fake_data/duplicated_cartodb_id.zip')
-
-      #   data_import.run_import!
-      #   table = Table.new(user_table: UserTable[data_import.table_id])
-      #   table.should_not be_nil, "Import failure: #{data_import.log}"
-
-      #   table_schema = @user.in_database.schema(table.name)
-
-      #   cartodb_id_schema = table_schema.detect {|s| s[0].to_s == 'cartodb_id'}
-      #   cartodb_id_schema.should be_present
-      #   cartodb_id_schema = cartodb_id_schema[1]
-      #   cartodb_id_schema[:db_type].should == 'bigint'
-      #   cartodb_id_schema[:default].should == "nextval('#{table.name}_cartodb_id_seq'::regclass)"
-      #   cartodb_id_schema[:primary_key].should == true
-      #   cartodb_id_schema[:allow_null].should == false
-      #   invalid_cartodb_id_schema = table_schema.detect {|s| s[0].to_s == 'cartodb_id_0'}
-      #   invalid_cartodb_id_schema.should be_present
-      # end
 
       it "should return geometry types when guessing is enabled" do
         data_import = DataImport.create( :user_id       => @user.id,
@@ -1487,7 +1482,7 @@ describe Table do
       it "should normalize strings if there is a non-convertible entry when converting string to number" do
         fixture = fake_data_path("short_clubbing.csv")
         data_import = create_import(@user, fixture)
-        table       = data_import.table
+        table       = Table.new(user_table: UserTable[data_import.table_id])
 
         table.modify_column! :name=> "club_id", :type=>"number"
 
@@ -1501,7 +1496,7 @@ describe Table do
       it "should normalize string if there is a non-convertible entry when converting string to boolean" do
         fixture = fake_data_path("column_string_to_boolean.csv")
         data_import = create_import(@user, fixture)
-        table       = data_import.table
+        table       = Table.new(user_table: UserTable[data_import.table_id])
 
         # configure nil column
         table.sequel.where(:test_id => '4').update(:f1 => '0')
@@ -1533,7 +1528,7 @@ describe Table do
       it "should normalize boolean if there is a non-convertible entry when converting boolean to string" do
         fixture = fake_data_path("column_string_to_boolean.csv")
         data_import = create_import(@user, fixture)
-        table       = data_import.table
+        table       = Table.new(user_table: UserTable[data_import.table_id])
         table.modify_column! :name=>"f1", :type=>"boolean"
         table.modify_column! :name=>"f1", :type=>"string"
 
@@ -1544,7 +1539,7 @@ describe Table do
       it "should normalize boolean if there is a non-convertible entry when converting boolean to number" do
         fixture = fake_data_path("column_string_to_boolean.csv")
         data_import = create_import(@user, fixture)
-        table       = data_import.table
+        table       = Table.new(user_table: UserTable[data_import.table_id])
         table.modify_column! :name=>"f1", :type=>"boolean"
         table.modify_column! :name=>"f1", :type=>"number"
 
@@ -1556,7 +1551,7 @@ describe Table do
       converting number to boolean" do
         fixture = fake_data_path("column_number_to_boolean.csv")
         data_import = create_import(@user, fixture)
-        table       = data_import.table
+        table       = Table.new(user_table: UserTable[data_import.table_id])
 
         table.modify_column! :name=>"f1", :type=>"number"
         table.modify_column! :name=>"f1", :type=>"boolean"
@@ -1565,6 +1560,50 @@ describe Table do
         table.sequel.select(:f1).where(:test_id => '2').first[:f1].should == false
         table.sequel.select(:f1).where(:test_id => '3').first[:f1].should == true
         table.sequel.select(:f1).where(:test_id => '4').first[:f1].should == true
+      end
+
+      it "should not fail when the analyze is executed in update_table_pg_stats and raises a timeout" do
+        delete_user_data @user
+        old_user_timeout = @user.user_timeout
+        old_user_db_timeout = @user.database_timeout
+        data_import = DataImport.create(user_id: @user.id,
+                                        data_source: fake_data_path('twitters.csv'))
+        data_import.run_import!
+
+        table = Table.new(user_table: UserTable[data_import.table_id])
+        table.should_not be_nil, "Import failure: #{data_import.log}"
+        table.name.should match(/^twitters/)
+        @user.user_timeout = 1
+        @user.database_timeout = 1
+        @user.save
+        table.update_table_pg_stats
+        @user.user_timeout = @old_user_timeout
+        @user.database_timeout = @old_user_db_timeout
+        @user.save
+        table.rows_counted.should == 7
+      end
+
+      it "should not fail when the analyze is executed in update_table_geom_pg_stats and raises a timeout" do
+        delete_user_data @user
+        old_user_timeout = @user.user_timeout
+        old_user_db_timeout = @user.database_timeout
+        data_import = DataImport.create(user_id: @user.id,
+                                        data_source: fake_data_path('twitters.csv'))
+        data_import.run_import!
+
+        table = Table.new(user_table: UserTable[data_import.table_id])
+        table.should_not be_nil, "Import failure: #{data_import.log}"
+        table.name.should match(/^twitters/)
+
+        @user.user_timeout = 1
+        @user.database_timeout = 1
+        @user.save
+
+        table.update_table_geom_pg_stats
+        @user.user_timeout = @old_user_timeout
+        @user.database_timeout = @old_user_db_timeout
+        @user.save
+        table.rows_counted.should == 7
       end
     end
 
@@ -1749,16 +1788,16 @@ describe Table do
         fixture = fake_data_path("twitters.csv")
         data_import = create_import(@user, fixture)
 
-        data_import.table.name.should match(/^twitters/)
-        data_import.table.rows_counted.should == 7
+        data_import.table_name.should match(/^twitters/)
+        Table.new(user_table: UserTable[data_import.table_id]).rows_counted.should == 7
       end
 
       it "file SHP1.zip" do
         fixture = fake_data_path("SHP1.zip")
         data_import = create_import(@user, fixture)
 
-        data_import.table.name.should == "esp_adm1"
-        data_import.table.rows_counted.should == 18
+        data_import.table_name.should == "esp_adm1"
+        Table.new(user_table: UserTable[data_import.table_id]).rows_counted.should == 18
       end
     end
 
@@ -1818,7 +1857,7 @@ describe Table do
 
     describe '#validation_for_link_privacy' do
       it 'checks that only users with private tables enabled can set LINK privacy' do
-        table_id = UUIDTools::UUID.timestamp_create.to_s
+        table_id = Carto::UUIDHelper.random_uuid
 
         user_mock = mock
         user_mock.stubs(:private_tables_enabled).returns(true)
@@ -1843,7 +1882,7 @@ describe Table do
         user_table.stubs(:user).returns(user_mock)
         user_table.send(:default_privacy_value).should eq ::UserTable::PRIVACY_PRIVATE
 
-        user_table.user_id = UUIDTools::UUID.timestamp_create.to_s
+        user_table.user_id = Carto::UUIDHelper.random_uuid
         user_table.privacy = UserTable::PRIVACY_PUBLIC
         user_table.name = 'test'
         user_table.validate
@@ -2138,26 +2177,49 @@ describe Table do
       end
     end
 
+    describe 'self.table_and_schema' do
+      it 'returns nil schema if schema is "public"' do
+        Table.table_and_schema("public.sm_org_line_cartotest").should == ["sm_org_line_cartotest", nil]
+      end
+
+      it 'returns the schema if it is different from "public"' do
+        Table.table_and_schema("manolito.sm_org_line_cartotest").should == ["sm_org_line_cartotest", "manolito"]
+      end
+
+      it 'returns the table name when there is no schema' do
+        Table.table_and_schema("sm_org_line_cartotest").should == ["sm_org_line_cartotest", nil]
+      end
+
+      it 'returns schema without quotes' do
+        Table.table_and_schema("\"user-hyphen\".table").should == ["table", "user-hyphen"]
+      end
+    end
+
     describe 'self.get_valid_column_name' do
       it 'returns the same candidate name if it is ok' do
         Table.expects(:get_column_names).once.returns(%w{a b c})
-        Table.get_valid_column_name('dummy_table_name', 'a').should == 'a'
+        version = CartoDB::Importer2::Column::CURRENT_COLUMN_SANITIZATION_VERSION
+        Table.get_valid_column_name('dummy_table_name', 'a', version).should == 'a'
       end
 
       it 'returns an alternative name if using a reserved word' do
         Table.expects(:get_column_names).once.returns(%w{column b c})
+        version = CartoDB::Importer2::Column::CURRENT_COLUMN_SANITIZATION_VERSION
         Table.get_valid_column_name(
           'dummy_table_name',
           'column',
-          reserved_words: %w{ INSERT SELECT COLUMN }).should == 'column_1'
+          version
+        ).should == '_column'
       end
 
       it 'avoids collisions when a renamed column already exists' do
-        Table.expects(:get_column_names).once.returns(%w{column_1 column c})
+        Table.expects(:get_column_names).once.returns(%w{_column column c})
+        version = CartoDB::Importer2::Column::CURRENT_COLUMN_SANITIZATION_VERSION
         Table.get_valid_column_name(
           'dummy_table_name',
           'column',
-          reserved_words: %w{ INSERT SELECT COLUMN }).should == 'column_2'
+          version
+        ).should == '_column_1'
       end
 
     end
@@ -2170,6 +2232,26 @@ describe Table do
         pk_row1 = table.insert_row!(:name => 'name1')
         table.actual_row_count.should == 1
         [0, 1].should include(table.estimated_row_count)
+      end
+
+      context 'organization' do
+        include_context 'organization with users helper'
+
+        it 'returns the right row count estimation without mixing tables from other users' do
+          table1 = new_table(user_id: @org_user_1.id, name: 'wadus1')
+          table1.save
+          table1.insert_row!(name: '1')
+          @org_user_1.in_database.run("ANALYZE #{table1.qualified_table_name}")
+
+          table2 = new_table(user_id: @org_user_2.id, name: 'wadus1')
+          table2.save
+          table2.insert_row!(name: '1')
+          table2.insert_row!(name: '2')
+          @org_user_2.in_database.run("ANALYZE #{table2.qualified_table_name}")
+
+          table1.estimated_row_count.should eq 1
+          table2.estimated_row_count.should eq 2
+        end
       end
     end
   end
@@ -2194,7 +2276,7 @@ describe Table do
         table.table_visualization.should be_private
 
         map = CartoDB::Visualization::TableBlender.new(@carto_user, [table]).blend
-        derived_vis = FactoryGirl.create(:derived_visualization, user_id: @user.id, map_id: map.id,
+        derived_vis = create(:derived_visualization, user_id: @user.id, map_id: map.id,
                                                                  privacy: CartoDB::Visualization::Member::PRIVACY_PRIVATE)
 
         bypass_named_maps
@@ -2225,7 +2307,7 @@ describe Table do
         table.privacy = UserTable::PRIVACY_PUBLIC
         table.save
         map = CartoDB::Visualization::TableBlender.new(@carto_user, [table]).blend
-        derived_vis = FactoryGirl.create(:derived_visualization, user_id: @user.id, map_id: map.id)
+        derived_vis = create(:derived_visualization, user_id: @user.id, map_id: map.id)
 
         bypass_named_maps
         derived_vis.store
@@ -2261,7 +2343,7 @@ describe Table do
         table = create_table(name: 'bogus_name', user_id: @user.id)
 
         map = CartoDB::Visualization::TableBlender.new(@carto_user, [table]).blend
-        derived = FactoryGirl.create(:derived_visualization, user_id: @user.id, map_id: map.id)
+        derived = create(:derived_visualization, user_id: @user.id, map_id: map.id)
 
         table.reload
 
@@ -2276,8 +2358,8 @@ describe Table do
         table = create_table(name: 'bogus_name', user_id: @user.id)
 
         map = CartoDB::Visualization::TableBlender.new(@carto_user, [table]).blend
-        derived = FactoryGirl.create(:derived_visualization, user_id: @user.id, map_id: map.id)
-        map.layers << FactoryGirl.create(:carto_layer)
+        derived = create(:derived_visualization, user_id: @user.id, map_id: map.id)
+        map.layers << create(:carto_layer)
         CartoDB::Visualization::Member.new(id: derived.id).fetch.data_layers.count.should eq 2
 
         table.reload
@@ -2313,7 +2395,7 @@ describe Table do
         Carto::NamedMaps::Api.any_instance.stubs(get: nil, create: true, update: true)
 
         map = CartoDB::Visualization::TableBlender.new(@carto_user, [table]).blend
-        derived = FactoryGirl.create(:derived_visualization, user_id: @user.id, map_id: map.id)
+        derived = create(:derived_visualization, user_id: @user.id, map_id: map.id)
         derived.type.should eq(CartoDB::Visualization::Member::TYPE_DERIVED)
 
         # Do not create all member objects anew to be able to set expectations
@@ -2339,7 +2421,7 @@ describe Table do
 
         Carto::NamedMaps::Api.any_instance.stubs(get: nil, create: true, update: true)
         map = CartoDB::Visualization::TableBlender.new(@carto_user, [table]).blend
-        derived = FactoryGirl.create(:derived_visualization, user_id: @user.id, map_id: map.id)
+        derived = create(:derived_visualization, user_id: @user.id, map_id: map.id)
         derived.type.should eq(CartoDB::Visualization::Member::TYPE_DERIVED)
 
         # Scenario 1: Fail at map saving (can happen due to Map handlers)
@@ -2412,7 +2494,7 @@ describe Table do
 
   describe 'with Carto::UserTable model' do
     before(:all) do
-      @user = FactoryGirl.create(:valid_user, quota_in_bytes: 524288000, table_quota: 500, private_tables_enabled: true)
+      @user = create(:valid_user, quota_in_bytes: 524288000, table_quota: 500, private_tables_enabled: true)
     end
 
     before(:each) do

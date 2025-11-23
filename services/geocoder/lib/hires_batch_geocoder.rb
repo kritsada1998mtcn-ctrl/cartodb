@@ -1,4 +1,3 @@
-# encoding: utf-8
 require 'open3'
 require 'nokogiri'
 require 'csv'
@@ -51,7 +50,7 @@ module CartoDB
       @used_batch_request = true
       begin
         @batch_api_disabled = config['batch_api_disabled'] == true
-      rescue
+      rescue StandardError
         @batch_api_disabled = false
       end
     end

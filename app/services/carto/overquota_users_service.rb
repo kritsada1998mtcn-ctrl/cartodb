@@ -1,5 +1,8 @@
 module Carto
   class OverquotaUsersService
+
+    include ::LoggerHelper
+
     def initialize(date = Date.today)
       @date = date
     end
@@ -16,7 +19,7 @@ module Carto
       if $users_metadata.exists(date_key)
         $users_metadata.hgetall(date_key).values.map { |v| JSON.parse(v) }
       else
-        CartoDB::Logger.warning(message: "There is no overquota cached users for date #{formatted_date}")
+        log_warning(message: 'There is no overquota cached users for date', date_string: formatted_date)
         []
       end
     end
@@ -44,7 +47,7 @@ module Carto
       overquota_users
     end
 
-    SERVICES = %w(geocoding twitter_datasource here_isolines obs_snapshot obs_general mapzen_routing).freeze
+    SERVICES = %w(geocoding twitter_datasource here_isolines mapzen_routing).freeze
     def services_overquota(user, delta)
       SERVICES.any? do |service|
         user.send("get_#{service}_calls") > user.send("#{service}_quota").to_i * (1 - delta)

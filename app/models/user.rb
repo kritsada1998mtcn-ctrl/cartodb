@@ -1,5 +1,7 @@
-# encoding: UTF-8
 require 'cartodb/per_request_sequel_cache'
+require 'cartodb-common'
+require 'email_address'
+require 'securerandom'
 require_relative './user/user_decorator'
 require_relative './user/oauths'
 require_relative './synchronization/synchronization_oauth'
@@ -7,8 +9,7 @@ require_relative '../helpers/data_services_metrics_helper'
 require_relative './user/user_organization'
 require_relative './synchronization/collection.rb'
 require_relative '../services/visualization/common_data_service'
-require_relative './external_data_import'
-require_relative './feature_flag'
+require_relative './data_import'
 require_relative '../../lib/cartodb/stats/api_calls'
 require_relative '../../lib/carto/http/client'
 require_dependency 'cartodb_config_utils'
@@ -17,89 +18,39 @@ require_dependency 'carto/user_db_size_cache'
 require_dependency 'cartodb/redis_vizjson_cache'
 require_dependency 'carto/bolt'
 require_dependency 'carto/helpers/auth_token_generator'
-require_dependency 'carto/helpers/has_connector_configuration'
-require_dependency 'carto/helpers/batch_queries_statement_timeout'
 require_dependency 'carto/user_authenticator'
-require_dependency 'carto/helpers/billing_cycle'
 require_dependency 'carto/email_cleaner'
 require_dependency 'carto/email_domain_validator'
 require_dependency 'carto/visualization'
+require_dependency 'carto/gcloud_user_settings'
+require_dependency 'carto/helpers/user_commons'
 
 class User < Sequel::Model
   include CartoDB::MiniSequel
   include CartoDB::UserDecorator
-  include Concerns::CartodbCentralSynchronizable
+  include CartodbCentralSynchronizable
   include CartoDB::ConfigUtils
   include DataServicesMetricsHelper
   include Carto::AuthTokenGenerator
-  include Carto::HasConnectorConfiguration
-  include Carto::BatchQueriesStatementTimeout
-  include Carto::BillingCycle
   include Carto::EmailCleaner
-  extend Carto::UserAuthenticator
-
-  OAUTH_SERVICE_TITLES = {
-    'gdrive' => 'Google Drive',
-    'dropbox' => 'Dropbox',
-    'box' => 'Box',
-    'mailchimp' => 'MailChimp',
-    'instagram' => 'Instagram'
-  }.freeze
-
-  OAUTH_SERVICE_REVOKE_URLS = {
-    'mailchimp' => 'http://admin.mailchimp.com/account/oauth2/',
-    'instagram' => 'http://instagram.com/accounts/manage_access/'
-  }.freeze
-
-  INDUSTRIES = ['Academic and Education', 'Architecture and Engineering', 'Banking and Finance',
-                'Business Intelligence and Analytics', 'Utilities and Communications', 'GIS and Mapping',
-                'Government', 'Health', 'Marketing and Advertising', 'Media, Entertainment and Publishing',
-                'Natural Resources', 'Non-Profits', 'Real Estate', 'Software and Technology',
-                'Transportation and Logistics'].freeze
-
-  JOB_ROLES = ['Founder / Executive', 'Developer', 'Student', 'VP / Director', 'Manager / Lead',
-               'Personal / Non-professional', 'Media', 'Individual Contributor'].freeze
-
-  DEPRECATED_JOB_ROLES = ['Researcher', 'GIS specialist', 'Designer', 'Consultant / Analyst',
-                          'CIO / Executive', 'Marketer', 'Sales', 'Journalist', 'Hobbyist', 'Government official'].freeze
-
-  # Make sure the following date is after Jan 29, 2015,
-  # which is the date where a message to accept the Terms and
-  # conditions and the Privacy policy was included in the Signup page.
-  # See https://github.com/CartoDB/cartodb-central/commit/3627da19f071c8fdd1604ddc03fb21ab8a6dff9f
-  FULLSTORY_ENABLED_MIN_DATE = Date.new(2017, 1, 1)
-  FULLSTORY_SUPPORTED_PLANS = ['FREE', 'PERSONAL30'].freeze
+  include Carto::UserCommons
 
   self.strict_param_setting = false
 
-  # @param name             String
-  # @param avatar_url       String
-  # @param database_schema  String
-  # @param max_import_file_size Integer
-  # @param max_import_table_row_count Integer
-  # @param max_concurrent_import_count Integer
-
-  one_to_one  :client_application
-  one_to_many :synchronization_oauths
-  one_to_many :tokens, :class => :OauthToken
+  # one_to_many :synchronization_oauths
   one_to_many :maps
   one_to_many :assets
   one_to_many :data_imports
-  one_to_many :geocodings, order: :created_at.desc
-  one_to_many :search_tweets, order: :created_at.desc
-  many_to_one :organization
+  one_to_many :geocodings, order: Sequel.desc(:created_at)
 
   many_to_many :layers, class: ::Layer, :order => :order, :after_add => proc { |user, layer|
     layer.set_default_order(user)
   }
 
-  one_to_many :feature_flags_user
-
   plugin :many_through_many
-  many_through_many :groups, [[:users_groups, :user_id, :group_id]]
 
   # Sequel setup & plugins
-  plugin :association_dependencies, :client_application => :destroy, :synchronization_oauths => :destroy, :feature_flags_user => :destroy
+  # plugin :association_dependencies, synchronization_oauths: :destroy
   plugin :validation_helpers
   plugin :json_serializer
   plugin :dirty
@@ -108,7 +59,7 @@ class User < Sequel::Model
   # Restrict to_json attributes
   @json_serializer_opts = {
     :except => [ :crypted_password,
-                 :salt,
+                 :session_salt,
                  :invite_token,
                  :invite_token_date,
                  :admin,
@@ -119,22 +70,9 @@ class User < Sequel::Model
 
   DEFAULT_MAX_LAYERS = 8
 
-  MIN_PASSWORD_LENGTH = 6
-  MAX_PASSWORD_LENGTH = 64
-
-  GEOCODING_BLOCK_SIZE = 1000
-  HERE_ISOLINES_BLOCK_SIZE = 1000
-  OBS_SNAPSHOT_BLOCK_SIZE = 1000
-  OBS_GENERAL_BLOCK_SIZE = 1000
-  MAPZEN_ROUTING_BLOCK_SIZE = 1000
-
-  TRIAL_DURATION_DAYS = 15
-
   DEFAULT_GEOCODING_QUOTA = 0
   DEFAULT_HERE_ISOLINES_QUOTA = 0
   DEFAULT_MAPZEN_ROUTING_QUOTA = nil
-  DEFAULT_OBS_SNAPSHOT_QUOTA = 0
-  DEFAULT_OBS_GENERAL_QUOTA = 0
 
   DEFAULT_MAX_IMPORT_FILE_SIZE = 157286400
   DEFAULT_MAX_IMPORT_TABLE_ROW_COUNT = 500000
@@ -142,11 +80,38 @@ class User < Sequel::Model
 
   COMMON_DATA_ACTIVE_DAYS = 31
 
-  STATE_ACTIVE = 'active'.freeze
-  STATE_LOCKED = 'locked'.freeze
-
   self.raise_on_typecast_failure = false
   self.raise_on_save_failure = false
+
+  ## AR compatibility until User is migrated
+  def organization
+    Carto::Organization.find_by(id: organization_id) if organization_id
+  end
+
+  def organization=(organization)
+    self.organization_id = organization&.id
+  end
+
+  def carto_user
+    user_object = persisted? ? Carto::User.find_by(id: id) : Carto::User.new(attributes)
+    user_object.factory_bot_context = factory_bot_context if user_object
+    user_object
+  end
+
+  def sequel_user
+    self
+  end
+
+  def self_feature_flags_user
+    Carto::FeatureFlagsUser.where(user_id: id)
+  end
+
+  def self_feature_flags
+    Carto::FeatureFlag.where(id: self_feature_flags_user.pluck(:feature_flag_id))
+  end
+
+  delegate :groups, to: :carto_user
+  ## ./AR compatibility until User is migrated
 
   def db_service
     @db_service ||= CartoDB::UserModule::DBService.new(self)
@@ -163,37 +128,51 @@ class User < Sequel::Model
   ## Validations
   def validate
     super
+    validate_username
+    validate_email
+    validate_password
+    validate_organization
+    validate_quotas
+  end
+
+  def validate_username
     validates_presence :username
     validates_unique   :username
     validates_format /\A[a-z0-9\-]+\z/, :username, message: "must only contain lowercase letters, numbers and the dash (-) symbol"
     validates_format /\A[a-z0-9]{1}/, :username, message: "must start with alphanumeric chars"
     validates_format /[a-z0-9]{1}\z/, :username, message: "must end with alphanumeric chars"
     validates_max_length 63, :username
-    errors.add(:name, 'is taken') if name_exists_in_organizations?
+    errors.add(:name, 'is taken') if Carto::Organization.exists?(name: username)
+  end
+
+  def validate_email
+    return unless new? || column_changed?(:email)
 
     validates_presence :email
-    validates_unique   :email, :message => 'is already taken'
-    validates_format EmailAddressValidator::Regexp::ADDR_SPEC, :email, :message => 'is not a valid address'
+    validates_unique   :email, message: 'is already taken'
+    errors.add(:email, EmailAddress.error(email)) unless EmailAddress.valid?(email)
+  end
 
-    validates_presence :password if new? && (crypted_password.blank? || salt.blank?)
+  def validate_password
+    validates_presence :password if new? && crypted_password.blank?
 
     if new? || (password.present? && !@new_password.present?)
       errors.add(:password, "is not confirmed") unless password == password_confirmation
     end
     validate_password_change
+  end
 
+  def validate_organization
     if organization.present?
       organization_validation
     elsif org_admin
       errors.add(:org_admin, "cannot be set for non-organization user")
     end
+  end
 
-    validates_includes JOB_ROLES + DEPRECATED_JOB_ROLES, :job_role if job_role.present?
-
+  def validate_quotas
     errors.add(:geocoding_quota, "cannot be nil") if geocoding_quota.nil?
     errors.add(:here_isolines_quota, "cannot be nil") if here_isolines_quota.nil?
-    errors.add(:obs_snapshot_quota, "cannot be nil") if obs_snapshot_quota.nil?
-    errors.add(:obs_general_quota, "cannot be nil") if obs_general_quota.nil?
   end
 
   def organization_validation
@@ -210,43 +189,10 @@ class User < Sequel::Model
         errors.add(:quota_in_bytes, "not enough disk quota")
       end
 
-      organization.validate_seats(self, errors)
+      organization.validate_seats_for_signup(self, errors)
     end
 
     errors.add(:viewer, "cannot be enabled for organization admin") if organization_admin? && viewer
-  end
-
-  #                             +--------+---------+------+
-  #       valid_privacy logic   | Public | Private | Link |
-  #   +-------------------------+--------+---------+------+
-  #   | private_tables_enabled  |    T   |    T    |   T  |
-  #   | !private_tables_enabled |    T   |    F    |   F  |
-  #   +-------------------------+--------+---------+------+
-  #
-  def valid_privacy?(privacy)
-    private_tables_enabled || privacy == Carto::UserTable::PRIVACY_PUBLIC
-  end
-
-  def valid_password?(key, value, confirmation_value)
-    if value.nil?
-      errors.add(key, "New password can't be blank")
-    else
-      if value != confirmation_value
-        errors.add(key, "New password doesn't match confirmation")
-      end
-
-      if value.length < MIN_PASSWORD_LENGTH
-        errors.add(key, "Must be at least #{MIN_PASSWORD_LENGTH} characters long")
-      end
-
-      if value.length >= MAX_PASSWORD_LENGTH
-        errors.add(key, "Must be at most #{MAX_PASSWORD_LENGTH} characters long")
-      end
-
-      validate_different_passwords(nil, self.class.password_digest(value, salt), key)
-    end
-
-    errors[key].empty?
   end
 
   def valid_creation?(creator_user)
@@ -272,8 +218,6 @@ class User < Sequel::Model
     self.email = clean_email(email.to_s)
     self.geocoding_quota ||= DEFAULT_GEOCODING_QUOTA
     self.here_isolines_quota ||= DEFAULT_HERE_ISOLINES_QUOTA
-    self.obs_snapshot_quota ||= DEFAULT_OBS_SNAPSHOT_QUOTA
-    self.obs_general_quota ||= DEFAULT_OBS_GENERAL_QUOTA
     self.mapzen_routing_quota ||= DEFAULT_MAPZEN_ROUTING_QUOTA
     self.soft_geocoding_limit = false if soft_geocoding_limit.nil?
     self.viewer = false if viewer.nil?
@@ -284,7 +228,8 @@ class User < Sequel::Model
   def before_create
     super
     self.database_host ||= ::SequelRails.configuration.environment_for(Rails.env)['host']
-    self.api_key ||= self.class.make_token
+    self.api_key ||= make_token
+    self.session_salt ||= SecureRandom.hex
   end
 
   def before_save
@@ -338,24 +283,25 @@ class User < Sequel::Model
   end
 
   def twitter_datasource_enabled
-    if has_organization?
-      organization.twitter_datasource_enabled || super
-    else
-      super
-    end
+    (super || organization.try(&:twitter_datasource_enabled)) && twitter_configured?
   end
 
   def after_create
     super
     setup_user
-    save_metadata
-    self.load_avatar
 
-    db.after_commit { create_api_keys } if has_feature_flag?('auth_api')
+    unless factory_bot_context && factory_bot_context[:only_db_setup]
+      save_metadata
+      load_avatar
+    end
 
-    db_service.monitor_user_notification
-    sleep 1
-    db_service.set_statement_timeouts
+    db.after_commit { create_api_keys }
+
+    unless factory_bot_context && factory_bot_context[:only_db_setup]
+      db_service.monitor_user_notification
+      sleep 1
+      db_service.set_statement_timeouts
+    end
   end
 
   def notify_new_organization_user
@@ -372,7 +318,7 @@ class User < Sequel::Model
 
   def load_common_data(visualizations_api_url)
     CartoDB::Visualization::CommonDataService.new.load_common_data_for_user(self, visualizations_api_url)
-  rescue => e
+  rescue StandardError => e
     CartoDB.notify_error(
       "Error loading common data for user",
       user: inspect,
@@ -383,8 +329,8 @@ class User < Sequel::Model
 
   def delete_common_data
     CartoDB::Visualization::CommonDataService.new.delete_common_data_for_user(self)
-  rescue => e
-    CartoDB.notify_error("Error deleting common data for user", user: self, error: e.inspect)
+  rescue StandardError => e
+    Rails.logger.error(message: 'Error deleting common data for user', user: self, exception: e)
   end
 
   def after_save
@@ -398,43 +344,29 @@ class User < Sequel::Model
        changes.include?(:twitter_username) || changes.include?(:location)
       invalidate_varnish_cache(regex: '.*:vizjson')
     end
-    if changes.include?(:database_host)
-      CartoDB::UserModule::DBService.terminate_database_connections(database_name, previous_changes[:database_host][0])
-    elsif changes.include?(:database_schema)
+    if changes.include?(:database_schema)
       CartoDB::UserModule::DBService.terminate_database_connections(database_name, database_host)
     end
 
     # API keys management
     sync_master_key if changes.include?(:api_key)
     sync_default_public_key if changes.include?(:database_schema)
-    $users_metadata.HSET(key, 'map_key', User.make_token) if locked?
+    $users_metadata.HSET(key, 'map_key', make_token) if locked?
     db.after_commit { sync_enabled_api_keys } if changes.include?(:engine_enabled) || changes.include?(:state)
 
     if changes.include?(:org_admin) && !organization_owner?
       org_admin ? db_service.grant_admin_permissions : db_service.revoke_admin_permissions
     end
+
+    reset_password_rate_limit if changes.include?(:crypted_password)
   end
 
   def api_keys
     Carto::ApiKey.where(user_id: id)
   end
 
-  def shared_entities
-    CartoDB::SharedEntity.join(:visualizations, id: :entity_id).where(user_id: id)
-  end
-
-  def has_shared_entities?
-    # Right now, cannot delete users with entities shared with other users or the org.
-    shared_entities.first.present?
-  end
-
-  def ensure_nonviewer
-    # A viewer can't destroy data, this allows the cleanup. Down to dataset level
-    # to skip model hooks.
-    if viewer
-      this.update(viewer: false)
-      self.viewer = false
-    end
+  def user_multifactor_auths
+    Carto::UserMultifactorAuth.where(user_id: id)
   end
 
   def set_force_destroy
@@ -448,7 +380,7 @@ class User < Sequel::Model
     error_happened = false
     has_organization = false
 
-    unless organization.nil?
+    if organization.present?
       organization.reload # Avoid ORM caching
 
       if organization.owner_id == id
@@ -456,7 +388,7 @@ class User < Sequel::Model
 
         if organization.users.count > 1
           msg = 'Attempted to delete owner from organization with other users'
-          CartoDB::StdoutLogger.info msg
+          log_info(message: msg)
           raise CartoDB::BaseCartoDBError.new(msg)
         end
       end
@@ -473,7 +405,9 @@ class User < Sequel::Model
       ActiveRecord::Base.transaction do
         delete_external_data_imports
         delete_external_sources
-        Carto::VisualizationQueryBuilder.new.with_user_id(id).build.all.each(&:destroy)
+        Carto::VisualizationQueryBuilder.new.with_user_id(id).build.all.map(&:destroy_without_checking_permissions!)
+        oauth_app_user = Carto::OauthAppUser.where(user_id: id).first
+        oauth_app_user.oauth_access_tokens.each(&:destroy) if oauth_app_user
         Carto::ApiKey.where(user_id: id).each(&:destroy)
       end
 
@@ -501,9 +435,11 @@ class User < Sequel::Model
       destroy_shared_with
 
       assign_search_tweets_to_organization_owner
+
+      Carto::ClientApplication.where(user_id: id).destroy_all
     rescue StandardError => exception
       error_happened = true
-      CartoDB::StdoutLogger.info "Error destroying user #{username}. #{exception.message}\n#{exception.backtrace}"
+      log_error(message: 'Error destroying user', current_user: self, exception: exception)
     end
 
     # Invalidate user cache
@@ -517,7 +453,7 @@ class User < Sequel::Model
       $users_metadata.DEL(timeout_key)
     end
 
-    feature_flags_user.each(&:delete)
+    self_feature_flags_user.each(&:destroy)
   end
 
   def drop_database(has_organization)
@@ -542,19 +478,19 @@ class User < Sequel::Model
 
   def delete_external_data_imports
     Carto::ExternalDataImport.by_user_id(id).each(&:destroy)
-  rescue => e
+  rescue StandardError => e
     CartoDB.notify_error('Error deleting external data imports at user deletion', user: self, error: e.inspect)
   end
 
   def delete_external_sources
     delete_common_data
-  rescue => e
+  rescue StandardError => e
     CartoDB.notify_error('Error deleting external data imports at user deletion', user: self, error: e.inspect)
   end
 
   def after_destroy
     unless @org_id_for_org_wipe.nil?
-      organization = Organization.where(id: @org_id_for_org_wipe).first
+      organization = Carto::Organization.find_by(id: @org_id_for_org_wipe)
       organization.destroy
     end
 
@@ -563,19 +499,15 @@ class User < Sequel::Model
     db.after_commit do
       begin
         rate_limit.try(:destroy_completely, self)
-      rescue => e
-        CartoDB::Logger.error(message: 'Error deleting rate limit at user deletion', exception: e)
+      rescue StandardError => e
+        log_error(message: 'Error deleting rate limit at user deletion', exception: e)
       end
     end
   end
 
-  def invalidate_varnish_cache(options = {})
-    options[:regex] ||= '.*'
-    CartoDB::Varnish.new.purge("#{database_name}#{options[:regex]}")
-  end
-
   # allow extra vars for auth
   attr_reader :password
+  attr_accessor :factory_bot_context
 
   def created_via=(created_via)
     @created_via = created_via
@@ -596,7 +528,6 @@ class User < Sequel::Model
     # Mark as changing passwords
     @changing_passwords = true
 
-    @old_password = old_password
     @new_password = new_password_value
     @new_password_confirmation = new_password_confirmation_value
 
@@ -604,76 +535,28 @@ class User < Sequel::Model
     return unless @old_password_validated
 
     return unless valid_password?(:new_password, new_password_value, new_password_confirmation_value)
-    return unless validate_different_passwords(@old_password, @new_password)
-
-    # Must be set AFTER validations
-    set_last_password_change_date
+    return unless validate_password_not_in_use(old_password, @new_password)
 
     self.password = new_password_value
   end
 
-  def validate_different_passwords(old_password = nil, new_password = nil, key = :new_password)
-    unless different_passwords?(old_password, new_password)
-      errors.add(key, 'New password cannot be the same as old password')
-    end
-    errors[key].empty?
-  end
+  def password_in_use?(old_password = nil, new_password = nil)
+    return false if new? || (@changing_passwords && !old_password)
+    return old_password == new_password if old_password
 
-  def different_passwords?(old_password = nil, new_password = nil)
-    return true if new? || (@changing_passwords && !old_password)
-    old_password = carto_user.crypted_password_was unless old_password.present?
-    new_password = crypted_password unless old_password.present? && new_password.present?
-
-    old_password.present? && old_password != new_password
-  end
-
-  def validate_old_password(old_password)
-    (self.class.password_digest(old_password, salt) == crypted_password) ||
-      (oauth_signin? && last_password_change_date.nil?)
-  end
-
-  def valid_password_confirmation(password)
-    valid = password.present? && validate_old_password(password)
-    errors.add(:password, 'Confirmation password sent does not match your current password') unless valid
-    valid
+    old_crypted_password = carto_user.crypted_password_was
+    Carto::Common::EncryptionService.verify(password: new_password, secure_password: old_crypted_password,
+                                            secret: Cartodb.config[:password_secret])
   end
 
   def should_display_old_password?
     needs_password_confirmation?
   end
 
-  # Some operations, such as user deletion, won't ask for password confirmation if password is not set
-  # (because of Google/Github sign in, for example)
-  def needs_password_confirmation?
-    (!oauth_signin? || last_password_change_date.present?) &&
-      !created_with_http_authentication? &&
-      !organization.try(:auth_saml_enabled?)
-  end
   alias :password_set? :needs_password_confirmation?
-
-  def oauth_signin?
-    google_sign_in || github_user_id.present?
-  end
-
-  def created_with_http_authentication?
-    Carto::UserCreation.http_authentication.find_by_user_id(id).present?
-  end
 
   def password_confirmation
     @password_confirmation
-  end
-
-  def password_confirmation=(password_confirmation)
-    set_last_password_change_date
-    @password_confirmation = password_confirmation
-  end
-
-  def password=(value)
-    return if !Carto::Ldap::Manager.new.configuration_present? && !valid_password?(:password, value, value)
-
-    @password = value
-    self.salt = new? ? self.class.make_token : ::User.filter(id: id).select(:salt).first.salt
-    self.crypted_password = self.class.password_digest(value, salt)
   end
 
   # Database configuration setup
@@ -688,12 +571,8 @@ class User < Sequel::Model
     end
   end
 
-  def database_public_username
-    (self.database_schema != CartoDB::DEFAULT_DB_SCHEMA) ? "cartodb_publicuser_#{id}" : CartoDB::PUBLIC_DB_USER
-  end
-
   def database_password
-    crypted_password + database_username
+    Carto::Common::EncryptionService.hex_digest(crypted_password) + database_username
   end
 
   def user_database_host
@@ -749,7 +628,7 @@ class User < Sequel::Model
       db.pool.connection_validation_timeout = configuration.fetch('conn_validator_timeout', -1)
       db
     end
-  rescue => exception
+  rescue StandardError => exception
     CartoDB::report_exception(exception, "Cannot connect to user database",
                               user: self, database: configuration['database'])
     raise exception
@@ -770,26 +649,6 @@ class User < Sequel::Model
       end
     end)))
   end
-
-  # List all public visualization tags of the user
-  def tags(exclude_shared = false, type = Carto::Visualization::TYPE_DERIVED)
-    require_relative './visualization/tags'
-    options = {}
-    options[:exclude_shared] = true if exclude_shared
-    CartoDB::Visualization::Tags.new(self, options).names({
-      type: type,
-      privacy: Carto::Visualization::PRIVACY_PUBLIC
-    })
-  end #tags
-
-  # List all public map tags of the user
-  def map_tags
-    require_relative './visualization/tags'
-    CartoDB::Visualization::Tags.new(self).names({
-      type: Carto::Visualization::TYPE_CANONICAL,
-      privacy: Carto::Visualization::PRIVACY_PUBLIC
-    })
-  end #map_tags
 
   def tables
     ::UserTable.filter(:user_id => self.id).order(:id).reverse
@@ -824,22 +683,17 @@ class User < Sequel::Model
   end
 
   def cartodb_avatar
-    if !Cartodb.config[:avatars].nil? &&
-       !Cartodb.config[:avatars]['base_url'].nil? && !Cartodb.config[:avatars]['base_url'].empty? &&
-       !Cartodb.config[:avatars]['kinds'].nil? && !Cartodb.config[:avatars]['kinds'].empty? &&
-       !Cartodb.config[:avatars]['colors'].nil? && !Cartodb.config[:avatars]['colors'].empty?
-      avatar_base_url = Cartodb.config[:avatars]['base_url']
-      avatar_kind = Cartodb.config[:avatars]['kinds'][Random.new.rand(0..Cartodb.config[:avatars]['kinds'].length - 1)]
-      avatar_color = Cartodb.config[:avatars]['colors'][Random.new.rand(0..Cartodb.config[:avatars]['colors'].length - 1)]
+    avatar_base_url = Cartodb.get_config(:avatars, 'base_url')
+    kinds = Cartodb.get_config(:avatars, 'kinds')
+    colors = Cartodb.get_config(:avatars, 'colors')
+    if avatar_base_url && kinds && colors
+      avatar_kind = kinds.sample
+      avatar_color = colors.sample
       return "#{avatar_base_url}/avatar_#{avatar_kind}_#{avatar_color}.png"
     else
-      CartoDB::StdoutLogger.info "Attribute avatars_base_url not found in config. Using default avatar"
+      log_info(message: "Attribute avatars_base_url not found in config. Using default avatar")
       return default_avatar
     end
-  end
-
-  def avatar
-    self.avatar_url.nil? ? "//#{self.default_avatar}" : self.avatar_url
   end
 
   def default_avatar
@@ -873,114 +727,17 @@ class User < Sequel::Model
     db_service.tables_effective('public')
   end
 
-  # Gets the list of OAuth accounts the user has (currently only used for synchronization)
-  # @return CartoDB::OAuths
-  def oauths
-    @oauths ||= CartoDB::OAuths.new(self)
-  end
-
-  def trial_ends_at
-    if account_type.to_s.downcase == 'magellan' && upgraded_at && upgraded_at + TRIAL_DURATION_DAYS.days > Date.today
-      upgraded_at + TRIAL_DURATION_DAYS.days
-    else
-      nil
-    end
-  end
-
-  def remaining_days_deletion
-    return nil unless state == STATE_LOCKED
-    begin
-      deletion_date = Cartodb::Central.new.get_user(username).fetch('scheduled_deletion_date', nil)
-      return nil unless deletion_date
-      (deletion_date.to_date - Date.today).to_i
-    rescue => e
-      CartoDB::Logger.warning(exception: e, message: 'Something went wrong calculating the number of remaining days for account deletion')
-      return nil
-    end
-  end
-
-  def remove_logo?
-    has_organization? ? organization.no_map_logo : no_map_logo
-  end
-
-  def soft_geocoding_limit?
-    Carto::AccountType.new.soft_geocoding_limit?(self)
-  end
-  alias_method :soft_geocoding_limit, :soft_geocoding_limit?
-
-  def hard_geocoding_limit?
-    !self.soft_geocoding_limit?
-  end
-  alias_method :hard_geocoding_limit, :hard_geocoding_limit?
-
   def hard_geocoding_limit=(val)
     self[:soft_geocoding_limit] = !val
   end
-
-  def soft_here_isolines_limit?
-    Carto::AccountType.new.soft_here_isolines_limit?(self)
-  end
-  alias_method :soft_here_isolines_limit, :soft_here_isolines_limit?
-
-  def hard_here_isolines_limit?
-    !self.soft_here_isolines_limit?
-  end
-  alias_method :hard_here_isolines_limit, :hard_here_isolines_limit?
 
   def hard_here_isolines_limit=(val)
     self[:soft_here_isolines_limit] = !val
   end
 
-  def soft_obs_snapshot_limit?
-    Carto::AccountType.new.soft_obs_snapshot_limit?(self)
-  end
-  alias_method :soft_obs_snapshot_limit, :soft_obs_snapshot_limit?
-
-  def hard_obs_snapshot_limit?
-    !soft_obs_snapshot_limit?
-  end
-  alias_method :hard_obs_snapshot_limit, :hard_obs_snapshot_limit?
-
-  def hard_obs_snapshot_limit=(val)
-    self[:soft_obs_snapshot_limit] = !val
-  end
-
-  def soft_obs_general_limit?
-    Carto::AccountType.new.soft_obs_general_limit?(self)
-  end
-  alias_method :soft_obs_general_limit, :soft_obs_general_limit?
-
-  def hard_obs_general_limit?
-    !soft_obs_general_limit?
-  end
-  alias_method :hard_obs_general_limit, :hard_obs_general_limit?
-
-  def hard_obs_general_limit=(val)
-    self[:soft_obs_general_limit] = !val
-  end
-
-  def soft_twitter_datasource_limit?
-    self.soft_twitter_datasource_limit  == true
-  end
-
-  def hard_twitter_datasource_limit?
-    !self.soft_twitter_datasource_limit?
-  end
-  alias_method :hard_twitter_datasource_limit, :hard_twitter_datasource_limit?
-
   def hard_twitter_datasource_limit=(val)
     self[:soft_twitter_datasource_limit] = !val
   end
-
-  def soft_mapzen_routing_limit?
-    Carto::AccountType.new.soft_mapzen_routing_limit?(self)
-  end
-  alias_method :soft_mapzen_routing_limit, :soft_mapzen_routing_limit?
-
-  def hard_mapzen_routing_limit?
-    !self.soft_mapzen_routing_limit?
-  end
-  alias_method :hard_mapzen_routing_limit, :hard_mapzen_routing_limit?
 
   def hard_mapzen_routing_limit=(val)
     self[:soft_mapzen_routing_limit] = !val
@@ -988,14 +745,6 @@ class User < Sequel::Model
 
   def private_maps_enabled?
     !!private_maps_enabled
-  end
-
-  def viewable_by?(viewer)
-    id == viewer.id || organization.try(:admin?, viewer)
-  end
-
-  def editable_by?(user)
-    id == user.id || user.belongs_to_organization?(organization) && (user.organization_owner? || !organization_admin?)
   end
 
   def view_dashboard
@@ -1009,15 +758,6 @@ class User < Sequel::Model
 
   def geocoder_type
     google_maps_geocoder_enabled? ? "google" : "heremaps"
-  end
-
-  # create the core user_metadata key that is used in redis
-  def key
-    "rails:users:#{username}"
-  end
-
-  def timeout_key
-    "limits:timeout:#{username}"
   end
 
   # save users basic metadata to redis for other services (node sql api, geocoder api, etc)
@@ -1035,10 +775,6 @@ class User < Sequel::Model
                           'soft_geocoding_limit',      soft_geocoding_limit,
                           'here_isolines_quota',       here_isolines_quota,
                           'soft_here_isolines_limit',  soft_here_isolines_limit,
-                          'obs_snapshot_quota',        obs_snapshot_quota,
-                          'soft_obs_snapshot_limit',   soft_obs_snapshot_limit,
-                          'obs_general_quota',         obs_general_quota,
-                          'soft_obs_general_limit',    soft_obs_general_limit,
                           'mapzen_routing_quota',      mapzen_routing_quota,
                           'soft_mapzen_routing_limit', soft_mapzen_routing_limit,
                           'google_maps_client_id',     google_maps_key,
@@ -1051,15 +787,15 @@ class User < Sequel::Model
                           'db',                        user_timeout,
                           'db_public',                 database_timeout,
                           'render',                    user_render_timeout,
-                          'render_public',             database_render_timeout
+                          'render_public',             database_render_timeout,
+                          'export',                    export_timeout
     save_rate_limits
   end
 
   def save_rate_limits
-    return unless has_feature_flag?('limits_v2')
     effective_rate_limit.save_to_redis(self)
-  rescue => e
-    CartoDB::Logger.error(message: 'Error saving rate limits to redis', exception: e)
+  rescue StandardError => e
+    log_error(message: 'Error saving rate limits to redis', target_user: self, exception: e)
   end
 
   def update_rate_limits(rate_limit_attributes)
@@ -1082,7 +818,7 @@ class User < Sequel::Model
   def effective_rate_limit
     rate_limit || effective_account_type.rate_limit
   rescue ActiveRecord::RecordNotFound => e
-    CartoDB::Logger.error(message: 'Error retrieving user rate limits', exception: e)
+    log_error(message: 'Error retrieving user rate limits', target_user: self, exception: e)
   end
 
   def effective_account_type
@@ -1092,26 +828,6 @@ class User < Sequel::Model
   def rate_limit
     Carto::RateLimit.find(rate_limit_id) if rate_limit_id
   end
-
-  def carto_account_type
-    Carto::AccountType.find(account_type)
-  end
-
-  def get_auth_tokens
-    tokens = [get_auth_token]
-    if has_organization?
-      tokens << organization.get_auth_token
-      tokens += groups.map(&:get_auth_token)
-    end
-    tokens
-  end
-
-  # Should return the number of tweets imported by this user for the specified period of time, as an integer
-  def get_twitter_imports_count(options = {})
-    date_from, date_to = quota_dates(options)
-    SearchTweet.get_twitter_imports_count(self.search_tweets_dataset, date_from, date_to)
-  end
-  alias get_twitter_datasource_calls get_twitter_imports_count
 
   # Returns an array representing the last 30 days, populated with api_calls
   # from three different sources
@@ -1134,35 +850,9 @@ class User < Sequel::Model
     get_user_here_isolines_data(self, date_from, date_to)
   end
 
-  def get_obs_snapshot_calls(options = {})
-    date_from, date_to = quota_dates(options)
-    get_user_obs_snapshot_data(self, date_from, date_to)
-  end
-
-  def get_obs_general_calls(options = {})
-    date_from, date_to = quota_dates(options)
-    get_user_obs_general_data(self, date_from, date_to)
-  end
-
   def get_mapzen_routing_calls(options = {})
     date_from, date_to = quota_dates(options)
     get_user_mapzen_routing_data(self, date_from, date_to)
-  end
-
-  def effective_twitter_block_price
-    organization.present? ? organization.twitter_datasource_block_price : self.twitter_datasource_block_price
-  end
-
-  def effective_twitter_datasource_block_size
-    organization.present? ? organization.twitter_datasource_block_size : self.twitter_datasource_block_size
-  end
-
-  def effective_twitter_total_quota
-    organization.present? ? organization.twitter_datasource_quota : self.twitter_datasource_quota
-  end
-
-  def effective_get_twitter_imports_count
-    organization.present? ? organization.get_twitter_imports_count : self.get_twitter_imports_count
   end
 
   def remaining_geocoding_quota
@@ -1179,33 +869,6 @@ class User < Sequel::Model
       remaining = organization.remaining_here_isolines_quota
     else
       remaining = here_isolines_quota - get_here_isolines_calls
-    end
-    (remaining > 0 ? remaining : 0)
-  end
-
-  def remaining_obs_snapshot_quota
-    if organization.present?
-      remaining = organization.remaining_obs_snapshot_quota
-    else
-      remaining = obs_snapshot_quota - get_obs_snapshot_calls
-    end
-    (remaining > 0 ? remaining : 0)
-  end
-
-  def remaining_obs_general_quota
-    if organization.present?
-      remaining = organization.remaining_obs_general_quota
-    else
-      remaining = obs_general_quota - get_obs_general_calls
-    end
-    (remaining > 0 ? remaining : 0)
-  end
-
-  def remaining_twitter_quota
-    if organization.present?
-      remaining = organization.remaining_twitter_quota
-    else
-      remaining = self.twitter_datasource_quota - get_twitter_imports_count
     end
     (remaining > 0 ? remaining : 0)
   end
@@ -1276,7 +939,7 @@ class User < Sequel::Model
   end
 
   def set_last_active_time
-    $users_metadata.HMSET key, 'last_active_time',  Time.now
+    $users_metadata.HMSET key, 'last_active_time', Time.now
   end
 
   def get_last_active_time
@@ -1291,17 +954,9 @@ class User < Sequel::Model
     $users_metadata.HMGET(key, 'last_ip_address').first
   end
 
-  def reset_client_application!
-    if client_application
-      client_application.destroy
-    end
-    ClientApplication.create(:user_id => self.id)
-  end
-
   def self.find_with_custom_fields(user_id)
     ::User.filter(:id => user_id).select(:id,:email,:username,:crypted_password,:database_name,:admin).first
   end
-
 
   def enabled?
     self.enabled && self.enable_account_token.nil?
@@ -1317,64 +972,6 @@ class User < Sequel::Model
     conn[:pg_database].filter(:datname => database_name).all.any?
   end
 
-  def can_change_email?
-    return (!self.google_sign_in || self.last_password_change_date.present?) &&
-      !Carto::Ldap::Manager.new.configuration_present?
-  end
-
-  def can_change_password?
-    !Carto::Ldap::Manager.new.configuration_present?
-  end
-
-  def cant_be_deleted_reason
-    if organization_owner?
-      "You can't delete your account because you are admin of an organization"
-    elsif Carto::UserCreation.http_authentication.where(user_id: id).first.present?
-      "You can't delete your account because you are using HTTP Header Authentication"
-    end
-  end
-
-  def get_oauth_services
-    datasources = CartoDB::Datasources::DatasourcesFactory.get_all_oauth_datasources
-    array = []
-
-    datasources.each do |serv|
-      obj ||= Hash.new
-
-      title = OAUTH_SERVICE_TITLES.fetch(serv, serv)
-      revoke_url = OAUTH_SERVICE_REVOKE_URLS.fetch(serv, nil)
-      enabled = case serv
-      when 'gdrive'
-        Cartodb.config[:oauth][serv]['client_id'].present?
-      when 'box'
-        Cartodb.config[:oauth][serv]['client_id'].present?
-      when 'gdrive'
-        Cartodb.config[:oauth][serv]['client_id'].present?
-      when 'dropbox'
-        Cartodb.config[:oauth]['dropbox']['app_key'].present?
-      when 'mailchimp'
-        Cartodb.config[:oauth]['mailchimp']['app_key'].present? && has_feature_flag?('mailchimp_import')
-      when 'instagram'
-        Cartodb.config[:oauth]['instagram']['app_key'].present? && has_feature_flag?('instagram_import')
-      else
-        true
-      end
-
-      if enabled
-        oauth = oauths.select(serv)
-
-        obj['name'] = serv
-        obj['title'] = title
-        obj['revoke_url'] = revoke_url
-        obj['connected'] = !oauth.nil? ? true : false
-
-        array.push(obj)
-      end
-    end
-
-    array
-  end
-
   # This method is innaccurate and understates point based tables (the /2 is to account for the_geom_webmercator)
   # TODO: Without a full table scan, ignoring the_geom_webmercator, we cannot accuratly asses table size
   # Needs to go on a background job.
@@ -1387,13 +984,18 @@ class User < Sequel::Model
       user_data_size_function =
         self.db_service.cartodb_extension_version_pre_mu? ? "CDB_UserDataSize()"
                                                           : "CDB_UserDataSize('#{self.database_schema}')"
-      in_database(:as => :superuser).fetch("SELECT cartodb.#{user_data_size_function}").first[:cdb_userdatasize]
-    rescue => e
+      in_database(as: :superuser) do |user_database|
+        user_database.transaction do
+          user_database.fetch(%{SET LOCAL lock_timeout = '1s'})
+          user_database.fetch(%{SELECT cartodb.#{user_data_size_function}}).first[:cdb_userdatasize]
+        end
+      end
+    rescue StandardError => e
       attempts += 1
       begin
         in_database(:as => :superuser).fetch("ANALYZE")
-      rescue => ee
-        CartoDB::Logger.error(exception: ee)
+      rescue StandardError => ee
+        log_error(exception: ee, current_user: self)
         raise ee
       end
       retry unless attempts > 1
@@ -1417,12 +1019,6 @@ class User < Sequel::Model
     self.over_disk_quota? || self.over_table_quota?
   end
 
-  def remaining_quota(_use_total = false, db_size_in_bytes = self.db_size_in_bytes)
-    return nil unless db_size_in_bytes
-
-    quota_in_bytes - db_size_in_bytes
-  end
-
   def disk_quota_overspend
     self.over_disk_quota? ? self.remaining_quota.abs : 0
   end
@@ -1437,16 +1033,8 @@ class User < Sequel::Model
 
   def account_type_name
     self.account_type.gsub(' ', '_').downcase
-    rescue
+    rescue StandardError
     ''
-  end
-
-  #can be nil table quotas
-  def remaining_table_quota
-    if self.table_quota.present?
-      remaining = self.table_quota - self.table_count
-      (remaining < 0) ? 0 : remaining
-    end
   end
 
   def public_table_count
@@ -1477,18 +1065,52 @@ class User < Sequel::Model
 
   # Get the count of public visualizations
   def public_visualization_count
-    visualization_count({
-                          type: Carto::Visualization::TYPE_DERIVED,
-                          privacy: Carto::Visualization::PRIVACY_PUBLIC,
-                          exclude_shared: true,
-                          exclude_raster: true
-                        })
+    visualization_count(
+      type: Carto::Visualization::MAP_TYPES,
+      privacy: Carto::Visualization::PRIVACY_PUBLIC,
+      exclude_shared: true,
+      exclude_raster: true
+    )
+  end
+
+  def public_privacy_visualization_count
+    public_visualization_count
+  end
+
+  def public_privacy_dataset_count
+    visualization_count(
+      type: Carto::Visualization::TYPE_CANONICAL,
+      privacy: Carto::Visualization::PRIVACY_PUBLIC,
+      exclude_shared: true,
+      exclude_raster: true
+    )
+  end
+
+  def link_privacy_visualization_count
+    visualization_count(type: Carto::Visualization::MAP_TYPES,
+                        privacy: Carto::Visualization::PRIVACY_LINK,
+                        exclude_shared: true,
+                        exclude_raster: true)
+  end
+
+  def password_privacy_visualization_count
+    visualization_count(type: Carto::Visualization::MAP_TYPES,
+                        privacy: Carto::Visualization::PRIVACY_PROTECTED,
+                        exclude_shared: true,
+                        exclude_raster: true)
+  end
+
+  def private_privacy_visualization_count
+    visualization_count(type: Carto::Visualization::MAP_TYPES,
+                        privacy: Carto::Visualization::PRIVACY_PRIVATE,
+                        exclude_shared: true,
+                        exclude_raster: true)
   end
 
   # Get the count of all visualizations
   def all_visualization_count
     visualization_count({
-                          type: Carto::Visualization::TYPE_DERIVED,
+                          type: Carto::Visualization::MAP_TYPES,
                           exclude_shared: false,
                           exclude_raster: false
                         })
@@ -1497,7 +1119,7 @@ class User < Sequel::Model
   # Get user owned visualizations
   def owned_visualizations_count
     visualization_count({
-                          type: Carto::Visualization::TYPE_DERIVED,
+                          type: Carto::Visualization::MAP_TYPES,
                           exclude_shared: true,
                           exclude_raster: false
                         })
@@ -1516,7 +1138,7 @@ class User < Sequel::Model
       vqb.with_owned_by_or_shared_with_user_id(id)
     end
     vqb.without_raster if filters[:exclude_raster] == true
-    vqb.build.count
+    vqb.count
   end
 
   def last_visualization_created_at
@@ -1564,37 +1186,8 @@ class User < Sequel::Model
     end
   end
 
-  def has_organization?
-    !!self.organization
-  end
-
-  def organization_owner?
-    self.organization.present? && self.organization.owner_id == self.id
-  end
-
-  def organization_user?
-    self.organization.present?
-  end
-
-  def belongs_to_organization?(organization)
-    organization_user? && organization != nil && self.organization_id == organization.id
-  end
-
-  def feature_flags
-    @feature_flag_names ||= (self.feature_flags_user.map { |ff| ff.feature_flag.name } + FeatureFlag.where(restricted: false).map { |ff| ff.name }).uniq.sort
-  end
-
-  def has_feature_flag?(feature_flag_name)
-    self.feature_flags.present? && self.feature_flags.include?(feature_flag_name)
-  end
-
-  def reload
-    @feature_flag_names = nil
-    super
-  end
-
-  def create_client_application
-    ClientApplication.create(:user_id => self.id)
+  def client_application
+    Carto::ClientApplication.find_by(user_id: id)
   end
 
   ## User's databases setup methods
@@ -1602,7 +1195,7 @@ class User < Sequel::Model
     return if disabled?
     db_service.set_database_name
 
-    create_client_application
+    new_client_application
     if self.has_organization_enabled?
       db_service.new_organization_user_main_db_setup
     else
@@ -1615,57 +1208,6 @@ class User < Sequel::Model
     setup_aggregation_tables
   end
 
-  # return quoated database_schema when needed
-  def sql_safe_database_schema
-    if self.database_schema.include?('-')
-      return "\"#{self.database_schema}\""
-    end
-    self.database_schema
-  end
-
-  # --- TODO: Extract this to a service object that handles urls
-
-  # Special url that goes to Central if active (for old dashboard only)
-  def account_url(request_protocol)
-    if CartoDB.account_host
-      request_protocol + CartoDB.account_host + CartoDB.account_path + '/' + username
-    end
-  end
-
-  # Special url that goes to Central if active
-  def plan_url(request_protocol)
-    account_url(request_protocol) + '/plan'
-  end
-
-  def update_payment_url(request_protocol)
-    account_url(request_protocol) + '/update_payment'
-  end
-
-  # Special url that goes to Central if active
-  def upgrade_url(request_protocol)
-    cartodb_com_hosted? ? '' : (account_url(request_protocol) + '/upgrade')
-  end
-
-  def subdomain
-    if CartoDB.subdomainless_urls?
-      username
-    else
-      organization.nil? ? username : organization.name
-    end
-  end
-
-  # @return String public user url, which is also the base url for a given user
-  def public_url(subdomain_override=nil, protocol_override=nil)
-    base_subdomain = subdomain_override.nil? ? subdomain : subdomain_override
-    CartoDB.base_url(base_subdomain, CartoDB.organization_username(self), protocol_override)
-  end
-
-  # ----------
-
-  def name_or_username
-    name.present? || last_name.present? ? [name, last_name].select(&:present?).join(' ') : username
-  end
-
   # Probably not needed with versioning of keys
   # @see RedisVizjsonCache
   # @see EmbedRedisCache
@@ -1675,36 +1217,8 @@ class User < Sequel::Model
     EmbedRedisCache.new().purge(vizs)
   end
 
-  # returns google maps api key. If the user is in an organization and
-  # that organization has api key it's used
-  def google_maps_api_key
-    organization.try(:google_maps_key).blank? ? google_maps_key : organization.google_maps_key
-  end
-
-  # TODO: this is the correct name for what's stored in the model, refactor changing that name
-  alias_method :google_maps_query_string, :google_maps_api_key
-
-  # Returns the google maps private key. If the user is in an organization and
-  # that organization has a private key, the org's private key is returned.
   def google_maps_private_key
     organization.try(:google_maps_private_key).blank? ? super : organization.google_maps_private_key
-  end
-
-  def google_maps_geocoder_enabled?
-    google_maps_private_key.present? && google_maps_client_id.present?
-  end
-
-  def google_maps_client_id
-    Rack::Utils.parse_nested_query(google_maps_query_string)['client'] if google_maps_query_string
-  end
-
-  # returns a list of basemaps enabled for the user
-  def basemaps
-    (Cartodb.config[:basemaps] || []).select { |group| group != 'GMaps' || google_maps_enabled? }
-  end
-
-  def google_maps_enabled?
-    google_maps_query_string.present?
   end
 
   # return the default basemap based on the default setting. If default attribute is not set, first basemaps is returned
@@ -1715,27 +1229,16 @@ class User < Sequel::Model
   end
 
   def copy_account_features(to)
-    to.set_fields(self, [
-      :private_tables_enabled, :sync_tables_enabled, :max_layers, :user_timeout,
-      :database_timeout, :geocoding_quota, :map_view_quota, :table_quota, :database_host,
-      :period_end_date, :map_view_block_price, :geocoding_block_price, :account_type,
-      :twitter_datasource_enabled, :soft_twitter_datasource_limit, :twitter_datasource_quota,
-      :twitter_datasource_block_price, :twitter_datasource_block_size, :here_isolines_quota,
-      :here_isolines_block_price, :soft_here_isolines_limit, :obs_snapshot_quota,
-      :obs_snapshot_block_price, :soft_obs_snapshot_limit, :obs_general_quota,
-      :obs_general_block_price, :soft_obs_general_limit
-    ])
-    to.invite_token = ::User.make_token
-  end
-
-  def regenerate_api_key(new_api_key = ::User.make_token)
-    invalidate_varnish_cache
-    update api_key: new_api_key
-  end
-
-  def regenerate_all_api_keys
-    regenerate_api_key
-    api_keys.regular.each(&:regenerate_token!)
+    attributes_to_copy = %i(
+      private_tables_enabled sync_tables_enabled max_layers user_timeout database_timeout geocoding_quota
+      map_views_quota
+      table_quota public_map_quota regular_api_key_quota database_host period_end_date map_view_block_price
+      geocoding_block_price account_type twitter_datasource_enabled soft_twitter_datasource_limit
+      twitter_datasource_quota twitter_datasource_block_price twitter_datasource_block_size here_isolines_quota
+      here_isolines_block_price soft_here_isolines_limit private_map_quota public_dataset_quota
+    )
+    to.set_fields(self, attributes_to_copy)
+    to.invite_token = make_token
   end
 
   # This is set temporary on user creation with invitation,
@@ -1749,69 +1252,12 @@ class User < Sequel::Model
   end
 
   def created_with_invitation?
-    user_creation = get_user_creation
-    user_creation && user_creation.invitation_token
-  end
-
-  def mobile_sdk_enabled?
-    private_apps_enabled? || open_apps_enabled?
-  end
-
-  def private_apps_enabled?
-    mobile_max_private_users > 0
-  end
-
-  def open_apps_enabled?
-    mobile_max_open_users > 0
-  end
-
-  def builder?
-    !viewer?
-  end
-
-  def viewer?
-    viewer
-  end
-
-  def organization_admin?
-    organization_user? && (organization_owner? || org_admin)
-  end
-
-  def builder_enabled?
-    if has_organization? && builder_enabled.nil?
-      organization.builder_enabled
-    else
-      !!builder_enabled
-    end
-  end
-
-  def engine_enabled?
-    if has_organization? && engine_enabled.nil?
-      organization.engine_enabled
-    else
-      !!engine_enabled
-    end
-  end
-
-  def new_visualizations_version
-    builder_enabled? ? 3 : 2
+    user_creation&.invitation_token
   end
 
   def destroy_cascade
     set_force_destroy
     destroy
-  end
-
-  def relevant_frontend_version
-    frontend_version || CartoDB::Application.frontend_version
-  end
-
-  def active?
-    state == STATE_ACTIVE
-  end
-
-  def locked?
-    state == STATE_LOCKED
   end
 
   # Central will request some data back to cartodb (quotas, for example), so the user still needs to exist.
@@ -1821,23 +1267,18 @@ class User < Sequel::Model
     destroy
   end
 
-  def carto_user
-    @carto_user ||= Carto::User.find(id)
-  end
-
   def create_api_keys
     carto_user.api_keys.create_master_key! unless carto_user.api_keys.master.exists?
     carto_user.api_keys.create_default_public_key! unless carto_user.api_keys.default_public.exists?
   end
 
-  def fullstory_enabled?
-    FULLSTORY_SUPPORTED_PLANS.include?(account_type) && created_at > FULLSTORY_ENABLED_MIN_DATE
+  # TODO: migrate to AR association
+  def tokens
+    Carto::OauthToken.where(user_id: id)
   end
 
-  def password_expired?
-    password_expiration_in_s = Cartodb.get_config(:passwords, 'expiration_in_s')
-    return false unless password_expiration_in_s && password_set?
-    (last_password_change_date || created_at) + password_expiration_in_s < Time.now
+  def search_tweets
+    Carto::SearchTweet.where(user_id: id).order(created_at: :desc)
   end
 
   private
@@ -1847,7 +1288,7 @@ class User < Sequel::Model
   end
 
   def destroy_shared_with
-    CartoDB::SharedEntity.where(recipient_id: id).each do |se|
+    Carto::SharedEntity.where(recipient_id: id).find_each do |se|
       viz = Carto::Visualization.find(se.entity_id)
       permission = viz.permission
       permission.remove_user_permission(self)
@@ -1856,14 +1297,7 @@ class User < Sequel::Model
   end
 
   def get_invitation_token_from_user_creation
-    user_creation = get_user_creation
-    if !user_creation.nil? && user_creation.has_valid_invitation?
-      user_creation.invitation_token
-    end
-  end
-
-  def get_user_creation
-    @user_creation ||= Carto::UserCreation.find_by_user_id(id)
+    user_creation.invitation_token if user_creation&.has_valid_invitation?
   end
 
   def quota_dates(options)
@@ -1879,33 +1313,26 @@ class User < Sequel::Model
   # INFO: assigning to owner is necessary because of payment reasons
   def assign_search_tweets_to_organization_owner
     return if organization.nil? || organization.owner.nil? || organization_owner?
-    search_tweets_dataset.all.each do |st|
-      st.user = organization.owner
-      st.save(raise_on_failure: true)
-    end
-  rescue => e
-    CartoDB::Logger.error(exception: e, message: 'Error assigning search tweets to org owner', user: self)
+    search_tweets.each { |st| st.update!(user: Carto::User.find(organization.owner.id)) }
+  rescue StandardError => e
+    log_error(exception: e, message: 'Error assigning search tweets to org owner', target_user: self)
   end
 
   # INFO: assigning to owner is necessary because of payment reasons
   def assign_geocodings_to_organization_owner
-    return if organization.nil? || organization.owner.nil? || organization_owner?
-    geocodings_dataset.all.each do |g|
-      g.user = organization.owner
-      g.data_import_id = nil
-      g.save(raise_on_failure: true)
+    return if organization&.owner.blank? || organization_owner?
+
+    Carto::Geocoding.where(user_id: id).find_each do |geocoding|
+      geocoding.update!(user_id: organization.owner.id, data_import_id: nil)
     end
-  rescue => e
-    CartoDB::Logger.error(exception: e, message: 'Error assigning geocodings to org owner', user: self)
+  rescue StandardError => e
+    log_error(
+      message: 'Error assigning geocodings to org owner',
+      exception: e,
+      target_user: self,
+      organization: organization
+    )
     geocodings.each(&:destroy)
-  end
-
-  def name_exists_in_organizations?
-    !Organization.where(name: self.username).first.nil?
-  end
-
-  def set_last_password_change_date
-    self.last_password_change_date = Time.zone.now unless new?
   end
 
   def set_viewer_quotas
@@ -1916,20 +1343,16 @@ class User < Sequel::Model
     self.soft_twitter_datasource_limit = false if soft_twitter_datasource_limit
     self.here_isolines_quota = 0 unless here_isolines_quota == 0
     self.soft_here_isolines_limit = false if soft_here_isolines_limit
-    self.obs_snapshot_quota = 0 unless obs_snapshot_quota == 0
-    self.soft_obs_snapshot_limit = false if soft_obs_snapshot_limit
-    self.obs_general_quota = 0 unless obs_general_quota == 0
-    self.soft_obs_general_limit = false if soft_obs_general_limit
   end
 
   def revoke_rw_permission_on_shared_entities
     rw_permissions = visualizations_shared_with_this_user
                      .map(&:permission)
-                     .select { |p| p.permission_for_user(self) == CartoDB::Permission::ACCESS_READWRITE }
+                     .select { |p| p.permission_for_user(self) == Carto::Permission::ACCESS_READWRITE }
 
     rw_permissions.each do |p|
       p.remove_user_permission(self)
-      p.set_user_permission(self, CartoDB::Permission::ACCESS_READONLY)
+      p.set_user_permission(self, Carto::Permission::ACCESS_READONLY)
     end
     rw_permissions.map(&:save)
   end
@@ -1954,10 +1377,6 @@ class User < Sequel::Model
     Carto::EmailDomainValidator.validate_domain(email, organization.whitelisted_email_domains)
   end
 
-  def created_via
-    @created_via || get_user_creation.try(:created_via)
-  end
-
   def sync_master_key
     master_key = api_keys.master.first
     return unless master_key
@@ -1977,6 +1396,12 @@ class User < Sequel::Model
   end
 
   def sync_enabled_api_keys
-    api_keys.each(&:set_enabled_for_engine)
+    if previous_changes.present?
+      new_attributes = {}
+      new_attributes[:state] = previous_changes[:state][1] if previous_changes[:state].present?
+      new_attributes[:engine_enabled] = previous_changes[:engine_enabled][1] if previous_changes[:engine_enabled].present?
+    end
+
+    api_keys.each { |api_key| api_key.set_enabled_for_engine(new_attributes) }
   end
 end

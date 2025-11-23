@@ -1,4 +1,3 @@
-# encoding: utf-8
 require 'csv'
 require 'charlock_holmes'
 require 'tempfile'
@@ -22,7 +21,8 @@ module CartoDB
       OUTPUT_DELIMITER      = ','       # Normalized CSVs will use this delimiter
       ENCODING_CONFIDENCE   = 28
       ACCEPTABLE_ENCODINGS  = %w{ ISO-8859-1 ISO-8859-2 UTF-8 }
-      REVERSE_LINE_FEED     = "\x8D"
+      LINE_FEED             = "\x0A"
+      CARRIAGE_RETURN       = "\x0D"
 
 
       def initialize(filepath, job = nil, importer_config = nil)
@@ -63,11 +63,15 @@ module CartoDB
         # Calculate variances of the N first lines for each delimiter, then grab the one that changes less
         @delimiter = DEFAULT_DELIMITER unless first_line
 
+        # Flag to skip newlines contained inside string values
+        skip_line = false
+
         lines_for_detection = Array.new
 
         LINES_FOR_DETECTION.times {
           line = stream.gets
-          lines_for_detection << remove_quoted_strings(line) unless line.nil?
+          skip_line ^= true if line&.count("\"")&.odd?  # Toggle skip line mode
+          lines_for_detection << remove_quoted_strings(line) unless !line || skip_line
         }
 
         stream.rewind
@@ -80,7 +84,7 @@ module CartoDB
             lines_for_detection.first
           end
           # Carriage return without newline
-          lines_for_detection = lines_for_detection.split("\x0D")
+          lines_for_detection = lines_for_detection.split(CARRIAGE_RETURN)
         end
 
         occurrences = Hash[
@@ -195,15 +199,18 @@ module CartoDB
           data.close
 
           result = CharlockHolmes::EncodingDetector.detect(sample)
-          if result.fetch(:confidence, 0) < ENCODING_CONFIDENCE
-            @encoding = DEFAULT_ENCODING
-          else
-            @encoding = result.fetch(:encoding, DEFAULT_ENCODING)
-          end
+          # Looks like an ICU problem https://github.com/brianmario/charlock_holmes/issues/38
+          @encoding = if result.fetch(:encoding, 'UTF-8') == 'IBM424_rtl'
+                        DEFAULT_ENCODING
+                      elsif result.fetch(:confidence, 0) < ENCODING_CONFIDENCE
+                        DEFAULT_ENCODING
+                      else
+                        result.fetch(:encoding, DEFAULT_ENCODING)
+                      end
         end
 
         @encoding
-      rescue
+      rescue StandardError
         DEFAULT_ENCODING
       end
 

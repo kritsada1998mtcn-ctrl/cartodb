@@ -1,22 +1,30 @@
 require 'json'
 require_dependency 'carto/export/layer_exporter'
+require_dependency 'carto/export/connector_configuration_exporter'
+
+# Not migrated
+# invitations -> temporary by nature
+# ldap_configurations -> not enabled in SaaS
 
 # Version History
 # 1.0.0: export organization metadata
+# 1.0.1: export password expiration
+# 1.0.2: export connector configurations
+# 1.0.3: export oauth_app_organizations
+# 1.0.4: export inherit_owner_ffs
 module Carto
   module OrganizationMetadataExportServiceConfiguration
-    CURRENT_VERSION = '1.0.0'.freeze
+    CURRENT_VERSION = '1.0.4'.freeze
     EXPORTED_ORGANIZATION_ATTRIBUTES = [
       :id, :seats, :quota_in_bytes, :created_at, :updated_at, :name, :avatar_url, :owner_id, :website, :description,
-      :display_name, :discus_shortname, :twitter_username, :geocoding_quota, :map_view_quota, :auth_token,
+      :display_name, :discus_shortname, :twitter_username, :geocoding_quota, :map_views_quota, :auth_token,
       :geocoding_block_price, :map_view_block_price, :twitter_datasource_enabled, :twitter_datasource_block_price,
       :twitter_datasource_block_size, :twitter_datasource_quota, :google_maps_key, :google_maps_private_key, :color,
       :default_quota_in_bytes, :whitelisted_email_domains, :admin_email, :auth_username_password_enabled,
       :auth_google_enabled, :location, :here_isolines_quota, :here_isolines_block_price, :strong_passwords_enabled,
-      :obs_snapshot_quota, :obs_snapshot_block_price, :obs_general_quota, :obs_general_block_price,
       :salesforce_datasource_enabled, :viewer_seats, :geocoder_provider, :isolines_provider, :routing_provider,
       :auth_github_enabled, :engine_enabled, :mapzen_routing_quota, :mapzen_routing_block_price, :builder_enabled,
-      :auth_saml_configuration, :no_map_logo
+      :auth_saml_configuration, :no_map_logo, :password_expiration_in_d, :inherit_owner_ffs, :random_saml_username
     ].freeze
 
     def compatible_version?(version)
@@ -27,9 +35,10 @@ module Carto
   module OrganizationMetadataExportServiceImporter
     include OrganizationMetadataExportServiceConfiguration
     include LayerImporter
+    include ConnectorConfigurationImporter
 
     def build_organization_from_json_export(exported_json_string)
-      build_organization_from_hash_export(JSON.parse(exported_json_string).deep_symbolize_keys)
+      build_organization_from_hash_export(JSON.parse(exported_json_string, symbolize_names: true))
     end
 
     def build_organization_from_hash_export(exported_hash)
@@ -40,19 +49,22 @@ module Carto
 
     private
 
-    def save_imported_organization(organization)
-      organization.save!
-      ::Organization[organization.id].after_save
-    end
-
     def build_organization_from_hash(exported_organization)
-      organization = Organization.new(exported_organization.slice(*EXPORTED_ORGANIZATION_ATTRIBUTES))
-
+      organization = Carto::Organization.new(exported_organization.slice(*EXPORTED_ORGANIZATION_ATTRIBUTES - [:id]))
       organization.assets = exported_organization[:assets].map { |asset| build_asset_from_hash(asset.symbolize_keys) }
       organization.groups = exported_organization[:groups].map { |group| build_group_from_hash(group.symbolize_keys) }
       organization.notifications = exported_organization[:notifications].map do |notification|
         build_notification_from_hash(notification.symbolize_keys)
       end
+      if exported_organization[:oauth_app_organizations]
+        organization.oauth_app_organizations = exported_organization[:oauth_app_organizations].map do |oao|
+          build_oauth_app_organization_from_hash(oao.symbolize_keys)
+        end
+      end
+
+      organization.connector_configurations = build_connector_configurations_from_hash(
+        exported_organization[:connector_configurations]
+      )
 
       # Must be the last one to avoid attribute assignments to try to run SQL
       organization.id = exported_organization[:id]
@@ -68,7 +80,7 @@ module Carto
     end
 
     def build_group_from_hash(exported_group)
-      g = Group.new_instance_without_validation(
+      g = Carto::Group.new_instance_without_validation(
         name: exported_group[:name],
         display_name: exported_group[:display_name],
         database_role: exported_group[:database_role],
@@ -99,11 +111,22 @@ module Carto
         read_at: received_notification[:read_at]
       )
     end
+
+    def build_oauth_app_organization_from_hash(oao_hash)
+      Carto::OauthAppOrganization.new(
+        oauth_app_id: oao_hash[:oauth_app_id],
+        organization_id: oao_hash[:organization_id],
+        seats: oao_hash[:seats],
+        created_at: oao_hash[:created_at],
+        updated_at: oao_hash[:updated_at]
+      )
+    end
   end
 
   module OrganizationMetadataExportServiceExporter
     include OrganizationMetadataExportServiceConfiguration
     include LayerExporter
+    include ConnectorConfigurationExporter
 
     def export_organization_json_string(organization)
       export_organization_json_hash(organization).to_json
@@ -124,6 +147,12 @@ module Carto
       organization_hash[:assets] = organization.assets.map { |a| export_asset(a) }
       organization_hash[:groups] = organization.groups.map { |g| export_group(g) }
       organization_hash[:notifications] = organization.notifications.map { |n| export_notification(n) }
+      organization_hash[:connector_configurations] = organization.connector_configurations.map do |cc|
+        export_connector_configuration(cc)
+      end
+      organization_hash[:oauth_app_organizations] = organization.oauth_app_organizations.map do |oao|
+        export_oauth_app_organization(oao)
+      end
 
       organization_hash
     end
@@ -164,6 +193,16 @@ module Carto
         read_at: received_notification.read_at
       }
     end
+
+    def export_oauth_app_organization(oao)
+      {
+        oauth_app_id: oao.oauth_app_id,
+        organization_id: oao.organization_id,
+        seats: oao.seats,
+        created_at: oao.created_at,
+        updated_at: oao.updated_at
+      }
+    end
   end
 
   class OrganizationAlreadyExists < RuntimeError; end
@@ -192,18 +231,20 @@ module Carto
     def import_from_directory(meta_path)
       # Import organization
       organization = load_organization_from_directory(meta_path)
-      raise OrganizationAlreadyExists.new if ::Carto::Organization.exists?(id: organization.id)
+      raise OrganizationAlreadyExists.new if Carto::Organization.exists?(id: organization.id)
 
       organization_redis_file = redis_filename(meta_path)
       Carto::RedisExportService.new.restore_redis_from_json_export(File.read(organization_redis_file))
 
       # Groups and notifications must be saved after users
-      groups = organization.groups.dup
+      groups = organization.groups.map(&:clone)
       organization.groups.clear
-      notifications = organization.notifications.dup
+      notifications = organization.notifications.map(&:clone)
       organization.notifications.clear
+      oauth_app_organizations = organization.oauth_app_organizations.map(&:clone)
+      organization.oauth_app_organizations.clear
 
-      save_imported_organization(organization)
+      organization.save!
 
       user_list = get_user_list(meta_path)
 
@@ -214,6 +255,7 @@ module Carto
 
       organization.groups = groups
       organization.notifications = notifications
+      organization.oauth_app_organizations = oauth_app_organizations
       organization.save
 
       organization
@@ -224,7 +266,7 @@ module Carto
       Carto::RedisExportService.new.remove_redis_from_json_export(File.read(organization_redis_file))
       organization = load_organization_from_directory(meta_path)
 
-      user_list = organization.non_owner_users + [organization.owner]
+      user_list = organization.non_owner_users + [organization.owner].compact
       user_list.map do |user|
         Carto::UserMetadataExportService.new.rollback_import_from_directory("#{meta_path}/user_#{user.id}")
       end
@@ -233,6 +275,7 @@ module Carto
       organization = Carto::Organization.find(organization.id)
       organization.groups.delete
       organization.notifications.delete
+      organization.oauth_app_organizations.delete
       organization.assets.map(&:delete)
       organization.users.delete
       organization.delete
@@ -271,6 +314,13 @@ module Carto
 
       organization.users.each do |user|
         Carto::UserMetadataExportService.new.import_search_tweets_from_directory(user, "#{path}/user_#{user.id}")
+      end
+
+      organization.users.each do |user|
+        Carto::UserMetadataExportService.new.import_redis_do_subscriptions(
+          user,
+          "#{path}/user_#{user.id}"
+        )
       end
 
       organization

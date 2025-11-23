@@ -19,6 +19,21 @@ namespace :cartodb do
       end
     end
 
+    desc "Purges broken canonical visualizations without related tables"
+    task :delete_inconsistent_canonical_viz_without_tables => :environment do |_|
+      Carto::Visualization.joins("left join user_tables ut on visualizations.map_id = ut.map_id").where("visualizations.type = 'table' and ut.id is null").find_each do |viz|
+        begin
+          puts "Checking for deletion --> User: #{viz.user.username} | Viz id: #{viz.id}"
+          if inconsistent_table?(viz)
+            puts "Deleting viz --> User: #{viz.user.username} | Viz id: #{viz.id}"
+            viz.destroy!
+          end
+        rescue StandardError => e
+          puts "Error deleting viz #{viz.id}: #{e}"
+        end
+      end
+    end
+
     desc "Create named maps for all eligible existing visualizations"
     task :create_named_maps, [:order] => :environment do |t, args|
       sort_order = args[:order] == ':desc' ? :desc : :asc
@@ -52,64 +67,12 @@ namespace :cartodb do
             puts "\n> #{Time.now} #{current}/#{count}"
           end
           vis = nil
-        rescue => ex
+        rescue StandardError => ex
           printf "E"
         end
       end
 
       puts "\n> #{Time.now}\nFinished ##{count} items"
-    end
-
-    desc "Outputs a visualization JSON. Usage example: `bundle exec rake cartodb:vizs:export_user_visualization_json['c54710aa-ad8f-11e5-8046-080027880ca6'] > c54710aa-ad8f-11e5-8046-080027880ca6.json`"
-    task :export_user_visualization_json, [:vis_id] => :environment do |_, args|
-      # Output is meant to be forwarded to a file, so we don't want logging output
-      ActiveRecord::Base.logger = nil
-      vis_id = args[:vis_id]
-      raise "vis_id argument missing" unless vis_id
-
-      puts Carto::VisualizationsExportService.new.export_to_json(Carto::Visualization.find(vis_id))
-    end
-
-    desc "Imports a visualization JSON from input (from export_user_visualization_json). Usage example: `cat c54710aa-ad8f-11e5-8046-080027880ca6.json | bundle exec rake cartodb:vizs:import_user_visualization_json['6950b745-5524-4d8d-9478-98a8a04d84ba']`. Ids are preserved, so if you want to import an existing visualization you must edit the JSON file and change the ids (any valid UUID will work)."
-    task :import_user_visualization_json, [:user_id] => :environment do |_, args|
-      json_string = STDIN.gets
-      json = JSON.parse(json_string)
-
-      user_id = args[:user_id]
-      raise "user_id argument missing" unless user_id
-
-      user = Carto::User.find(user_id)
-
-      json["owner"]["id"] = user_id
-      json["layers"].each do |layer|
-        if layer.fetch("options", {}).fetch("user_name", nil)
-          layer["options"]["user_name"] = user.username
-        end
-      end
-
-      Carto::VisualizationsExportService.new.restore_from_json(json)
-    end
-
-    desc "Exports/Backups a visualization"
-    task :export_user_visualization, [:vis_id] => :environment do |_, args|
-      vis_export_service = Carto::VisualizationsExportService.new
-
-      puts "Exporting visualization #{args[:vis_id]}..."
-      result = vis_export_service.export(args[:vis_id])
-      puts "Export result was: #{result ? 'OK' : 'NOK (export already present)'}"
-      puts "Export complete"
-    end
-
-    desc "Imports/Restores a visualization"
-    task :import_user_visualization, [:vis_id, :skip_version_check] => :environment do |_, args|
-      vis_export_service = Carto::VisualizationsExportService.new
-
-      skip_version_check = (args[:skip_version_check] == "true")
-
-      puts "Importing visualization data for uuid #{args[:vis_id]}"
-      vis_export_service.import(args[:vis_id], skip_version_check)
-
-      puts "Visualization #{args[:vis_id]} imported"
     end
 
     desc "Exports a .carto file including visualization metadata and the tables"
@@ -124,17 +87,6 @@ namespace :cartodb do
       puts "Visualization exported: #{file}"
     end
 
-    desc "Purges old visualization backups"
-    task :purge_old_visualization_backups => :environment do |_|
-      vis_export_service = Carto::VisualizationsExportService.new
-
-      puts "Purging visualization backups older tan #{Carto::VisualizationsExportService::DAYS_TO_KEEP_BACKUP} days"
-
-      purged_count = vis_export_service.purge_old
-
-      puts "Purge complete. Removed #{purged_count} items"
-    end
-
     desc "Updates visualizations auth tokens from named maps"
     task update_auth_tokens: :environment do |_|
       Carto::Visualization.find_each(conditions: "privacy = 'password'") do |visualization|
@@ -143,7 +95,7 @@ namespace :cartodb do
           tokens = visualization.get_auth_tokens
           puts "  from #{visualization.auth_token} to #{tokens.first}"
           visualization.update_column(:auth_token, tokens.first)
-        rescue => e
+        rescue StandardError => e
           puts "ERROR #{e.inspect}"
         end
       end
@@ -161,7 +113,7 @@ namespace :cartodb do
             puts "Mapcapping #{visualization.id}"
             Carto::Mapcap.create!(visualization_id: visualization.id) unless dry
           end
-        rescue => e
+        rescue StandardError => e
           puts "ERROR mapcapping #{visualization}: #{e.inspect}"
         end
       end
@@ -182,7 +134,7 @@ namespace :cartodb do
         begin
           puts "Adding analyses to visualization #{visualization.id}"
           visualization.add_source_analyses unless dry
-        rescue => e
+        rescue StandardError => e
           puts "ERROR adding analyses to visualization #{visualization.id}: #{e.inspect}"
         end
       end
@@ -205,17 +157,31 @@ namespace :cartodb do
 
             mapcap.export_json = export_in_memory_visualization(rv, rv.user)
             mapcap.save
-          rescue => e
+          rescue StandardError => e
             puts "ERROR adding analyses to mapcap: #{mapcap.id}: #{e.inspect}"
           end
         end
       end
     end
 
+    desc "Restore visualization from backup"
+    task :restore_visualization, [:backup_id] => :environment do |_, args|
+      include Carto::VisualizationBackupService
+
+      backup_id = args[:backup_id]
+      visualization = restore_visualization_backup(backup_id)
+      puts "Error restoring visualization" if visualization.nil?
+      puts "Visualization #{visualization.id} restored" unless visualization.nil?
+    end
+
     private
 
     def inconsistent?(viz)
       (viz.table? && viz.related_tables.empty?) || (viz.derived? && viz.map.nil?)
+    end
+
+    def inconsistent_table?(viz)
+      (viz.user_table.nil? && viz.related_tables.empty?)
     end
 
     def delete_with_confirmation(viz)

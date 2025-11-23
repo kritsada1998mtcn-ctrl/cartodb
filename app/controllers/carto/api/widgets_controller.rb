@@ -1,8 +1,6 @@
 module Carto
   module Api
     class WidgetsController < ::Api::ApplicationController
-      include Carto::ControllerHelper
-
       ssl_required :show, :create, :update, :destroy, :update_many
 
       before_filter :load_map
@@ -42,8 +40,8 @@ module Carto
         render_jsonp(WidgetPresenter.new(widget).to_poro, 201)
       rescue ActiveRecord::RecordInvalid
         render json: { errors: widget.errors }, status: 422
-      rescue => e
-        CartoDB::Logger.error(exception: e, message: "Error creating widget", widget: (widget ? widget : 'not created'))
+      rescue StandardError => e
+        log_error(exception: e, message: "Error creating widget")
         render json: { errors: e.message }, status: 500
       end
 
@@ -51,8 +49,8 @@ module Carto
         update_widget!(@widget, params)
 
         render_jsonp(WidgetPresenter.new(@widget).to_poro)
-      rescue => e
-        CartoDB::Logger.error(exception: e, message: "Error updating widget", widget: @widget)
+      rescue StandardError => e
+        log_error(exception: e, message: "Error updating widget")
         render json: { errors: e.message }, status: 500
       end
 
@@ -70,15 +68,15 @@ module Carto
         @widget.destroy
 
         render_jsonp(WidgetPresenter.new(@widget).to_poro)
-      rescue => e
-        CartoDB::Logger.error(exception: e, message: "Error destroying widget", widget: @widget)
+      rescue StandardError => e
+        log_error(exception: e, message: "Error destroying widget")
         render json: { errors: e.message }, status: 500
       end
 
       private
 
       def update_widget!(widget, json_params)
-        update_params = json_params.slice(:order, :type, :title)
+        update_params = json_params.permit(:order, :type, :title)
         update_params[:source_id] = source_id_from_params(json_params) if source_id_from_params(json_params)
         widget.update_attributes(update_params)
         widget.options = json_params[:options]
@@ -141,6 +139,10 @@ module Carto
         end
 
         widget
+      end
+
+      def log_context
+        @widget.present? ? super.merge(widget: @widget.attributes) : super
       end
 
     end

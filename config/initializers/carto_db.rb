@@ -4,7 +4,7 @@ module CartoDB
 
   begin
     CARTODB_REV = File.read("#{Rails.root}/REVISION").strip
-  rescue
+  rescue StandardError
     CARTODB_REV = nil
   end
 
@@ -20,18 +20,21 @@ module CartoDB
   SURROGATE_NAMESPACE_PUBLIC_PAGES = 'rp'.freeze
   SURROGATE_NAMESPACE_VIZJSON = 'rj'.freeze
 
-  RESERVED_COLUMN_NAMES = %w(FORMAT CONTROLLER ACTION oid tableoid xmin cmin xmax cmax ctid ogc_fid).freeze
-
   LAST_BLOG_POSTS_FILE_PATH = "#{Rails.root}/public/system/last_blog_posts.html"
 
   # Helper method to encapsulate Rails full URL generation compatible with our subdomainless mode
   # @param context ActionController::Base or a View or something that holds a request
   # @param path String Rails route name
-  # @param params Hash Parameters to send to the url (Optional)
+  # @param params Hash (Optional) Parameters to send to the url
   # @param user ::User (Optional) If not sent will use subdomain or /user/xxx from controller request
-  def self.url(context, path, params = {}, user = nil)
+  # @param keep_base_url Boolean (Optional) Keeps the base url from the request in case of subdomainful
+  def self.url(context, path, params: {}, user: nil, keep_base_url: false)
+    base_url = if keep_base_url && !subdomainless_urls?
+                 context.request.base_url
+               else
+                 CartoDB.base_url_from_request(context.request, user)
+               end
     # Must clean user_domain or else polymorphic_path will use it and generate again /u/xxx/user/xxx
-    base_url = CartoDB.base_url_from_request(context.request, user)
     base_url + main_context(context).polymorphic_path(path, params.merge(user_domain: nil))
   end
 
@@ -44,14 +47,11 @@ module CartoDB
   # @param request A request to extract subdomain and parameters from
   # @param user ::User (Optional) If not sent will use subdomain or /user/xxx from controller request
   def self.base_url_from_request(request, user = nil)
-    if user.nil?
-      subdomain = extract_subdomain(request)
-      org_username = nil
-    else
-      subdomain = user.subdomain
-      org_username = organization_username(user)
-    end
-    CartoDB.base_url(subdomain, org_username)
+    user ? base_url_from_user(user) : CartoDB.base_url(extract_subdomain(request), nil)
+  end
+
+  def self.base_url_from_user(user)
+    CartoDB.base_url(user.subdomain, organization_username(user))
   end
 
   # Helper method to encapsulate Rails URL path generation compatible with our subdomainless mode
@@ -241,7 +241,7 @@ module CartoDB
   end
 
   def self.use_https?
-    Rails.env.production? || Rails.env.staging?
+    Cartodb.config[:ssl_required] == true
   end
 
   def self.get_session_domain
@@ -285,7 +285,28 @@ module CartoDB
     uri = URI.parse(url)
     uri.scheme = protocol unless uri.scheme.present?
     uri.to_s
-  rescue
+  rescue StandardError
     nil
+  end
+
+  def self.unformatted_logger(log_file_path)
+    logger = ::Logger.new(log_file_path)
+    logger.formatter = proc do |_severity, _datetime, _progname, msg|
+      "#{logger_msg2str(msg)}\n"
+    end
+    logger
+  end
+
+  # Taken from /usr/lib/ruby/2.2.0/logger.rb (msg2str) to mimic standard Logger behaviour
+  def self.logger_msg2str(msg)
+    case msg
+    when ::String
+      msg
+    when ::Exception
+      "#{msg.message} (#{msg.class})\n" <<
+        (msg.backtrace || []).join("\n")
+    else
+      msg.inspect
+    end
   end
 end

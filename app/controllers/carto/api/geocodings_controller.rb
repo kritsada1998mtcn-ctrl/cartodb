@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 module Carto
   module Api
     class GeocodingsController < ::Api::ApplicationController
@@ -48,9 +46,9 @@ module Carto
         used_credits     = (used_credits > 0 ? used_credits : 0)
         render json: {
           rows:       total_rows,
-          estimation: (uri_user.geocoding_block_price.to_i * used_credits) / Carto::User::GEOCODING_BLOCK_SIZE.to_f
+          estimation: (uri_user.geocoding_block_price.to_i * used_credits) / Carto::Geocoding::GEOCODING_BLOCK_SIZE
         }
-      rescue => e
+      rescue StandardError => e
         CartoDB.notify_exception(e, params: params)
         render_jsonp( { description: e.message }, 500)
       end
@@ -84,7 +82,7 @@ module Carto
         geometries.append 'polygon' if polygons > 0 && polygons >= points
 
         render(json: geometries)
-      rescue => e
+      rescue StandardError => e
         CartoDB.notify_exception(e, params: params)
       end
 

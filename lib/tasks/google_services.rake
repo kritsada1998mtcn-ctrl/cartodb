@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 namespace :cartodb do
   namespace :services do
     namespace :external do
@@ -25,7 +23,7 @@ namespace :cartodb do
 
           return if Carto::FeatureFlagsUser.where(feature_flag_id: ff.id, user_id: user.id).exists?
 
-          Carto::FeatureFlagsUser.create(feature_flag_id: ff.id, user_id: user.id)
+          user.activate_feature_flag!(ff)
         end
 
         def remove_feature_flag_from_user(feature_name, user)

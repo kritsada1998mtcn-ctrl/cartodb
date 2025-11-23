@@ -1,9 +1,9 @@
-# encoding: utf-8
-
 require_relative '../../../spec_helper_min'
 
 describe Carto::Admin::MobileAppsController do
   include Warden::Test::Helpers
+
+  let(:password) { '1234-abcd-5678' }
 
   TEST_UUID = '00000000-0000-0000-0000-000000000000'.freeze
   MOBILE_APP = {
@@ -17,7 +17,12 @@ describe Carto::Admin::MobileAppsController do
   }.freeze
 
   before(:all) do
-    @carto_user = FactoryGirl.create(:carto_user, mobile_max_open_users: 10000)
+    @carto_user = create(
+      :carto_user,
+      mobile_max_open_users: 10_000,
+      password: password,
+      password_confirmation: password
+    )
     @user = ::User[@carto_user.id]
   end
 
@@ -31,7 +36,7 @@ describe Carto::Admin::MobileAppsController do
 
   describe '#index' do
     it 'loads apps from Central' do
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(true)
+      Cartodb::Central.stubs(:api_sync_enabled?).returns(true)
       Cartodb::Central.any_instance.stubs(:get_mobile_apps).returns(mobile_apps: [], monthly_users: { open: 10000, private: 0 }).once
       login(@user)
       get mobile_apps_path
@@ -44,7 +49,7 @@ describe Carto::Admin::MobileAppsController do
     end
 
     it 'returns 404 if Central disabled' do
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(false)
+      Cartodb::Central.stubs(:api_sync_enabled?).returns(false)
       login(@user)
       get mobile_apps_path
       response.status.should eq 404
@@ -53,7 +58,7 @@ describe Carto::Admin::MobileAppsController do
 
   describe '#show' do
     it 'loads app from Central' do
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(true)
+      Cartodb::Central.stubs(:api_sync_enabled?).returns(true)
       Cartodb::Central.any_instance.stubs(:get_mobile_app).returns(id: TEST_UUID, monthly_users: 0, app_type: 'open', platform: 'android').once
       login(@user)
       get mobile_app_path(id: TEST_UUID)
@@ -66,7 +71,7 @@ describe Carto::Admin::MobileAppsController do
     end
 
     it 'returns 404 if Central disabled' do
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(false)
+      Cartodb::Central.stubs(:api_sync_enabled?).returns(false)
       login(@user)
       get mobile_app_path(id: TEST_UUID)
       response.status.should eq 404
@@ -77,7 +82,7 @@ describe Carto::Admin::MobileAppsController do
     let(:create_app) { MOBILE_APP.slice(:name, :description, :icon_url, :platform, :app_id, :app_type) }
 
     it 'creates app in Central' do
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(true)
+      Cartodb::Central.stubs(:api_sync_enabled?).returns(true)
       Cartodb::Central.any_instance.stubs(:create_mobile_app).returns({}).once
       login(@user)
       post mobile_apps_path, mobile_app: create_app
@@ -86,7 +91,7 @@ describe Carto::Admin::MobileAppsController do
     end
 
     it 'validates app before sending to Central' do
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(true)
+      Cartodb::Central.stubs(:api_sync_enabled?).returns(true)
       Cartodb::Central.any_instance.stubs(:create_mobile_app).returns({}).never
       login(@user)
       post mobile_apps_path, mobile_app: create_app.merge(name: '')
@@ -100,7 +105,7 @@ describe Carto::Admin::MobileAppsController do
     end
 
     it 'returns 404 if Central disabled' do
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(false)
+      Cartodb::Central.stubs(:api_sync_enabled?).returns(false)
       login(@user)
       post mobile_apps_path, mobile_app: create_app
       response.status.should eq 404
@@ -111,7 +116,7 @@ describe Carto::Admin::MobileAppsController do
     let(:update_app) { MOBILE_APP.slice(:name, :description, :icon_url, :app_type) }
 
     it 'updates app in Central' do
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(true)
+      Cartodb::Central.stubs(:api_sync_enabled?).returns(true)
       Cartodb::Central.any_instance.stubs(:get_mobile_app).returns(MOBILE_APP).once
       Cartodb::Central.any_instance.stubs(:update_mobile_app).returns({}).once
       login(@user)
@@ -121,7 +126,7 @@ describe Carto::Admin::MobileAppsController do
     end
 
     it 'validates app before sending to Central' do
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(true)
+      Cartodb::Central.stubs(:api_sync_enabled?).returns(true)
       Cartodb::Central.any_instance.stubs(:get_mobile_app).returns(id: TEST_UUID, monthly_users: 0, app_type: 'open', platform: 'android').once
       Cartodb::Central.any_instance.stubs(:update_mobile_app).returns(mobile_app: {}).never
       login(@user)
@@ -136,7 +141,7 @@ describe Carto::Admin::MobileAppsController do
     end
 
     it 'returns 404 if Central disabled' do
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(false)
+      Cartodb::Central.stubs(:api_sync_enabled?).returns(false)
       login(@user)
       put mobile_app_path(id: TEST_UUID), mobile_app: update_app
       response.status.should eq 404
@@ -145,10 +150,10 @@ describe Carto::Admin::MobileAppsController do
 
   describe '#destroy' do
     it 'deletes app in Central' do
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(true)
+      Cartodb::Central.stubs(:api_sync_enabled?).returns(true)
       Cartodb::Central.any_instance.stubs(:delete_mobile_app).returns({}).once
       login(@user)
-      delete mobile_app_path(id: TEST_UUID)
+      delete mobile_app_path(id: TEST_UUID), password_confirmation: password
       response.status.should eq 302
       response.location.should end_with 'your_apps/mobile'
     end
@@ -159,7 +164,7 @@ describe Carto::Admin::MobileAppsController do
     end
 
     it 'returns 404 if Central disabled' do
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(false)
+      Cartodb::Central.stubs(:api_sync_enabled?).returns(false)
       login(@user)
       delete mobile_app_path(id: TEST_UUID)
       response.status.should eq 404

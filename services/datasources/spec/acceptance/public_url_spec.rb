@@ -1,5 +1,4 @@
-# encoding: utf-8
-
+require 'spec_helper_min'
 require_relative '../../lib/datasources'
 require_relative '../../../../spec/helpers/file_server_helper'
 

@@ -1,10 +1,6 @@
-# encoding: utf-8
-
 module Carto
   module Api
     class LegendsController < ::Api::ApplicationController
-      include Carto::ControllerHelper
-
       ssl_required :index, :show, :create, :update, :destroy
 
       before_filter :load_layer,
@@ -84,7 +80,7 @@ module Carto
       end
 
       def legend_params
-        params.slice(:title, :pre_html, :post_html, :type, :definition, :conf)
+        params.slice(:title, :pre_html, :post_html, :type, :definition, :conf).permit!
       end
     end
   end

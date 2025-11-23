@@ -1,4 +1,3 @@
-# encoding: utf-8
 require 'fileutils'
 require 'open3'
 require 'uri'
@@ -122,7 +121,7 @@ module CartoDB
         @last_modified = if header_last_modified
                            begin
                              DateTime.httpdate(header_last_modified.delete('"').delete("'"))
-                           rescue
+                           rescue StandardError
                              nil
                            end
                          end
@@ -373,10 +372,6 @@ module CartoDB
         {
           content_types: ['application/gpx+xml'],
           extensions: ['.gpx']
-        },
-        {
-          content_types: ['application/zip'],
-          extensions: ['.zip', '.carto']
         },
         {
           content_types: ['application/x-gzip'],

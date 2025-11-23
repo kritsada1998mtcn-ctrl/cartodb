@@ -1,4 +1,3 @@
-# encoding: utf-8
 require 'json'
 require_relative '../../../models/synchronization/member'
 require_relative '../../../models/synchronization/collection'
@@ -34,7 +33,11 @@ class Api::Json::SynchronizationsController < Api::ApplicationController
 
         if @external_source
           @stats_aggregator.timing('external-data-import.save') do
-            ExternalDataImport.new(data_import.id, @external_source.id, member.id).save
+            Carto::ExternalDataImport.new(
+              data_import_id: data_import.id,
+              external_source_id: @external_source.id,
+              synchronization_id: member.id
+            ).save
           end
         end
 
@@ -64,7 +67,6 @@ class Api::Json::SynchronizationsController < Api::ApplicationController
       rescue CartoDB::InvalidInterval => exception
         render_jsonp({ errors: "#{exception.detail['message']}: #{exception.detail['hint']}" }, 400)
       rescue InvalidUrlError => exception
-        CartoDB::StdoutLogger.info('Error: create', "#{exception.message} #{exception.backtrace.inspect}")
         render_jsonp({ errors: exception.message }, 400)
       end
 
@@ -94,7 +96,7 @@ class Api::Json::SynchronizationsController < Api::ApplicationController
         end
 
         render_jsonp( { enqueued: enqueued, synchronization_id: member.id})
-      rescue => exception
+      rescue StandardError => exception
         CartoDB.notify_exception(exception)
         head(404)
       end
@@ -182,7 +184,7 @@ class Api::Json::SynchronizationsController < Api::ApplicationController
 
     if params[:connector].present?
       member_attributes[:service_name]    = 'connector'
-      member_attributes[:service_item_id] = params[:connector].to_json
+      member_attributes[:service_item_id] = connector_parameters
     end
 
     member_attributes
@@ -213,7 +215,7 @@ class Api::Json::SynchronizationsController < Api::ApplicationController
       options.merge!(data_source: external_source.import_url.presence)
     elsif params[:connector].present?
       options[:service_name]    = 'connector'
-      options[:service_item_id] = params[:connector].to_json
+      options[:service_item_id] = connector_parameters
     else
       url = params[:url]
       validate_url!(url) unless Rails.env.development? || Rails.env.test? || url.nil? || url.empty?
@@ -240,5 +242,9 @@ class Api::Json::SynchronizationsController < Api::ApplicationController
       raise CartoDB::Datasources::AuthError.new('Illegal external load')
     end
     external_source
+  end
+
+  def connector_parameters
+    Carto::Connector.normalized_parameters(user: current_user, parameters: params[:connector]).to_json
   end
 end

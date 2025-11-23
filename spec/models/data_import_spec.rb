@@ -1,6 +1,7 @@
-# encoding: utf-8
 require_relative '../spec_helper'
+require_relative '../helpers/file_server_helper'
 require_relative 'data_import_shared_examples'
+require_relative '../../lib/carto/ghost_tables_manager'
 
 describe DataImport do
   let(:data_import_class) { ::DataImport }
@@ -154,6 +155,15 @@ describe DataImport do
     data_import.log.entries.should match(/relation.*does not exist/)
   end
 
+  it 'should work with a query that contains a "non-valid URI scheme"' do
+    data_import = create_import_from_query(
+      overwrite: false,
+      from_query: 'SELECT (1)::numeric'
+    )
+    data_import.run_import!
+    data_import.state.should eq 'complete'
+  end
+
   it 'should raise an exception if overwriting with missing data' do
     carto_user = Carto::User.find(@user.id)
     carto_user.visualizations.count.should eq 1
@@ -223,7 +233,7 @@ describe DataImport do
   end
 
   def user_tables_should_be_registered
-    Carto::GhostTablesManager.new(@user.id).user_tables_synced_with_db?.should eq(true), "Tables not properly registered"
+    Carto::GhostTablesManager.new(@user.id).fetch_user_tables_synced_with_db?.should eq(true), "Tables not properly registered"
   end
 
   def create_import(user: @user, overwrite:, truncated:, incomplete_schema: false)
@@ -380,7 +390,7 @@ describe DataImport do
 
   it 'updates synch_job state after success data import' do
     data_import = nil
-    sync_job = FactoryGirl.create(:enqueued_sync)
+    sync_job = create(:enqueued_sync)
     Carto::Synchronization.find(sync_job.id).state.should eq Carto::Synchronization::STATE_QUEUED
     CartoDB::Importer2::Downloader.any_instance.stubs(:validate_url!).returns(true)
     serve_file Rails.root.join('db/fake_data/clubbing.csv') do |url|
@@ -397,12 +407,12 @@ describe DataImport do
   end
 
   it 'updates synch_job state after failed data import' do
-    sync_job = FactoryGirl.create(:enqueued_sync)
+    sync_job = create(:enqueued_sync)
     Carto::Synchronization.find(sync_job.id).state.should eq Carto::Synchronization::STATE_QUEUED
 
     data_import = DataImport.create(
       user_id: @user.id,
-      data_source: "http://mydatasource.cartodb.wadus.com/foo.csv",
+      data_source: "http://localhost/foo.csv",
       synchronization_id: sync_job.id,
       updated_at: Time.now
     ).run_import!
@@ -520,69 +530,8 @@ describe DataImport do
       CartoDB::Importer2::QueryBatcher.any_instance.unstub(:execute_update)
     end
 
-    def stub_arcgis_response_with_file(filename)
-      # Metadata of a layer
-      Typhoeus.stub(/\/arcgis\/rest\/services\/Planning\/EPI_Primary_Planning_Layers\/MapServer\/2\?f=json/) do
-        body = File.read(File.join(File.dirname(__FILE__), "../fixtures/arcgis_metadata.json"))
-        Typhoeus::Response.new(
-          code: 200,
-          headers: { 'Content-Type' => 'application/json' },
-          body: body
-        )
-      end
-
-      # IDs list of a layer
-      Typhoeus.stub(/\/arcgis\/rest\/(.*)query\?where=/) do
-        json_file = JSON.parse(File.read(File.join(File.dirname(__FILE__), filename)))
-        Typhoeus::Response.new(
-          code: 200,
-          headers: { 'Content-Type' => 'application/json' },
-          body: JSON.dump(
-            objectIdFieldName: "OBJECTID",
-            objectIds: json_file['features'].map { |f| f['attributes']['OBJECTID'] }
-          )
-        )
-      end
-
-      Typhoeus.stub(/\/arcgis\/rest\/(.*)query$/) do |request|
-        response_body = File.read(File.join(File.dirname(__FILE__), filename))
-        response_body = ::JSON.parse(response_body)
-
-        request_body = request.options[:body]
-
-        requested_object_id = nil
-        lower_match = nil
-        upper_match = nil
-        if request_body[:objectIds]
-          requested_object_id = request_body[:objectIds]
-        else
-          lower_match = /OBJECTID\s+>=(\d+)/ =~ request.options[:body][:where]
-          upper_match = /OBJECTID\s+<=(\d+)/ =~ request.options[:body][:where]
-        end
-
-        response_body['features'] = response_body['features'].select do |f|
-          object_id = f['attributes']['OBJECTID']
-          if requested_object_id
-            object_id == requested_object_id
-          elsif lower_match && upper_match
-            object_id >= lower_match[1].to_i && object_id <= upper_match[1].to_i
-          elsif lower_match
-            object_id >= lower_match[1].to_i
-          elsif upper_match
-            object_id <= upper_match[1].to_i
-          end
-        end
-
-        Typhoeus::Response.new(
-          code: 200,
-          headers: { 'Content-Type' => 'application/json' },
-          body: ::JSON.dump(response_body)
-        )
-      end
-    end
-
-    it 'should raise statement timeout error when the query batcher raise that exception' do
-      stub_arcgis_response_with_file('../fixtures/arcgis_response_valid.json')
+    it 'should complete with a warning when the query batcher raises a timeout exception' do
+      stub_arcgis_response_with_file(File.expand_path('spec/fixtures/arcgis_response_valid.json'))
       CartoDB::Importer2::QueryBatcher.any_instance
                                       .stubs(:execute_update)
                                       .raises(Sequel::DatabaseError, 'canceling statement due to statement timeout')
@@ -593,12 +542,12 @@ describe DataImport do
         service_item_id: 'https://wtf.com/arcgis/rest/services/Planning/EPI_Primary_Planning_Layers/MapServer/2'
       )
       data_import.run_import!
-      data_import.state.should eq 'failure'
-      data_import.error_code.should eq 6667
+      data_import.state.should eq 'complete'
+      data_import.log.entries.should include 'Error fixing geometries during import, skipped'
     end
 
     it 'should raise invalid data error when the query batcher raise any other exception' do
-      stub_arcgis_response_with_file('../fixtures/arcgis_response_valid.json')
+      stub_arcgis_response_with_file(File.expand_path('spec/fixtures/arcgis_response_valid.json'))
       CartoDB::Importer2::QueryBatcher.any_instance
                                       .stubs(:execute_update)
                                       .raises(Sequel::DatabaseError, 'GEOSisValid(): InterruptedException: Interrupted!')
@@ -614,7 +563,7 @@ describe DataImport do
     end
 
     it 'should import this supposed invalid dataset for ogr2ogr 2.1.1' do
-      stub_arcgis_response_with_file('../fixtures/arcgis_response_invalid.json')
+      stub_arcgis_response_with_file(File.expand_path('spec/fixtures/arcgis_response_invalid.json'))
 
       data_import = DataImport.create(
         user_id:    @user.id,
@@ -625,8 +574,23 @@ describe DataImport do
       data_import.state.should eq 'complete'
     end
 
+    it 'fail with error 1020 if timeout' do
+      Typhoeus::Response.any_instance.stubs(:timed_out?).returns(true)
+      stub_arcgis_response_with_file(File.expand_path('spec/fixtures/arcgis_response_missing_ogc_fid.json'))
+
+      data_import = DataImport.create(
+        user_id:    @user.id,
+        service_name: 'arcgis',
+        service_item_id: 'https://wtf.com/arcgis/rest/services/Planning/EPI_Primary_Planning_Layers/MapServer/2'
+      )
+      data_import.run_import!
+      data_import.state.should eq 'failure'
+      data_import.error_code.should eq 1020
+      Typhoeus::Response.unstub(:timed_out?)
+    end
+
     it 'should import files with missing ogc_fid' do
-      stub_arcgis_response_with_file('../fixtures/arcgis_response_missing_ogc_fid.json')
+      stub_arcgis_response_with_file(File.expand_path('spec/fixtures/arcgis_response_missing_ogc_fid.json'))
 
       data_import = DataImport.create(
         user_id:    @user.id,
@@ -639,12 +603,12 @@ describe DataImport do
   end
 
   describe 'log' do
-    it 'is initialized to a CartoDB::Log instance' do
+    it 'is initialized to a Carto::Log instance' do
       data_import = DataImport.create(
         user_id: @user.id,
         data_source: "http://mydatasource.cartodb.wadus.com/foo.csv"
       )
-      data_import.log.should be_instance_of CartoDB::Log
+      data_import.log.should be_instance_of Carto::Log
     end
 
     it 'allows messages to be appended' do

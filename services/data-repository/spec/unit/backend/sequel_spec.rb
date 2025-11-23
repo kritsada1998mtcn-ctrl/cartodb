@@ -1,4 +1,4 @@
-# encoding: utf-8
+require 'spec_helper_min'
 require_relative '../../../backend/sequel'
 require_relative '../../../../../app/models/visualization/member'
 

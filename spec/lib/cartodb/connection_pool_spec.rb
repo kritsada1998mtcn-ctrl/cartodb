@@ -10,11 +10,6 @@ describe CartoDB::ConnectionPool do
     ConnectionPool::MAX_POOL_SIZE = @max_pool_size
   end
 
-  before(:each) do
-    # Need to close the connections because there might be more than the new maximum already in the pool
-    $pool.close_connections!
-  end
-
   after(:each) do
     @users.map(&:destroy) if @users
   end
@@ -69,7 +64,7 @@ describe CartoDB::ConnectionPool do
       end
       database_object_count.should < (initial_db_count + MAX_ALLOWABLE_CONNECTIONS)
 
-      # Destroy new user and ensure it does not leaks (as soon as his db connection is evicted)
+      # Destroy new user and ensure it does not leaks (as soon as their db connection is evicted)
       @users.delete_at(0).destroy
 
       (0..4).each do |_|

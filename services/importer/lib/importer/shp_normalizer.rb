@@ -1,4 +1,3 @@
-# encoding: utf-8
 require 'open3'
 require_relative './exceptions'
 require_relative './shp_helper'
@@ -103,7 +102,7 @@ module CartoDB
         return 'WIN1251' if File.open(filepath, 'rb') { |file|
           file.read =~ /WindowsCyrillic/
         }
-      rescue
+      rescue StandardError
         false
       end
 

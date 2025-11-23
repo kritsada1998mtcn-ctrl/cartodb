@@ -1,10 +1,9 @@
-# encoding: UTF-8
-
 require 'active_record'
 require 'fileutils'
 require_relative '../../../services/user-mover/import_user'
 require_dependency 'resque/user_migration_jobs'
 require_dependency 'carto/user_metadata_export_service'
+require_dependency 'carto/organization_metadata_export_service'
 
 module Carto
   class UserMigrationImport < ::ActiveRecord::Base
@@ -31,6 +30,7 @@ module Carto
 
     def run_import
       raise errors.full_messages.join(', ') unless valid?
+
       log.append('=== Downloading ===')
       update_attributes(state: STATE_DOWNLOADING)
       package = UserMigrationPackage.for_import(id, log)
@@ -44,12 +44,14 @@ module Carto
 
       log.append('=== Complete ===')
       update_attributes(state: STATE_COMPLETE)
-    rescue => e
+    rescue StandardError => e
+      puts "ERROR: #{e}"
       log.append_exception('Importing', exception: e)
-      CartoDB::Logger.error(exception: e, message: 'Error importing user data', job: inspect)
+      log_error(exception: e, message: 'Error importing user data', error_detail: inspect)
       update_attributes(state: STATE_FAILURE)
       false
     ensure
+      log.store
       package.try(:cleanup)
     end
 
@@ -85,7 +87,7 @@ module Carto
 
       begin
         do_import_data(import_job) if import_data?
-      rescue => e
+      rescue StandardError => e
         log.append('=== Error importing data. Rollback! ===')
         rollback_import_data(package)
         service.rollback_import_from_directory(package.meta_dir) if import_metadata?
@@ -105,8 +107,9 @@ module Carto
       rescue UserAlreadyExists, OrganizationAlreadyExists => e
         log.append('Organization already exists. Skipping!')
         raise e
-      rescue => e
+      rescue StandardError => e
         log.append('=== Error importing metadata. Rollback! ===')
+        log.append(e.backtrace.join("\n"))
         service.rollback_import_from_directory(package.meta_dir)
         raise e
       end
@@ -127,23 +130,20 @@ module Carto
 
     def reconfigure_dataservices
       if org_import?
-        ::Organization[organization.id].owner.db_service.install_and_configure_geocoder_api_extension
+        organization.owner&.carto_user&.db_service&.install_and_configure_geocoder_api_extension
       else
         ::User[user.id].db_service.install_and_configure_geocoder_api_extension
       end
     end
 
     def reconfigure_aggregation_tables
-      u = org_import? ? ::Organization[organization.id].owner : ::User[user.id]
-      begin
-        u.db_service.connect_to_aggregation_tables
-      rescue => e
-        CartoDB::Logger.error(message: "Error trying to refresh aggregation tables for user",
-                              exception: e,
-                              user: u,
-                              organization: (org_import? ? organization : nil),
-                              user_migration_import_id: id)
-      end
+      u = org_import? ? Carto::Organization.find(organization.id).owner : ::User[user.id]
+      u.sequel_user.db_service.connect_to_aggregation_tables
+    rescue StandardError => e
+      log_error(
+        message: 'Error refreshing aggregation tables', exception: e,
+        current_user: u, organization: u.organization, user_migration_import: self.attributes.slice(:id)
+      )
     end
 
     def import_visualizations(imported, package, service)
@@ -152,7 +152,7 @@ module Carto
         ActiveRecord::Base.transaction do
           service.import_metadata_from_directory(imported, package.meta_dir)
         end
-      rescue => e
+      rescue StandardError => e
         log.append('=== Error importing visualizations and search tweets. Rollback! ===')
         rollback_import_data(package)
         service.rollback_import_from_directory(package.meta_dir)
@@ -174,7 +174,7 @@ module Carto
 
       import_job.run!
       import_job.terminate_connections
-    rescue => e
+    rescue StandardError => e
       log.append('There was an error while rolling back import data:' + e.to_s)
     end
 
@@ -219,7 +219,8 @@ module Carto
     end
 
     def set_defaults
-      self.log = Carto::Log.create(type: 'user_migration_import') unless log
+      self.log = Carto::Log.new_user_migration_import unless log
+      log.save
       self.state = STATE_PENDING unless state
       save
     end

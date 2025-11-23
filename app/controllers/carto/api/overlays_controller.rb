@@ -1,12 +1,8 @@
-# encoding: UTF-8
-
 require_dependency 'carto/controller_helper'
 
 module Carto
   module Api
     class OverlaysController < ::Api::ApplicationController
-      include Carto::ControllerHelper
-
       ssl_required :index, :show, :create, :update, :destroy
 
       before_filter :logged_users_only

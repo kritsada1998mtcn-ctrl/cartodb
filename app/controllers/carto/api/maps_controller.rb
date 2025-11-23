@@ -1,10 +1,6 @@
-# encoding: UTF-8
-
 module Carto
   module Api
     class MapsController < ::Api::ApplicationController
-      include Carto::ControllerHelper
-
       ssl_required :show, :update
 
       before_filter :load_map, :owners_only
@@ -51,7 +47,7 @@ module Carto
                                      :view_bounds_sw,
                                      :zoom,
                                      :legends,
-                                     :scrollwheel)
+                                     :scrollwheel).permit!
 
         STRING_PARAMS.each do |param|
           update_params[param] = update_params[param].to_s

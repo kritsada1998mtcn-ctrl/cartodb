@@ -1,11 +1,9 @@
-# encoding: UTF-8
 require 'socket'
 require_relative '../../services/table-geocoder/lib/table_geocoder_factory'
 require_relative '../../services/table-geocoder/lib/exceptions'
 require_relative '../../services/table-geocoder/lib/mail_geocoder'
 require_relative '../../services/geocoder/lib/geocoder_config'
 require_relative '../../lib/cartodb/metrics'
-require_relative 'log'
 require_relative '../../lib/cartodb/stats/geocoding'
 
 require_dependency 'carto/configuration'
@@ -27,9 +25,10 @@ class Geocoding < Sequel::Model
 
   MIN_GEOCODING_TIME_TO_NOTIFY = 3 * 60 #seconds
 
+  GEOCODING_BLOCK_SIZE = 1000.0
+
   many_to_one :user
   many_to_one :user_table, :key => :table_id
-  many_to_one :automatic_geocoding
   many_to_one :data_import
 
   attr_reader :table_geocoder
@@ -63,7 +62,7 @@ class Geocoding < Sequel::Model
   end
 
   def geocoding_logger
-    @@geocoding_logger ||= Logger.new(log_file_path('geocodings.log'))
+    @@geocoding_logger ||= CartoDB.unformatted_logger(log_file_path('geocodings.log'))
   end
 
   def error
@@ -95,7 +94,7 @@ class Geocoding < Sequel::Model
                                                           country_column: country_column,
                                                           region_column: region_column,
                                                           log: log)
-      rescue => e
+      rescue StandardError => e
         @table_geocoder = nil
         raise e
       end
@@ -114,7 +113,7 @@ class Geocoding < Sequel::Model
   def cancel
     log.append_and_store "Cancelling job because of user request"
     table_geocoder.cancel
-  rescue => e
+  rescue StandardError => e
     log.append_and_store "Error trying to cancel a job because of user request: #{e.inspect}"
     count ||= 1
     retry unless (count = count.next) > 5
@@ -142,7 +141,7 @@ class Geocoding < Sequel::Model
     rows_geocoded_before = table_service.owner.in_database.select.from(table_service.sequel_qualified_table_name).where(cartodb_georef_status: true).count rescue 0
 
     self.run_geocoding!(processable_rows, rows_geocoded_before)
-  rescue => e
+  rescue StandardError => e
     # state == nil probably means it has failed even before run_geocoding begun
     handle_geocoding_failure(e, rows_geocoded_before || 0) if state == nil
     log.append_and_store "Unexpected exception: #{e}"
@@ -172,7 +171,7 @@ class Geocoding < Sequel::Model
     raise 'Geocoding timed out'  if state == 'timeout'
 
     handle_geocoding_success(rows_geocoded_before)
-  rescue => e
+  rescue StandardError => e
     handle_geocoding_failure(e, rows_geocoded_before)
   end
 
@@ -204,9 +203,10 @@ class Geocoding < Sequel::Model
   end # calculate_used_credits
 
   def price
-    return 0 unless used_credits.to_i > 0
-    (user.geocoding_block_price * used_credits) / ::User::GEOCODING_BLOCK_SIZE.to_f
-  end # price
+    return 0 unless used_credits&.positive?
+
+    (user.geocoding_block_price * used_credits) / GEOCODING_BLOCK_SIZE
+  end
 
   def cost
     return 0 unless kind == 'high-resolution'
@@ -222,7 +222,7 @@ class Geocoding < Sequel::Model
     if translated_formatter =~ SANITIZED_FORMATTER_REGEXP
       translated_formatter
     else
-      CartoDB::Logger.warning(message: %{Incorrect formatter string received: "#{formatter}"}, user: user)
+      log_warning(message: 'Incorrect formatter string received', current_user: user, error_detail: formatter)
       ''
     end
   end
@@ -320,16 +320,13 @@ class Geocoding < Sequel::Model
   end
 
   def instantiate_log
-    if self.log_id
-      @log = CartoDB::Log.where(id: log_id).first
+    if log_id
+      @log = Carto::Log.find(log_id)
     else
-      @log = CartoDB::Log.new({
-          type: CartoDB::Log::TYPE_GEOCODING,
-          user_id: user.id
-        })
+      @log = Carto::Log.new_geocoding(user.id)
       @log.store
       self.log_id = @log.id
-      self.save
+      save
     end
     @log
   end

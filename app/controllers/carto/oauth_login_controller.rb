@@ -1,5 +1,3 @@
-# encoding: UTF-8
-
 require_dependency 'carto/oauth/github/api'
 require_dependency 'carto/oauth/github/config'
 require_dependency 'carto/oauth/google/api'
@@ -39,7 +37,7 @@ module Carto
         signup(api)
       end
     rescue StandardError => e
-      CartoDB::Logger.warning(exception: e, message: 'Error logging in via Oauth')
+      log_warning(exception: e, message: 'Error logging in via Oauth')
       redirect_to CartoDB.url(self, 'login')
     end
 
@@ -48,7 +46,7 @@ module Carto
       @organization_name = state[:organization_name]
       @invitation_token = state[:invitation_token]
 
-      return render_403 unless params[:code] && state[:csrf] == form_authenticity_token
+      return render_403 unless params[:code] && valid_authenticity_token?(session, state[:csrf])
     end
 
     def initialize_github_config
@@ -67,7 +65,7 @@ module Carto
       user = api.user
       return false unless user
 
-      params[:oauth_api] = api
+      env[:oauth_api] = api
       authenticate!(:oauth, scope: user.username)
 
       CartoDB::Stats::Authentication.instance.increment_login_counter(user.email)
@@ -76,8 +74,8 @@ module Carto
 
     def signup(api)
       org_name = @organization_name
-      @organization = ::Organization.where(name: org_name).first if org_name.present?
-      unless @organization.present? && api.config.auth_enabled?(@organization)
+      @organization = Carto::Organization.find_by(name: org_name) if org_name.present?
+      unless @organization.present? && signup_page_enabled?(api)
         return redirect_to CartoDB.url(self, 'login')
       end
 
@@ -102,6 +100,10 @@ module Carto
           return render('signup/signup', status: @user.errors.empty? ? 200 : 422)
         end
       end
+    end
+
+    def signup_page_enabled?(api)
+      api.config.auth_enabled?(@organization) && @organization.whitelisted_email_domains.present?
     end
   end
 end

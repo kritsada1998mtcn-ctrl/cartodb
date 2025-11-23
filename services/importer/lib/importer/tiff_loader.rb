@@ -1,4 +1,3 @@
-# encoding: utf-8
 require_relative './raster2pgsql'
 
 module CartoDB
@@ -37,7 +36,7 @@ module CartoDB
         })
 
         self
-      rescue => exception
+      rescue StandardError => exception
         begin
           clean_temporary_tables
         ensure

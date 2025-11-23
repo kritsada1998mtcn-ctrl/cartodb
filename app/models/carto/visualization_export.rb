@@ -1,5 +1,3 @@
-# encoding: UTF-8
-
 require 'uri'
 require 'fileutils'
 require 'active_record'
@@ -32,7 +30,7 @@ module Carto
     end
 
     def run_export!(file_upload_helper: default_file_upload_helper, download_path: nil)
-      logger = Carto::Log.new(type: 'visualization_export')
+      logger = Carto::Log.new_visualization_export
 
       logger.append('Exporting')
       update_attributes(state: STATE_EXPORTING, log: logger)
@@ -43,7 +41,7 @@ module Carto
 
       file = CartoDB::FileUploadFile.new(filepath)
 
-      s3_config = Cartodb.config[:exporter]['s3'].deep_dup || {}
+      s3_config = Cartodb.get_config(:exporter, 's3').deep_dup || {}
 
       plain_name = header_encode(file.original_filename.force_encoding('iso-8859-1'))
       utf_name = header_encode(file.original_filename)
@@ -73,14 +71,15 @@ module Carto
       logger.append("Finishing. State: #{state}. File: #{export_file}. URL: #{url}")
       update_attributes(state: state, file: export_file, url: export_url)
       true
-    rescue => e
+    rescue StandardError => e
       logger.append_exception('Exporting', exception: e)
-      CartoDB::Logger.error(
+      log_error(
         exception: e,
         message: "Visualization export error",
-        user: user,
-        visualization_id: visualization.id,
-        visualization_export_id: id)
+        current_user: user,
+        visualization: visualization.attributes.slice(:id),
+        visualization_export: attributes.slice(:id)
+      )
       update_attributes(state: STATE_FAILURE)
 
       false

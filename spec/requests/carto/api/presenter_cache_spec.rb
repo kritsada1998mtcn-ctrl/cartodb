@@ -1,5 +1,3 @@
-# encoding: utf-8
-require_relative '../../../simplecov_helper'
 require_relative '../../../../app/controllers/carto/api/presenter_cache'
 
 class Carto::Api::FakeModel

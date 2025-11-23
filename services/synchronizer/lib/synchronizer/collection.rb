@@ -1,7 +1,5 @@
-# encoding: utf-8
 require 'yaml'
 require 'resque'
-require_relative '../../../../app/models/log'
 require_relative '../../../../app/models/synchronization/member'
 require_relative '../../../../lib/resque/synchronization_jobs'
 require_relative '../../../../services/platform-limits/platform_limits'
@@ -45,20 +43,23 @@ module CartoDB
         begin
           if force_all_syncs
             query = db.fetch(%Q(
-              SELECT name, id FROM #{relation} WHERE
-              state = '#{CartoDB::Synchronization::Member::STATE_SUCCESS}'
-              OR state = '#{CartoDB::Synchronization::Member::STATE_SYNCING}'
+              SELECT r.name, r.id FROM #{relation} r, users u WHERE
+              (r.state = '#{CartoDB::Synchronization::Member::STATE_SUCCESS}'
+              OR r.state = '#{CartoDB::Synchronization::Member::STATE_SYNCING}')
+              AND u.id = user_id AND u.state = '#{Carto::User::STATE_ACTIVE}'
             ))
           else
             query = db.fetch(%Q(
-              SELECT name, id, user_id FROM #{relation}
-              WHERE EXTRACT(EPOCH FROM run_at) < #{Time.now.utc.to_f}
+              SELECT r.name, r.id, r.user_id FROM #{relation} r, users u
+              WHERE EXTRACT(EPOCH FROM r.run_at) < #{Time.now.utc.to_f}
+              AND u.id = user_id AND u.state = '#{Carto::User::STATE_ACTIVE}'
               AND
                 (
-                  state = '#{CartoDB::Synchronization::Member::STATE_SUCCESS}'
-                  OR (state = '#{CartoDB::Synchronization::Member::STATE_FAILURE}'
-                      AND retried_times < #{CartoDB::Synchronization::Member::MAX_RETRIES})
+                  r.state = '#{CartoDB::Synchronization::Member::STATE_SUCCESS}'
+                  OR (r.state = '#{CartoDB::Synchronization::Member::STATE_FAILURE}'
+                      AND r.retried_times < #{CartoDB::Synchronization::Member::MAX_RETRIES})
                 )
+              ORDER BY ran_at
             ))
           end
           success = true

@@ -12,7 +12,7 @@ module Carto
       # to search based on params hash (can be request params).
       # It doesn't apply ordering or paging, just filtering.
       def query_builder_with_filter_from_hash(params)
-        types, total_types = get_types_parameters
+        types = get_types_parameters
 
         validate_parameters(types, params)
 
@@ -20,6 +20,8 @@ module Carto
 
         only_liked = params[:only_liked] == 'true'
         only_shared = params[:only_shared] == 'true'
+        only_subscriptions = params[:subscribed] == 'true'
+        only_samples = params[:sample] == 'true'
         exclude_shared = params[:exclude_shared] == 'true'
         exclude_raster = params[:exclude_raster] == 'true'
         locked = params[:locked]
@@ -29,6 +31,8 @@ module Carto
         bbox_parameter = params.fetch(:bbox,nil)
         privacy = params.fetch(:privacy,nil)
         only_with_display_name = params[:only_with_display_name] == 'true'
+        with_dependent_visualizations = params[:with_dependent_visualizations].to_i
+        only_published = params[:only_published] == 'true'
 
         vqb = VisualizationQueryBuilder.new
                                        .with_prefetch_user
@@ -48,11 +52,13 @@ module Carto
           vqb.with_display_name
         end
 
-        if current_user
-          if only_liked
-            vqb.with_liked_by_user_id(current_user.id)
-          end
+        vqb.with_published if only_published
 
+        if current_user
+          vqb.with_current_user_id(current_user.id)
+          vqb.with_liked_by_user_id(current_user.id) if only_liked
+          vqb.with_subscription if only_subscriptions
+          vqb.with_sample if only_samples
           case shared
           when FILTER_SHARED_YES
             vqb.with_owned_by_or_shared_with_user_id(current_user.id)
@@ -63,9 +69,7 @@ module Carto
                 .with_user_id_not(current_user.id)
           end
 
-          if exclude_raster
-            vqb.without_raster
-          end
+          vqb.without_raster if exclude_raster
 
           if locked == 'true'
             vqb.with_locked(true)
@@ -78,15 +82,16 @@ module Carto
             vqb.without_imported_remote_visualizations
           end
 
-          if !privacy.nil?
-            vqb.with_privacy(privacy)
-          end
+          vqb.with_privacy(privacy) unless privacy.nil?
 
+          if with_dependent_visualizations.positive? && !current_user.has_feature_flag?('faster-dependencies')
+            vqb.with_prefetch_dependent_visualizations
+          end
         else
-          # TODO: ok, this looks like business logic, refactor
-          subdomain = CartoDB.extract_subdomain(request)
-          vqb.with_user_id(Carto::User.where(username: subdomain).first.id)
-              .with_privacy(Carto::Visualization::PRIVACY_PUBLIC)
+          user = Carto::User.where(username: CartoDB.extract_subdomain(request)).first
+          raise Carto::ParamInvalidError.new(:username) unless user.present?
+          vqb.with_user_id(user.id)
+             .with_privacy(Carto::Visualization::PRIVACY_PUBLIC)
         end
 
         if pattern.present?
@@ -98,15 +103,12 @@ module Carto
 
       def presenter_options_from_hash(params)
         options = {}
-        options[:show_stats] = false if params[:show_stats].to_s == 'false'
-        options[:show_likes] = false if params[:show_likes].to_s == 'false'
-        options[:show_liked] = false if params[:show_liked].to_s == 'false'
-        options[:show_table] = false if params[:show_table].to_s == 'false'
-        options[:show_permission] = false if params[:show_permission].to_s == 'false'
-        options[:show_uses_builder_features] = false if params[:show_uses_builder_features].to_s == 'false'
-        options[:show_synchronization] = false if params[:show_synchronization].to_s == 'false'
-        options[:show_table_size_and_row_count] = false if params[:show_table_size_and_row_count].to_s == 'false'
-        options
+
+        params.each { |k, v| options[k.to_sym] = false if params[k].to_s == 'false' }
+
+        options[:with_dependent_visualizations] = params[:with_dependent_visualizations].to_i
+
+        options.slice(*Carto::Api::VisualizationPresenter::ALLOWED_PARAMS)
       end
 
       private
@@ -115,17 +117,13 @@ module Carto
         # INFO: this fits types and type into types, so only types is used for search.
         # types defaults to type if empty.
         # types defaults to derived if type is also empty.
-        # total_types are the types used for total counts.
         types = params.fetch(:types, "").split(',')
-
         type = params[:type].present? ? params[:type] : (types.empty? ? nil : types[0])
-        # TODO: add this assumption to a test or remove it (this is coupled to the UI)
-        total_types = [(type == Carto::Visualization::TYPE_REMOTE ? Carto::Visualization::TYPE_CANONICAL : type)].compact
 
         types = [type].compact if types.empty?
         types = [Carto::Visualization::TYPE_DERIVED] if types.empty?
 
-        return types, total_types
+        return types
       end
 
       def compose_shared(shared, only_shared, exclude_shared)

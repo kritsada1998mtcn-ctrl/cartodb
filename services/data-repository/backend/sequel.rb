@@ -1,6 +1,4 @@
-# encoding: utf-8
 require 'sequel'
-require 'uuidtools'
 
 module DataRepository
   module Backend
@@ -38,7 +36,7 @@ module DataRepository
       end
 
       def next_id
-        UUIDTools::UUID.timestamp_create
+        Carto::UUIDHelper.random_uuid
       end
 
       def apply_filters(dataset, filters={}, available_filters=[])
@@ -81,7 +79,7 @@ module DataRepository
       def serialize_for_postgres(data)
         Hash[
           data.map { |key, value|
-            value = value.pg_array if value.is_a?(Array) && !value.empty? 
+            value = ::Sequel.pg_array(value) if value.is_a?(Array) && !value.empty?
             [key, value]
           }
         ]

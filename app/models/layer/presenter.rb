@@ -1,4 +1,3 @@
-# encoding: utf-8
 require 'json'
 require 'ejs'
 require_dependency 'carto/table_utils'
@@ -8,6 +7,7 @@ module CartoDB
   module LayerModule
     class Presenter
       include Carto::TableUtils
+      include ::LoggerHelper
 
       EMPTY_CSS = '#dummy{}'
 
@@ -161,22 +161,22 @@ module CartoDB
 
       def infowindow_data_v1
         with_template(layer.infowindow, layer.infowindow_template_path)
-      rescue => e
-        CartoDB::Logger.error(exception: e)
+      rescue StandardError => e
+        log_error(exception: e)
         throw e
       end
 
       def infowindow_data_v2
         whitelisted_infowindow(with_template(layer.infowindow, layer.infowindow_template_path))
-      rescue => e
-        CartoDB::Logger.error(exception: e)
+      rescue StandardError => e
+        log_error(exception: e)
         throw e
       end
 
       def tooltip_data_v2
         whitelisted_infowindow(with_template(layer.tooltip, layer.tooltip_template_path))
-      rescue => e
-        CartoDB::Logger.error(exception: e)
+      rescue StandardError => e
+        log_error(exception: e)
         throw e
       end
 

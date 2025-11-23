@@ -1,9 +1,4 @@
-# encoding: utf-8
-require 'rspec/core'
-require 'rspec/expectations'
-require 'rspec/mocks'
-require 'sequel'
-require_relative '../../spec_helper'
+require 'spec_helper'
 require_relative '../../../app/models/visualization/name_checker'
 
 include CartoDB
@@ -11,19 +6,19 @@ include CartoDB
 describe Visualization::NameChecker do
   before :all do
     bypass_named_maps
-    @user = FactoryGirl.create(:valid_user)
-    @user2 = FactoryGirl.create(:valid_user)
+    @user = create(:valid_user)
+    @user2 = create(:valid_user)
 
-    @vis1 = FactoryGirl.build(:derived_visualization, name: 'Visualization 1', user_id: @user.id).store
-    @vis2 = FactoryGirl.build(:derived_visualization, name: 'Visualization 2', user_id: @user.id).store
-    @vis3 = FactoryGirl.build(:derived_visualization, name: 'Visualization 4', user_id: @user2.id).store
+    @vis1 = build(:derived_visualization, name: 'Visualization 1', user_id: @user.id).store
+    @vis2 = build(:derived_visualization, name: 'Visualization 2', user_id: @user.id).store
+    @vis3 = build(:derived_visualization, name: 'Visualization 4', user_id: @user2.id).store
 
-    @shared_entity = CartoDB::SharedEntity.new(
-      recipient_id:   @user.id,
-      recipient_type: CartoDB::SharedEntity::RECIPIENT_TYPE_USER,
-      entity_id:      @vis3.id,
-      entity_type:    CartoDB::SharedEntity::ENTITY_TYPE_VISUALIZATION
-    ).save
+    @shared_entity = Carto::SharedEntity.create(
+      recipient_id: @user.id,
+      recipient_type: Carto::SharedEntity::RECIPIENT_TYPE_USER,
+      entity_id: @vis3.id,
+      entity_type: Carto::SharedEntity::ENTITY_TYPE_VISUALIZATION
+    )
   end
 
   after :all do

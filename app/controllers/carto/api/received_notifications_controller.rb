@@ -1,9 +1,6 @@
-# encoding: utf-8
-
 module Carto
   module Api
     class ReceivedNotificationsController < ::Api::ApplicationController
-      include Carto::ControllerHelper
       extend Carto::DefaultRescueFroms
 
       ssl_required :update
@@ -25,7 +22,7 @@ module Carto
 
       rescue ArgumentError => e
         render_jsonp({ errors: { read_at: 'invalid date format' } }, 422)
-        CartoDB::Logger.warning(exception: e)
+        log_warning(exception: e)
       end
 
       private

@@ -1,11 +1,9 @@
-# encoding: utf-8
 require_dependency 'carto/uuidhelper'
 require_relative '../builder/builder_users_module'
 
 module Carto
   module Api
     class AnalysesController < ::Api::ApplicationController
-      include Carto::ControllerHelper
       include Carto::UUIDHelper
       include Carto::Builder::BuilderUsersModule
 
@@ -105,7 +103,7 @@ module Carto
 
       def json_post(raw_post = request.raw_post)
         @json_post ||= (raw_post.present? ? JSON.parse(raw_post) : nil)
-      rescue => e
+      rescue StandardError => e
         # Malformed JSON is not our business
         CartoDB.notify_warning_exception(e)
         raise UnprocesableEntityError.new("Malformed JSON: #{raw_post}")
@@ -142,7 +140,7 @@ module Carto
         end
 
         unless params[:id].nil?
-          @analysis = Carto::Analysis.where(id: params[:id]).first if is_uuid?(params[:id])
+          @analysis = Carto::Analysis.where(id: params[:id]).first if uuid?(params[:id])
 
           if @analysis.nil?
             @analysis = Carto::Analysis.find_by_natural_id(@visualization.id, params[:id])

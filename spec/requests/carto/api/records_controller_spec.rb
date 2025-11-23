@@ -1,12 +1,10 @@
-# encoding: utf-8
-
 require_relative '../../../spec_helper'
 
 describe Carto::Api::RecordsController do
   describe '#show legacy tests' do
 
     before(:all) do
-      @user = FactoryGirl.create(:valid_user)
+      @user = create(:valid_user)
     end
 
     before(:each) do

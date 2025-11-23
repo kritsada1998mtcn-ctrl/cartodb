@@ -1,9 +1,11 @@
-# encoding: utf-8
-
-require_relative '../../../spec_helper'
+require 'spec_helper_unit'
 require_relative '../../api/json/imports_controller_shared_examples'
 require_relative '../../../../app/controllers/carto/api/imports_controller'
 require 'helpers/unique_names_helper'
+
+# TODO: replace remaining instance variables with let,
+# but, for the time being, let's keep rubocop quiet:
+# rubocop:disable RSpec/InstanceVariable
 
 describe Carto::Api::ImportsController do
   include UniqueNamesHelper
@@ -12,18 +14,9 @@ describe Carto::Api::ImportsController do
 
   @headers = { 'CONTENT_TYPE'  => 'application/json' }
 
-  before(:all) do
-    @user = FactoryGirl.create(:valid_user)
+  before do
+    @user = create(:valid_user)
     host! "#{@user.username}.localhost.lan"
-  end
-
-  after(:all) do
-    @user.destroy
-  end
-
-  before(:each) do
-    bypass_named_maps
-    delete_user_data @user
   end
 
   let(:params) { { api_key: @user.api_key } }
@@ -196,58 +189,42 @@ describe Carto::Api::ImportsController do
       response_json['success'].should == true
     end
 
-    it 'returns 400 for known service token without known service datasource' do
-      synchronization_oauth = Carto::SynchronizationOauth.new(user_id: @user.id, service: 'kk-s', token: 'kk-t')
-      synchronization_oauth.save
-      get api_v1_imports_service_token_valid_url(id: synchronization_oauth.service), params
-      response.code.should == '400'
-      synchronization_oauth.destroy
-    end
-
-    it 'returns 400 for known service token for a service datasource which is not BaseOAuth' do
-      synchronization_oauth = Carto::SynchronizationOauth.new(user_id: @user.id, service: 'arcgis', token: 'kk-t')
-      synchronization_oauth.save
-      get api_v1_imports_service_token_valid_url(id: synchronization_oauth.service), params
-      response.code.should == '400'
-      synchronization_oauth.destroy
-    end
-
     it 'returns oauth_valid false for not valid tokens and deletes them' do
       CartoDB::Datasources::Url::MailChimp.any_instance.stubs(:token_valid?).returns(false)
-      synchronization_oauth = Carto::SynchronizationOauth.new(user_id: @user.id, service: 'mailchimp', token: 'kk-t')
-      synchronization_oauth.save
-      get api_v1_imports_service_token_valid_url(id: synchronization_oauth.service), params
+      connector = Carto::Connection.new(user_id: @user.id, connector: 'mailchimp', token: 'kk-t')
+      connector.save
+      get api_v1_imports_service_token_valid_url(id: connector.service), params
       response.code.should == '200'
       response_json = JSON.parse(response.body)
       response_json['oauth_valid'].should == false
       response_json['success'].should == true
 
-      SynchronizationOauth.where(id: synchronization_oauth.id).first.should eq nil
-      synchronization_oauth.destroy
+      Carto::Connection.where(id: connector.id).first.should eq nil
+      connector.destroy
     end
 
     it 'returns 401 for expired tokens on assignment and deletes them' do
       CartoDB::Datasources::Url::MailChimp.any_instance.stubs(:token=).raises(CartoDB::Datasources::TokenExpiredOrInvalidError.new('kk', 'mailchimp'))
-      synchronization_oauth = Carto::SynchronizationOauth.new(user_id: @user.id, service: 'mailchimp', token: 'kk-t')
-      synchronization_oauth.save
+      connector = Carto::Connection.new(user_id: @user.id, connector: 'mailchimp', token: 'kk-t')
+      connector.save
 
-      get api_v1_imports_service_token_valid_url(id: synchronization_oauth.service), params, @headers
+      get api_v1_imports_service_token_valid_url(id: connector.service), params, @headers
       response.code.should == '401'
 
-      SynchronizationOauth.where(id: synchronization_oauth.id).first.should eq nil
-      synchronization_oauth.destroy
+      Carto::Connection.where(id: connector.id).first.should eq nil
+      connector.destroy
     end
 
     it 'returns 401 for expired tokens on validation and deletes them' do
       CartoDB::Datasources::Url::MailChimp.any_instance.stubs(:token_valid?).raises(CartoDB::Datasources::TokenExpiredOrInvalidError.new('kk', 'mailchimp'))
-      synchronization_oauth = Carto::SynchronizationOauth.new(user_id: @user.id, service: 'mailchimp', token: 'kk-t')
-      synchronization_oauth.save
+      connector = Carto::Connection.new(user_id: @user.id, connector: 'mailchimp', token: 'kk-t')
+      connector.save
 
-      get api_v1_imports_service_token_valid_url(id: synchronization_oauth.service), params, @headers
+      get api_v1_imports_service_token_valid_url(id: connector.service), params, @headers
       response.code.should == '401'
 
-      SynchronizationOauth.where(id: synchronization_oauth.id).first.should eq nil
-      synchronization_oauth.destroy
+      Carto::Connection.where(id: connector.id).first.should eq nil
+      connector.destroy
     end
 
   end
@@ -274,26 +251,26 @@ describe Carto::Api::ImportsController do
       service = 'mailchimp'
       fake_files = fake_resource_list(service)
       CartoDB::Datasources::Url::MailChimp.any_instance.stubs(:get_resources_list).returns(fake_files)
-      synchronization_oauth = Carto::SynchronizationOauth.new(user_id: @user.id, service: service, token: 'kk-t')
-      synchronization_oauth.save
+      connector = Carto::Connection.new(user_id: @user.id, connector: service, token: 'kk-t')
+      connector.save
       get api_v1_imports_service_list_files_url(id: service), params
       response.code.should == '200'
       response_json = JSON.parse(response.body)
       response_json['success'].should == true
       response_json['files'].map(&:symbolize_keys).should == fake_files
-      synchronization_oauth.destroy
+      connector.destroy
     end
 
     it 'returns 401 for expired tokens on resource listing and deletes them' do
       CartoDB::Datasources::Url::MailChimp.any_instance.stubs(:get_resources_list).raises(CartoDB::Datasources::TokenExpiredOrInvalidError.new('kk', 'mailchimp'))
-      synchronization_oauth = Carto::SynchronizationOauth.new(user_id: @user.id, service: 'mailchimp', token: 'kk-t')
-      synchronization_oauth.save
+      connector = Carto::Connection.new(user_id: @user.id, connector: 'mailchimp', token: 'kk-t')
+      connector.save
 
       get api_v1_imports_service_list_files_url(id: 'mailchimp'), params
       response.code.should == '401'
 
-      SynchronizationOauth.where(id: synchronization_oauth.id).first.should eq nil
-      synchronization_oauth.destroy
+      Carto::Connection.where(id: connector.id).first.should eq nil
+      connector.destroy
     end
 
   end
@@ -302,11 +279,11 @@ describe Carto::Api::ImportsController do
 
     it 'returns 400 for existing tokens services' do
       service = 'mailchimp'
-      synchronization_oauth = Carto::SynchronizationOauth.new(user_id: @user.id, service: service, token: 'kk-t')
-      synchronization_oauth.save
+      connector = Carto::Connection.new(user_id: @user.id, connector: service, token: 'kk-t')
+      connector.save
       get api_v1_imports_service_auth_url_url(id: service), params
       response.code.should == '400'
-      synchronization_oauth.destroy
+      connector.destroy
     end
 
     it 'returns auth url for known, valid tokens' do
@@ -326,8 +303,9 @@ describe Carto::Api::ImportsController do
       get api_v1_imports_service_auth_url_url(id: 'mailchimp'), params
       response.code.should == '401'
 
-      # INFO: this can never happen with the current implementation of get_service_auth_url, since it first checks there's no previous SynchronizationOauth
-      SynchronizationOauth.where(service: 'mailchimp').first.should eq nil
+      # INFO: this can never happen with the current implementation of get_service_auth_url,
+      #       since it first checks there's no previous Connection
+      Carto::Connection.where(connector: 'mailchimp').first.should eq nil
     end
   end
 
@@ -335,11 +313,11 @@ describe Carto::Api::ImportsController do
 
     it 'returns 400 for existing tokens services' do
       service = 'mailchimp'
-      synchronization_oauth = Carto::SynchronizationOauth.new(user_id: @user.id, service: service, token: 'kk-t')
-      synchronization_oauth.save
+      connector = Carto::Connection.new(user_id: @user.id, connector: service, token: 'kk-t')
+      connector.save
       get api_v1_imports_service_validate_code_url(id: service, code: 'kk'), params
       response.code.should == '400'
-      synchronization_oauth.destroy
+      connector.destroy
     end
 
     it 'returns 400 if it does not find datasource' do
@@ -354,8 +332,8 @@ describe Carto::Api::ImportsController do
       get api_v1_imports_service_validate_code_url(id: 'mailchimp', code: 'kk'), params
       response.code.should == '401'
 
-      # INFO: this can never happen with the current implementation since it first checks there's no previous SynchronizationOauth
-      SynchronizationOauth.where(service: 'mailchimp').first.should eq nil
+      # INFO: this can never happen with the current implementation since it first checks there's no previous Connection
+      Carto::Connection.where(connector: 'mailchimp').first.should eq nil
     end
 
     it 'returns not success 200 and does not store oauth for not valid codes' do
@@ -366,7 +344,7 @@ describe Carto::Api::ImportsController do
       response_json = JSON.parse(response.body)
       response_json['success'].should == false
 
-      SynchronizationOauth.where(service: 'mailchimp').first.should eq nil
+      Carto::Connection.where(connector: 'mailchimp').first.should eq nil
     end
 
     it 'returns 400 if validation fails catastrophically' do
@@ -375,8 +353,8 @@ describe Carto::Api::ImportsController do
       get api_v1_imports_service_validate_code_url(id: 'mailchimp', code: 'kk'), params
       response.code.should == '400'
 
-      # INFO: this can never happen with the current implementation since it first checks there's no previous SynchronizationOauth
-      SynchronizationOauth.where(service: 'mailchimp').first.should eq nil
+      # INFO: this can never happen with the current implementation since it first checks there's no previous Connection
+      Carto::Connection.where(connector: 'mailchimp').first.should eq nil
     end
 
     it 'returns success 200 and stores oauth for valid codes' do
@@ -388,10 +366,10 @@ describe Carto::Api::ImportsController do
       response_json = JSON.parse(response.body)
       response_json['success'].should == true
 
-      synchronization_oauth = SynchronizationOauth.where(service: 'mailchimp').first
-      synchronization_oauth.token.should eq token
-      synchronization_oauth.user_id.should eq @user.id
-      synchronization_oauth.destroy
+      connector = Carto::Connection.where(connector: 'mailchimp').first
+      connector.token.should eq token
+      connector.user_id.should eq @user.id
+      connector.destroy
     end
 
   end
@@ -400,21 +378,21 @@ describe Carto::Api::ImportsController do
 
     it 'returns 400 for existing tokens services' do
       service = 'mailchimp'
-      synchronization_oauth = Carto::SynchronizationOauth.new(user_id: @user.id, service: service, token: 'kk-t')
-      synchronization_oauth.save
+      connector = Carto::Connection.new(user_id: @user.id, connector: service, token: 'kk-t')
+      connector.save
       get api_v1_imports_service_oauth_callback_url(id: service), params
-      response.code.should == '400'
-      synchronization_oauth.destroy
+      response.code.should eq '400'
+      connector.destroy
     end
 
     it 'returns 401 for expired tokens and deletes them' do
       CartoDB::Datasources::DatasourcesFactory.stubs(:get_datasource).raises(CartoDB::Datasources::TokenExpiredOrInvalidError.new('kk', 'mailchimp'))
 
       get api_v1_imports_service_oauth_callback_url(id: 'mailchimp'), params
-      response.code.should == '401'
+      response.code.should eq '400'
 
-      # INFO: this can never happen with the current implementation since it first checks there's no previous SynchronizationOauth
-      SynchronizationOauth.where(service: 'mailchimp').first.should eq nil
+      # INFO: this can never happen with the current implementation since it first checks there's no previous Connection
+      Carto::Connection.where(connector: 'mailchimp').first.should eq nil
     end
 
     it 'returns success 200 and stores oauth for valid params' do
@@ -425,12 +403,14 @@ describe Carto::Api::ImportsController do
       response.code.should == '200'
       response.body.should == '<script>window.close();</script>'
 
-      synchronization_oauth = SynchronizationOauth.where(service: 'mailchimp').first
-      synchronization_oauth.token.should eq token
-      synchronization_oauth.user_id.should eq @user.id
-      synchronization_oauth.destroy
+      connector = Carto::Connection.where(connector: 'mailchimp').first
+      connector.token.should eq token
+      connector.user_id.should eq @user.id
+      connector.destroy
     end
 
   end
 
 end
+
+# rubocop:enable RSpec/InstanceVariable

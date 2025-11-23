@@ -49,14 +49,19 @@ module CartoDB
       user.email                 = attributes[:email]    || unique_email
       user.password              = attributes[:password] || user.email.split('@').first
       user.password_confirmation = user.password
+      user.session_salt          = attributes[:session_salt] || "123456789f"
       user.admin                 = attributes[:admin] == false ? false : true
       user.private_tables_enabled = attributes[:private_tables_enabled] == true ? true : false
       user.private_maps_enabled  = attributes[:private_maps_enabled] == true ? true : false
       user.enabled               = attributes[:enabled] == false ? false : true
       user.table_quota           = attributes[:table_quota]     if attributes[:table_quota]
+      user.public_map_quota      = attributes[:public_map_quota] if attributes[:public_map_quota]
+      user.public_dataset_quota  = attributes[:public_dataset_quota] if attributes[:public_dataset_quota]
+      user.private_map_quota     = attributes[:private_map_quota] if attributes[:private_map_quota]
+      user.regular_api_key_quota = attributes[:regular_api_key_quota] if attributes[:regular_api_key_quota]
       user.quota_in_bytes        = attributes[:quota_in_bytes]  if attributes[:quota_in_bytes]
       user.account_type          = attributes[:account_type]    if attributes[:account_type]
-      user.map_view_quota        = attributes[:map_view_quota]  if attributes.has_key?(:map_view_quota)
+      user.map_views_quota = attributes[:map_views_quota] if attributes.key?(:map_views_quota)
       user.map_view_block_price  = attributes[:map_view_block_price]  if attributes.has_key?(:map_view_block_price)
       user.period_end_date       = attributes[:period_end_date] if attributes.has_key?(:period_end_date)
       user.user_timeout          = attributes[:user_timeout] || 300000
@@ -67,15 +72,11 @@ module CartoDB
       user.isolines_provider     = attributes[:isolines_provider] || nil
       user.here_isolines_quota   = attributes[:here_isolines_quota] || 1000
       user.here_isolines_block_price = attributes[:here_isolines_block_price] || 1500
-      user.obs_snapshot_quota = attributes[:obs_snapshot_quota] || 1000
-      user.obs_snapshot_block_price = attributes[:obs_snapshot_block_price] || 1500
-      user.obs_general_quota = attributes[:obs_general_quota] || 1000
-      user.obs_general_block_price = attributes[:obs_general_block_price] || 1500
       user.routing_provider       = attributes[:routing_provider] || nil
       user.mapzen_routing_quota   = attributes[:mapzen_routing_quota] || 1000
       user.mapzen_routing_block_price = attributes[:mapzen_routing_block_price] || 1500
       user.sync_tables_enabled   = attributes[:sync_tables_enabled] || false
-      user.organization          = attributes[:organization] || nil
+      user.organization_id          = attributes[:organization]&.id || nil
       user.viewer                = attributes[:viewer] || false
       user.builder_enabled       = attributes[:builder_enabled] # nil by default, for old tests
       if attributes[:organization_id]
@@ -132,7 +133,8 @@ module CartoDB
       user = create_user(
         username: username,
         email: "#{username}@example.com",
-        password: username,
+        password: "000#{username}",
+        session_salt: "123456789f",
         private_tables_enabled: true,
         database_schema: organization.nil? ? 'public' : username,
         organization: organization,
@@ -143,7 +145,7 @@ module CartoDB
       user
     end
 
-    def create_mocked_user(user_id: UUIDTools::UUID.timestamp_create.to_s,
+    def create_mocked_user(user_id: Carto::UUIDHelper.random_uuid,
                            user_name: 'whatever',
                            user_apikey: '123',
                            groups: [],
@@ -191,7 +193,7 @@ module CartoDB
       end
 
       data_import.data_source = file_name
-      data_import.send :dispatch
+      data_import.run_import!
       data_import
     end
 
@@ -200,9 +202,9 @@ module CartoDB
       user.maps_dataset.destroy
       user.layers_dataset.destroy
       user.assets_dataset.destroy
+      user.delete_external_data_imports
       user.data_imports_dataset.destroy
       user.geocodings_dataset.destroy
-      user.delete_external_data_imports
       user.delete_external_sources
       CartoDB::Visualization::Collection.new.fetch(user_id: user.id).each do |v|
         # INFO: no need for explicit children deletion, parent will delete it

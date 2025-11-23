@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 module CartoDB
   module Importer2
     class Result
@@ -23,11 +21,11 @@ module CartoDB
       end
 
       def qualified_table_name
-        %Q("#{schema}"."#{table_name}")
+        %("#{schema}"."#{table_name}") if table_name.present?
       end
 
       def table_name
-        tables.first
+        tables&.first
       end
 
       def update_support_tables(new_list)

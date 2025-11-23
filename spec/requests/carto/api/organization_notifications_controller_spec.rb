@@ -6,7 +6,7 @@ module Carto
     include HelperMethods
 
     before(:all) do
-      @sequel_organization = FactoryGirl.create(:organization_with_users)
+      @sequel_organization = create(:organization_with_users)
       @organization = Carto::Organization.find(@sequel_organization.id)
       @owner = @organization.owner
       @user = @organization.users.reject { |u| u.id == @organization.owner_id }.first
@@ -68,7 +68,7 @@ module Carto
       end
 
       it 'displays validations errors' do
-        create_notification_request(@organization.id, @owner, {}) do |response|
+        create_notification_request(@organization.id, @owner, body: '') do |response|
           expect(response.status).to eq 422
           expect(@organization.notifications).to be_empty
 
@@ -104,7 +104,7 @@ module Carto
       end
 
       it 'returns 404 if notification is not found' do
-        destroy_notification_request(@organization.id, @owner, UUIDTools::UUID.random_create) do |response|
+        destroy_notification_request(@organization.id, @owner, Carto::UUIDHelper.random_uuid) do |response|
           expect(response.status).to eq 404
           expect(Notification.exists?(@notification.id)).to be_true
         end

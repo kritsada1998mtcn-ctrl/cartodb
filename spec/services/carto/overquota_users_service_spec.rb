@@ -2,8 +2,8 @@ require 'spec_helper_min'
 
 describe 'Carto::OverquotaUsersService' do
   before(:all) do
-    @user = FactoryGirl.create(:carto_user, account_type: 'NOT_FREE')
-    @user2 = FactoryGirl.create(:carto_user, account_type: 'FREE')
+    @user = create(:carto_user, account_type: 'NOT_FREE')
+    @user2 = create(:carto_user, account_type: 'FREE')
   end
 
   after(:all) do
@@ -22,8 +22,8 @@ describe 'Carto::OverquotaUsersService' do
   end
 
   it "should return users near their geocoding quota" do
-    ::User.any_instance.stubs(:get_api_calls).returns([0])
-    ::User.any_instance.stubs(:map_view_quota).returns(120)
+    ::User.any_instance.stubs(:map_views_count).returns(0)
+    ::User.any_instance.stubs(:map_views_quota).returns(120)
     ::User.any_instance.stubs(:get_geocoding_calls).returns(81)
     ::User.any_instance.stubs(:geocoding_quota).returns(100)
     overquota.should be_empty
@@ -33,8 +33,8 @@ describe 'Carto::OverquotaUsersService' do
   end
 
   it "should return users near their here isolines quota" do
-    ::User.any_instance.stubs(:get_api_calls).returns([0])
-    ::User.any_instance.stubs(:map_view_quota).returns(120)
+    ::User.any_instance.stubs(:map_views_count).returns(0)
+    ::User.any_instance.stubs(:map_views_quota).returns(120)
     ::User.any_instance.stubs(:get_geocoding_calls).returns(0)
     ::User.any_instance.stubs(:geocoding_quota).returns(100)
     ::User.any_instance.stubs(:get_here_isolines_calls).returns(81)
@@ -45,42 +45,9 @@ describe 'Carto::OverquotaUsersService' do
     overquota(0.10).should be_empty
   end
 
-  it "should return users near their data observatory snapshot quota" do
-    ::User.any_instance.stubs(:get_api_calls).returns([0])
-    ::User.any_instance.stubs(:map_view_quota).returns(120)
-    ::User.any_instance.stubs(:get_geocoding_calls).returns(0)
-    ::User.any_instance.stubs(:geocoding_quota).returns(100)
-    ::User.any_instance.stubs(:get_here_isolines_calls).returns(0)
-    ::User.any_instance.stubs(:here_isolines_quota).returns(100)
-    ::User.any_instance.stubs(:get_obs_general_calls).returns(0)
-    ::User.any_instance.stubs(:obs_general_quota).returns(100)
-    ::User.any_instance.stubs(:get_obs_snapshot_calls).returns(81)
-    ::User.any_instance.stubs(:obs_snapshot_quota).returns(100)
-    overquota.should be_empty
-    overquota(0.20).should include(@user.id, @user2.id)
-    overquota(0.20).size.should == 2
-    overquota(0.10).should be_empty
-  end
-
-  it "should return users near their data observatory general quota" do
-    ::User.any_instance.stubs(:get_api_calls).returns([0])
-    ::User.any_instance.stubs(:map_view_quota).returns(120)
-    ::User.any_instance.stubs(:get_geocoding_calls).returns(0)
-    ::User.any_instance.stubs(:geocoding_quota).returns(100)
-    ::User.any_instance.stubs(:get_here_isolines_calls).returns(0)
-    ::User.any_instance.stubs(:here_isolines_quota).returns(100)
-    ::User.any_instance.stubs(:get_obs_snapshot_calls).returns(0)
-    ::User.any_instance.stubs(:obs_snapshot_quota).returns(100)
-    ::User.any_instance.stubs(:get_obs_general_calls).returns(81)
-    ::User.any_instance.stubs(:obs_general_quota).returns(100)
-    overquota.should be_empty
-    overquota(0.20).should include(@user.id, @user2.id)
-    overquota(0.20).size.should == 2
-    overquota(0.10).should be_empty
-  end
   it "should return users near their twitter quota" do
-    ::User.any_instance.stubs(:get_api_calls).returns([0])
-    ::User.any_instance.stubs(:map_view_quota).returns(120)
+    ::User.any_instance.stubs(:map_views_count).returns(0)
+    ::User.any_instance.stubs(:map_views_quota).returns(120)
     ::User.any_instance.stubs(:get_geocoding_calls).returns(0)
     ::User.any_instance.stubs(:geocoding_quota).returns(100)
     ::User.any_instance.stubs(:get_twitter_imports_count).returns(81)
@@ -94,7 +61,7 @@ describe 'Carto::OverquotaUsersService' do
 
   it "should not return organization users" do
     ::User.any_instance.stubs(:organization_id).returns("organization-id")
-    ::User.any_instance.stubs(:organization).returns(Organization.new)
+    ::User.any_instance.stubs(:organization).returns(Carto::Organization.new)
     overquota.should be_empty
   end
 end

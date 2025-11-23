@@ -1,4 +1,3 @@
-# encoding: utf-8
 require 'dbf'
 
 module CartoDB
@@ -45,7 +44,7 @@ module CartoDB
           saved_encoding = file.read
         }
         saved_encoding
-      rescue => e
+      rescue StandardError => e
         nil
       end
 

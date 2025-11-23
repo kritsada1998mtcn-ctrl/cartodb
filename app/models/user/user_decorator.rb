@@ -1,15 +1,33 @@
 module CartoDB
   module UserDecorator
     include AccountTypeHelper
-    BUILDER_ACTIVATION_DATE = Date.new(2016, 11, 11).freeze
+
+    def activity(options = {})
+      user = Carto::User.find_by(username: username)
+
+      {
+        id: id,
+        email: email,
+        username: username,
+        state: state,
+        account_type: account_type,
+        table_count: table_count,
+        public_map_count: public_privacy_visualization_count + link_privacy_visualization_count +
+          password_privacy_visualization_count,
+        private_map_count: private_privacy_visualization_count,
+        map_count: all_visualization_count,
+        map_views: user.map_views_count,
+        geocoding_credits_count: organization_user? ? organization.get_geocoding_calls : get_geocoding_calls,
+        routing_credits_count: organization_user? ? organization.get_mapzen_routing_calls : get_mapzen_routing_calls,
+        isolines_credits_count: organization_user? ? organization.get_here_isolines_calls : get_here_isolines_calls,
+        billing_period: last_billing_cycle ? last_billing_cycle.strftime('%Q') : nil,
+        regular_api_key_count: api_keys.by_type('regular').count
+      }
+    end
 
     # Options:
-    # - show_api_calls: load api calls. Default: true.
     # - extended: load real_table_count and last_active_time. Default: false.
     def data(options = {})
-      calls = options.fetch(:show_api_calls, true) ? get_api_calls(from: last_billing_cycle, to: Date.today) : []
-      calls.fill(0, calls.size..29)
-
       db_size_in_bytes = self.db_size_in_bytes
 
       data = {
@@ -17,12 +35,22 @@ module CartoDB
         email: email,
         name: name,
         last_name: last_name,
+        created_at: created_at,
         username: username,
+        state: state,
         account_type: account_type,
         account_type_display_name: plan_name(account_type),
         table_quota: table_quota,
+        public_map_quota: public_map_quota,
+        public_dataset_quota: public_dataset_quota,
+        private_map_quota: private_map_quota,
+        regular_api_key_quota: regular_api_key_quota,
         table_count: table_count,
         public_visualization_count: public_visualization_count,
+        public_privacy_map_count: public_privacy_visualization_count,
+        link_privacy_map_count: link_privacy_visualization_count,
+        password_privacy_map_count: password_privacy_visualization_count,
+        private_privacy_map_count: private_privacy_visualization_count,
         all_visualization_count: all_visualization_count,
         visualization_count: visualization_count,
         owned_visualization_count: owned_visualizations_count,
@@ -33,11 +61,12 @@ module CartoDB
         quota_in_bytes: quota_in_bytes,
         db_size_in_bytes: db_size_in_bytes,
         db_size_in_megabytes: db_size_in_bytes.present? ? (db_size_in_bytes / (1024.0 * 1024.0)).round(2) : nil,
+        storage: {}, # Never used here. This line is just for test compatibility
+        map_views: 0, # Never used. Only for test compatibility
+        map_views_quota: 0, # Never used. Only for test compatibility
         remaining_table_quota: remaining_table_quota,
-        remaining_byte_quota: remaining_quota(false, db_size_in_bytes).to_f,
-        api_calls: calls,
-        api_calls_quota: organization_user? ? organization.map_view_quota : map_view_quota,
-        api_calls_block_price: organization_user? ? organization.map_view_block_price : map_view_block_price,
+        remaining_byte_quota: remaining_quota(db_size_in_bytes).to_f,
+        unverified: unverified?,
         geocoding: {
           quota:       organization_user? ? organization.geocoding_quota : geocoding_quota,
           block_price: organization_user? ? organization.geocoding_block_price : geocoding_block_price,
@@ -53,18 +82,6 @@ module CartoDB
         geocoder_provider: geocoder_provider,
         isolines_provider: isolines_provider,
         routing_provider: routing_provider,
-        obs_snapshot: {
-          quota:       organization_user? ? organization.obs_snapshot_quota : obs_snapshot_quota,
-          block_price: organization_user? ? organization.obs_snapshot_block_price : obs_snapshot_block_price,
-          monthly_use: organization_user? ? organization.get_obs_snapshot_calls : get_obs_snapshot_calls,
-          hard_limit:  hard_obs_snapshot_limit?
-        },
-        obs_general: {
-          quota:       organization_user? ? organization.obs_general_quota : obs_general_quota,
-          block_price: organization_user? ? organization.obs_general_block_price : obs_general_block_price,
-          monthly_use: organization_user? ? organization.get_obs_general_calls : get_obs_general_calls,
-          hard_limit:  hard_obs_general_limit?
-        },
         twitter: {
           enabled:     organization_user? ? organization.twitter_datasource_enabled : twitter_datasource_enabled,
           quota:       organization_user? ? organization.twitter_datasource_quota : twitter_datasource_quota,
@@ -91,9 +108,8 @@ module CartoDB
         layers: layers.map(&:public_values),
         trial_ends_at: trial_ends_at,
         upgraded_at: upgraded_at,
-        show_trial_reminder: trial_ends_at.present?,
+        show_trial_reminder: show_trial_reminder?,
         show_upgraded_message: (account_type.downcase != 'free' && upgraded_at && upgraded_at + 15.days > Date.today ? true : false),
-        show_builder_activated_message: created_at < BUILDER_ACTIVATION_DATE,
         actions: {
           private_tables: private_tables_enabled,
           private_maps: private_maps_enabled?,
@@ -113,8 +129,9 @@ module CartoDB
           max_layers: max_layers
         },
         notification: notification,
+        email_notifications: decorate_email_notifications,
         avatar_url: avatar,
-        feature_flags: feature_flags,
+        feature_flags: feature_flags_names,
         base_url: public_url,
         needs_password_confirmation: needs_password_confirmation?,
         viewer: viewer,
@@ -123,8 +140,15 @@ module CartoDB
         website: website,
         twitter_username: twitter_username,
         disqus_shortname: disqus_shortname,
+        role_display: role_display,
         available_for_hire: available_for_hire,
-        location: location
+        location: location,
+        industry: industry,
+        company_employees: company_employees,
+        use_case: use_case,
+        company: company,
+        phone: phone,
+        job_role: job_role
       }
 
       if google_maps_geocoder_enabled? && (!organization.present? || organization_owner?)
@@ -132,7 +156,7 @@ module CartoDB
       end
 
       if organization.present?
-        data[:organization] = organization.to_poro
+        data[:organization] = ::OrganizationPresenter.new(organization).to_poro
         data[:organization][:available_quota_for_user] = organization.unassigned_quota + quota_in_bytes
       end
 
@@ -149,5 +173,6 @@ module CartoDB
         data
       end
     end
+
   end
 end

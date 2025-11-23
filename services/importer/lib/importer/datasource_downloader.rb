@@ -1,4 +1,3 @@
-# encoding: utf-8
 require 'fileutils'
 require_relative './exceptions'
 require_relative './source_file'
@@ -107,7 +106,7 @@ module CartoDB
           begin
             resource_data = @datasource.get_resource(@item_metadata[:id])
             @http_response_code = @datasource.get_http_response_code if @datasource.providers_download_url?
-          rescue => exception
+          rescue StandardError => exception
             if exception.message =~ /quota/i
               user_id = @options[:user_id]
               report_over_quota(user_id) if user_id
@@ -124,10 +123,13 @@ module CartoDB
       end
 
       def store_retrieved_data(filename, resource_data, available_quota_in_bytes)
-        # Skip storing if no data came in
-        return if resource_data.empty?
-
-        data = StringIO.new(resource_data)
+        if resource_data.is_a?(StringIO)
+          return if resource_data.size.zero?
+          data = resource_data
+        else
+          return if resource_data.empty?
+          data = StringIO.new(resource_data)
+        end
         name = filename
 
         raise_if_over_storage_quota(requested_quota: data.size,
@@ -151,4 +153,3 @@ module CartoDB
     end
   end
 end
-

@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require 'socket'
 require 'carto/configuration'
 
@@ -32,7 +30,7 @@ module Carto
       end
 
       def logger
-        @@logger ||= Logger.new(log_file_path('http_client.log'))
+        @@logger ||= CartoDB.unformatted_logger(log_file_path('http_client.log'))
       end
     end
 

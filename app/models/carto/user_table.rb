@@ -1,8 +1,21 @@
 require 'active_record'
 require_dependency 'carto/db/sanitize'
 
+# Integer type for PostgreSQL oid columns, with proper range
+class Carto::OidType < ActiveRecord::Type::Integer
+  def max_value
+    (1 << 32) - 1
+  end
+  def min_value
+    0
+  end
+end
+
 module Carto
   class UserTable < ActiveRecord::Base
+
+    attr_accessor :skip_destroy_dependent_visualizations
+
     PRIVACY_PRIVATE = 0
     PRIVACY_PUBLIC = 1
     PRIVACY_LINK = 2
@@ -13,11 +26,13 @@ module Carto
       PRIVACY_LINK => 'link'
     }.freeze
 
-    def self.column_defaults
-      # AR sets privacy = 0 (private) by default, taken from the DB. We want it to be `nil`
-      # so the `before_validation` hook sets an appropriate privacy based on the table owner
-      super.merge("privacy" => nil)
-    end
+    # Column table_id is of type oid and the type casting provided by ActiveRecord is not
+    # good for it since it only supports signed values
+    attribute 'table_id', Carto::OidType.new
+
+    # AR sets privacy = 0 (private) by default, taken from the DB. We want it to be `nil`
+    # so the `before_validation` hook sets an appropriate privacy based on the table owner
+    attribute 'privacy', Type::Integer.new, default: nil
 
     # The ::Table service depends on the constructor not being able to set all parameters, only these are allowed
     # This is done so things like name changes are forced to go through ::Table.name= to ensure renaming behaviour
@@ -28,9 +43,6 @@ module Carto
     belongs_to :map, inverse_of: :user_table
 
     belongs_to :data_import
-
-    has_many :automatic_geocodings, inverse_of: :table, class_name: Carto::AutomaticGeocoding,
-                                    foreign_key: :table_id, dependent: :destroy
 
     # Disabled to avoid conflicting with the `tags` field. This relation is updated by ::Table.manage_tags.
     # TODO: We can remove both the `user_tables.tags` field and the `tags` table in favour of the canonical viz tags.
@@ -58,7 +70,8 @@ module Carto
     # TODO: This can be simplified after deleting the old UserTable model
     before_destroy :ensure_not_viewer
     before_destroy :cache_dependent_visualizations, unless: :destroyed?
-    after_destroy :destroy_dependent_visualizations
+    before_destroy :backup_visualizations, unless: :destroyed?
+    after_destroy :destroy_dependent_visualizations, unless: :skip_destroy_dependent_visualizations
     after_destroy :service_after_destroy
 
     def geometry_types
@@ -105,7 +118,7 @@ module Carto
     end
 
     def accessible_dependent_derived_maps
-      affected_visualizations.select { |v| (v.has_read_permission?(user) && v.derived?) ? v : nil }
+      affected_visualizations.select { |v| v.has_read_permission?(user) && v.derived? ? v : nil }
     end
 
     def partially_dependent_visualizations
@@ -114,6 +127,39 @@ module Carto
 
     def dependent_visualizations
       affected_visualizations.select { |v| v.dependent_on?(self) }
+    end
+
+    def faster_dependent_visualizations(limit: nil)
+      query = %{
+        SELECT * FROM (
+          SELECT DISTINCT ON (visualizations.id) *
+          FROM layers_user_tables, layers_maps, visualizations
+          WHERE layers_user_tables.user_table_id = '#{id}'
+          AND layers_user_tables.layer_id = layers_maps.layer_id
+          AND layers_maps.map_id = visualizations.map_id
+          AND visualizations.type = 'derived'
+        ) v
+        ORDER BY v.updated_at DESC
+      }
+      query = query + " LIMIT(#{limit})" if limit
+      Carto::Visualization.find_by_sql(query)
+    end
+
+    def dependent_visualizations_count
+      query = %{
+        SELECT count(distinct(visualizations.id))
+        FROM layers_user_tables, layers_maps, visualizations
+        WHERE layers_user_tables.user_table_id = '#{id}'
+        AND layers_user_tables.layer_id = layers_maps.layer_id
+        AND layers_maps.map_id = visualizations.map_id
+        AND visualizations.type = 'derived'
+      }
+      result = ActiveRecord::Base.connection.execute(query)
+      result.first['count'].to_i
+    end
+
+    def affected_visualizations
+      layers.map(&:visualization).uniq.compact
     end
 
     def name_for_user(other_user)
@@ -200,10 +246,6 @@ module Carto
       privacy == PRIVACY_LINK ? 'PUBLIC' : privacy_text
     end
 
-    def automatic_geocoding
-      automatic_geocodings.first
-    end
-
     def is_owner?(user)
       return false unless user
       user_id == user.id
@@ -223,10 +265,6 @@ module Carto
       "\"#{user.database_schema}\".#{name}"
     end
 
-    def affected_visualizations
-      layers.map(&:visualization).uniq.compact
-    end
-
     def visualization_readable_by?(user)
       user && permission && permission.user_has_read_permission?(user)
     end
@@ -238,6 +276,10 @@ module Carto
     def validate_privacy_changes
       if !user.try(:private_tables_enabled) && !public? && (new_record? || privacy_changed?)
         errors.add(:privacy, 'unauthorized to create private tables')
+      end
+
+      if public? && (new_record? || privacy_changed?) && CartoDB::QuotaChecker.new(user).will_be_over_public_dataset_quota?
+        errors.add(:privacy, 'unauthorized to create public tables')
       end
     end
 
@@ -252,17 +294,25 @@ module Carto
       @partially_dependent_visualizations_cache = partially_dependent_visualizations
     end
 
+    def backup_visualizations
+      affected_visualizations.each(&:backup_visualization)
+    end
+
     def destroy_dependent_visualizations
+      # Replace these backups per the ones done at Carto::UserTable#backup_visualizations level.
+      # The first ones run when the user table has already been deleted, resulting in an incomplete backup.
+      Carto::Visualization.skip_callback(:destroy, :before, :backup_visualization)
       table_visualization.try(:delete_from_table)
       @fully_dependent_visualizations_cache.each(&:destroy)
       @partially_dependent_visualizations_cache.each do |visualization|
         visualization.unlink_from(self)
       end
+    ensure
+      Carto::Visualization.set_callback(:destroy, :before, :backup_visualization)
     end
 
     def ensure_not_viewer
-      # Loading ::User is a workaround for User deletion: viewer attribute change is not visible at AR transaction
-      raise "Viewer users can't destroy tables" if user && user.viewer && ::User[user_id].viewer
+      raise "Viewer users can't destroy tables" if user&.carto_user&.reload&.viewer
     end
 
     def service_before_create

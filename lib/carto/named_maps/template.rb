@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 module Carto
   module NamedMaps
     class Template
@@ -259,6 +257,9 @@ module Carto
 
       def view_from_map
         map = @visualization.map
+
+        return unless map
+
         center_data = map.center_data
         data = {
             zoom: map.zoom,

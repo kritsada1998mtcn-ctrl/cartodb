@@ -1,14 +1,14 @@
-FactoryGirl.define do
+FactoryBot.define do
   factory :layer, class: Layer do
     to_create(&:save)
 
-    order 1
-    kind 'carto'
+    order { 1 }
+    kind { 'carto' }
   end
 
   factory :carto_tiled_layer, class: Carto::Layer do
-    order 1
-    kind 'tiled'
+    order { 1 }
+    kind { 'tiled' }
     options do
       {
         "default": true,
@@ -16,7 +16,7 @@ FactoryGirl.define do
         "subdomains": "abcd",
         "minZoom": "0",
         "maxZoom": "18",
-        "attribution": "\u00a9 <a href=\"http://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors \u00a9 <a href=\"https://carto.com/attributions\">CARTO</a>",
+        "attribution": "\u00a9 <a href=\"http://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors \u00a9 <a href=\"https://carto.com/about-carto/\">CARTO</a>",
         "urlTemplate": "http://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
         "type": "Tiled",
         "className": "positron_rainbow",
@@ -26,8 +26,8 @@ FactoryGirl.define do
   end
 
   factory :carto_layer, class: Carto::Layer do
-    order 2
-    kind 'carto'
+    order { 2 }
+    kind { 'carto' }
     options do
       {
         interactivity: '',
@@ -46,9 +46,9 @@ FactoryGirl.define do
         "alternative_names": {},
         "width": 226,
         "maxHeight": 180
-      }.to_json
+      }
 
-      infowindow infowindow_light
+      infowindow { infowindow_light }
     end
 
     factory :carto_layer_with_tooltip do
@@ -58,14 +58,14 @@ FactoryGirl.define do
         "template": "",
         "alternative_names": {},
         "maxHeight": 180
-      }.to_json
+      }
 
-      tooltip tooltip_light
+      tooltip { tooltip_light }
     end
 
     factory :carto_layer_with_sql do
-      ignore do
-        table_name 'default_table'
+      transient do
+        table_name { 'default_table' }
       end
       options do
         {

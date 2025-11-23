@@ -1,21 +1,13 @@
-# encoding: utf-8
-
-require 'spec_helper'
+require 'spec_helper_unit'
 
 describe "Imports API" do
-
-  before(:all) do
-    @user = FactoryGirl.create(:valid_user)
-  end
-
-  before(:each) do
-    bypass_named_maps
-    delete_user_data @user
+  before do
+    @user = create(:valid_user)
     host! "#{@user.username}.localhost.lan"
   end
 
-  after(:all) do
-    @user.destroy
+  def auth_params
+    { user_domain: @user.username, api_key: @user.api_key }
   end
 
   let(:params) { { :api_key => @user.api_key } }
@@ -63,7 +55,7 @@ describe "Imports API" do
   end
 
   pending 'appends data to an existing table' do
-    @table = FactoryGirl.create(:table, :user_id => @user.id)
+    @table = create(:table, :user_id => @user.id)
 
     f = upload_file('db/fake_data/column_number_to_boolean.csv', 'text/csv')
     post api_v1_imports_create_url(params.merge(table_id: @table.id, append: true)),
@@ -161,11 +153,11 @@ describe "Imports API" do
                                        :table_name => "wadus")
     end
     response.code.should be == '200'
-    last_import = DataImport.order(:updated_at.desc).first
+    last_import = DataImport.order(Sequel.desc(:updated_at)).first
     last_import.tables_created_count.should be_nil
     last_import.state.should be == 'failure'
     last_import.error_code.should be == 8002
-    last_import.log.entries.should include('Results would set overquota')
+    last_import.log.collect_entries.should include('Results would set overquota')
     @user.reload.tables.count.should == 0
   end
 
@@ -177,7 +169,7 @@ describe "Imports API" do
                                        :table_name => "wadus")
     end
     response.code.should be == '200'
-    last_import = DataImport.order(:updated_at.desc).first
+    last_import = DataImport.order(Sequel.desc(:updated_at)).first
     last_import.state.should be == 'failure'
     last_import.error_code.should be == 8001
     @user.reload.tables.count.should == 0
@@ -190,14 +182,14 @@ describe "Imports API" do
       params.merge(:filename => upload_file('spec/support/data/_penguins_below_80.zip', 'application/octet-stream'))
 
     @table_from_import = UserTable.all.last.service
-    last_import = DataImport.order(:updated_at.desc).first
+    last_import = DataImport.order(Sequel.desc(:updated_at)).first
     last_import.state.should be == 'complete', "Import failure: #{last_import.log}"
 
     post api_v1_imports_create_url, params.merge(:table_name => 'wadus_copy__copy',
                                       :table_copy => @table_from_import.name)
 
     response.code.should be == '200'
-    last_import = DataImport.order(:updated_at.desc).first
+    last_import = DataImport.order(Sequel.desc(:updated_at)).first
     last_import.state.should be == 'failure'
     last_import.error_code.should be == 8002
     @user.reload.tables.count.should == 1
@@ -212,7 +204,7 @@ describe "Imports API" do
     @table_from_import = UserTable.all.last.service
 
     response.code.should be == '200'
-    last_import = DataImport.order(:updated_at.desc).first
+    last_import = DataImport.order(Sequel.desc(:updated_at)).first
     last_import.state.should be == 'complete'
     @user.reload.tables.count.should == 1
   end
@@ -222,7 +214,7 @@ describe "Imports API" do
         params.merge(:filename => upload_file('spec/support/data/zipped_ab.zip', 'application/octet-stream'))
 
     response.code.should be == '200'
-    last_import = DataImport.order(:updated_at.desc).first
+    last_import = DataImport.order(Sequel.desc(:updated_at)).first
     last_import.state.should be == 'complete'
     last_import.tables_created_count.should eq 2
     last_import.table_names.should eq 'zipped_a zipped_b'
@@ -239,11 +231,71 @@ describe "Imports API" do
          params.merge(:filename => upload_file('spec/support/data/csv_with_lat_lon.csv', 'application/octet-stream'))
 
     response.code.should be == '200'
-    last_import = DataImport.order(:updated_at.desc).first
+    last_import = DataImport.order(Sequel.desc(:updated_at)).first
     last_import.state.should be == 'failure'
     last_import.error_code.should be == 6668
 
     @user.update max_import_table_row_count: old_max_import_row_count
+  end
+
+  it 'keeps api_key grants for replaced tables' do
+    # imports two files
+    post api_v1_imports_create_url,
+      params.merge(:filename => upload_file('spec/support/data/csv_with_lat_lon.csv', 'application/octet-stream'))
+    post api_v1_imports_create_url,
+      params.merge(:filename => upload_file('spec/support/data/csv_with_number_columns.csv', 'application/octet-stream'))
+
+    # get the last one
+    @table_from_import = UserTable.all.last.service
+
+    # creates an api_key for both files
+    grants = [
+      {
+        type: "apis",
+        apis: ["sql", "maps"]
+      },
+      {
+        type: "database",
+        tables: [
+          {
+            schema: @user.database_schema,
+            name: 'csv_with_lat_lon',
+            permissions: [
+              "insert",
+              "select",
+              "update",
+              "delete"
+            ]
+          },
+          {
+            schema: @user.database_schema,
+            name: 'csv_with_number_columns',
+            permissions: [
+              "select"
+            ]
+          }
+        ]
+      }
+    ]
+    name = 'wadus'
+    payload = {
+      name: name,
+      grants: grants
+    }
+    post_json api_keys_url, auth_params.merge(payload), http_json_headers
+
+    # replace the file
+    post api_v1_imports_create_url,
+      params.merge(
+        :filename => upload_file('spec/support/data/csv_with_number_columns.csv', 'application/octet-stream'),
+        :collision_strategy => 'overwrite'
+      )
+
+    # gets the api_keys
+    get_json api_key_url(id: 'wadus'), auth_params, http_json_headers do |response|
+      response.status.should eq 200
+      response.body[:grants][1][:tables][1][:name] = @table_from_import
+    end
   end
 
 end

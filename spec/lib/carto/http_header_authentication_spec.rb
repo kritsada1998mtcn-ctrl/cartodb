@@ -1,7 +1,4 @@
-# encoding: utf-8
-
 require 'ostruct'
-require 'uuidtools'
 require_relative '../../spec_helper'
 require_relative '../../../lib/carto/http_header_authentication'
 require_relative '../../requests/http_authentication_helper'
@@ -11,7 +8,7 @@ describe Carto::HttpHeaderAuthentication do
 
   EMAIL = "user@carto.com"
   USERNAME = "user"
-  ID = UUIDTools::UUID.timestamp_create.to_s
+  ID = Carto::UUIDHelper.random_uuid
 
   let(:mock_unauthenticated_request) do
     OpenStruct.new(headers: {})
@@ -114,21 +111,21 @@ describe Carto::HttpHeaderAuthentication do
 
     it 'returns true if there is a matching creation in progress by (user) id' do
       stub_http_header_authentication_configuration(field: 'id')
-      uc = FactoryGirl.create(:user_creation, state: 'enqueuing', user_id: ID)
+      uc = create(:user_creation, state: 'enqueuing', user_id: ID)
       authenticator.creation_in_progress?(mock_id_request).should be_true
       uc.destroy
     end
 
     it 'returns true if there is a matching creation in progress by username' do
       stub_http_header_authentication_configuration(field: 'username')
-      uc = FactoryGirl.create(:user_creation, state: 'enqueuing', username: USERNAME)
+      uc = create(:user_creation, state: 'enqueuing', username: USERNAME)
       authenticator.creation_in_progress?(mock_username_request).should be_true
       uc.destroy
     end
 
     it 'returns true if there is a matching creation in progress by email' do
       stub_http_header_authentication_configuration(field: 'email')
-      uc = FactoryGirl.create(:user_creation, state: 'enqueuing', email: EMAIL)
+      uc = create(:user_creation, state: 'enqueuing', email: EMAIL)
       authenticator.creation_in_progress?(mock_email_request).should be_true
       uc.destroy
     end

@@ -1,5 +1,3 @@
-# coding: utf-8
-
 module MobileAppsHelper
   def progress_bar_range(used_percentage)
     if used_percentage > 70 && used_percentage < 91
@@ -9,7 +7,7 @@ module MobileAppsHelper
     else
       ''
     end
-  rescue
+  rescue StandardError
     ''
   end
 
@@ -22,7 +20,7 @@ module MobileAppsHelper
     else
       0
     end
-  rescue
+  rescue StandardError
     0
   end
 
@@ -35,7 +33,7 @@ module MobileAppsHelper
     else
       0
     end
-  rescue
+  rescue StandardError
     0
   end
 end

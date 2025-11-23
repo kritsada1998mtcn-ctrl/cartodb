@@ -9,15 +9,15 @@ describe Carto::Api::MapcapsController do
 
   let(:dummy_mapcap) do
     dummy = mock
-    dummy.stubs(:id).returns(UUIDTools::UUID.random_create.to_s)
+    dummy.stubs(:id).returns(Carto::UUIDHelper.random_uuid)
     dummy
   end
 
   before(:all) do
-    FactoryGirl.create(:carto_feature_flag, name: 'editor-3', restricted: false)
+    create(:feature_flag, name: 'editor-3', restricted: false)
 
-    @user = FactoryGirl.create(:carto_user, builder_enabled: true)
-    @intruder = FactoryGirl.create(:carto_user, builder_enabled: true)
+    @user = create(:carto_user, builder_enabled: true)
+    @intruder = create(:carto_user, builder_enabled: true)
 
     @map, @table, @table_visualization, @visualization = create_full_visualization(@user)
   end
@@ -27,7 +27,7 @@ describe Carto::Api::MapcapsController do
   after(:all) do
     Carto::FeatureFlag.destroy_all
 
-    @torque_layer.destroy
+    @torque_layer&.destroy
     destroy_full_visualization(@map, @table, @table_visualization, @visualization)
 
     @user.destroy

@@ -1,4 +1,3 @@
-# encoding: utf-8
 require_relative '../../spec_helper'
 require_relative '../../../app/models/visualization/presenter'
 require_relative '../../doubles/support_tables.rb'
@@ -17,7 +16,7 @@ describe Visualization::Member do
     bypass_named_maps
 
     user_name = 'whatever'
-    @user_mock = FactoryGirl.build(:user, username: user_name)
+    @user_mock = build(:user, username: user_name)
     CartoDB::Visualization::Relator.any_instance.stubs(:user).returns(@user_mock)
 
     support_tables_mock = Doubles::Visualization::SupportTables.new
@@ -54,13 +53,13 @@ describe Visualization::Member do
 
   describe 'to_poro fields' do
     it 'basic fields expected at the to_poro method' do
-      perm_mock = FactoryGirl.build(:carto_permission)
+      perm_mock = build(:carto_permission)
 
       vis_mock = mock
-      vis_mock.stubs(:id).returns(UUIDTools::UUID.timestamp_create.to_s)
+      vis_mock.stubs(:id).returns(Carto::UUIDHelper.random_uuid)
       vis_mock.stubs(:name).returns('vis1')
       vis_mock.stubs(:display_name).returns('vis1')
-      vis_mock.stubs(:map_id).returns(UUIDTools::UUID.timestamp_create.to_s)
+      vis_mock.stubs(:map_id).returns(Carto::UUIDHelper.random_uuid)
       vis_mock.stubs(:active_layer_id).returns(1)
       vis_mock.stubs(:type).returns(Visualization::Member::TYPE_CANONICAL)
       vis_mock.stubs(:tags).returns(['tag1'])
@@ -85,9 +84,9 @@ describe Visualization::Member do
       vis_mock.stubs(:transition_options).returns({})
       vis_mock.stubs(:active_child).returns(nil)
       vis_mock.stubs(:likes).returns([])
-      vis_mock.stubs(:likes_count).returns(0)
 
       vis_mock.stubs(:synchronization).returns(nil)
+      vis_mock.stubs(:subscription).returns(nil)
 
       presenter = Visualization::Presenter.new(vis_mock)
       data = presenter.to_poro
@@ -111,7 +110,6 @@ describe Visualization::Member do
       data[:parent_id].should eq nil
       data[:children].should eq Array.new
       data[:kind].should eq Visualization::Member::KIND_GEOM
-      data[:likes].should eq 0
       data[:prev_id].should eq nil
       data[:next_id].should eq nil
       data[:transition_options].should eq Hash.new
@@ -123,7 +121,7 @@ describe Visualization::Member do
     it 'tests .children and its sorting' do
       Visualization::Member.any_instance.stubs(:supports_private_maps?).returns(true)
 
-      ::Permission.any_instance.stubs(:owner).returns(@user_mock)
+      Carto::Permission.any_instance.stubs(:owner).returns(@user_mock)
 
       parent = Visualization::Member.new(random_attributes_for_vis_member({
                                                                             name:'PARENT',
@@ -195,7 +193,6 @@ describe Visualization::Member do
       data[:children][2][:id].should eq member_c.id
       data[:children][3][:id].should eq member_d.id
       data[:children][4][:id].should eq member_e.id
-      data[:likes].should eq 0
     end
   end
 

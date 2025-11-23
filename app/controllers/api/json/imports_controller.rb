@@ -1,8 +1,5 @@
-# encoding: UTF-8
-
 require_relative '../../../helpers/file_upload'
 require_relative '../../../../services/datasources/lib/datasources'
-require_relative '../../../models/visualization/external_source'
 require_relative '../../../../services/platform-limits/platform_limits'
 require_relative '../../../../services/importer/lib/importer/exceptions'
 require_dependency 'carto/uuidhelper'
@@ -26,7 +23,7 @@ class Api::Json::ImportsController < Api::ApplicationController
     @stats_aggregator.timing('imports.create') do
 
       begin
-        file_upload_helper = CartoDB::FileUpload.new(Cartodb.config[:importer].fetch("uploads_path", nil))
+        file_upload_helper = CartoDB::FileUpload.new(Cartodb.get_config(:importer, 'uploads_path'))
 
         external_source = nil
         concurrent_import_limit =
@@ -43,7 +40,7 @@ class Api::Json::ImportsController < Api::ApplicationController
           options[:data_source] = params.fetch(:url)
         elsif params[:connector].present?
           options[:service_name] = 'connector'
-          options[:service_item_id] = params[:connector].to_json
+          options[:service_item_id] = connector_parameters
         elsif params[:remote_visualization_id].present?
           external_source = external_source(params[:remote_visualization_id])
           options[:data_source] = external_source.import_url.presence
@@ -53,7 +50,8 @@ class Api::Json::ImportsController < Api::ApplicationController
               filename_param: params[:filename],
               file_param: params[:file],
               request_body: request.body,
-              s3_config: Cartodb.config[:importer]['s3'])
+              s3_config: Cartodb.get_config(:importer, 's3')
+            )
 
             # In Rack < 1.6 / Rails < 4, tempfiles are not inmediately cleaned (https://github.com/rack/rack/pull/671).
             # Instead they stay around until a GC cycle which can take a while in instances with low traffic.
@@ -79,7 +77,10 @@ class Api::Json::ImportsController < Api::ApplicationController
 
         if external_source.present?
           @stats_aggregator.timing('external-data-import.save') do
-            ExternalDataImport.new(data_import.id, external_source.id).save
+            Carto::ExternalDataImport.new(
+              data_import_id: data_import.id,
+              external_source_id: external_source.id
+            ).save
           end
         end
 
@@ -91,9 +92,9 @@ class Api::Json::ImportsController < Api::ApplicationController
         render_jsonp({
                        errors: { imports: "We're sorry but you're already using your allowed #{rl_value} import slots" }
                      }, 429)
-      rescue => ex
+      rescue StandardError => ex
         decrement_concurrent_imports_rate_limit
-        CartoDB::StdoutLogger.info('Error: create', "#{ex.message} #{ex.backtrace.inspect}")
+        log_info(message: 'Error: create', exception: ex)
         render_jsonp({ errors: { imports: ex.message } }, 400)
       end
 
@@ -126,8 +127,8 @@ class Api::Json::ImportsController < Api::ApplicationController
         end
 
         render_jsonp({ success: true })
-      rescue => ex
-        CartoDB::StdoutLogger.info('Error: invalidate_service_token', "#{ex.message} #{ex.backtrace.inspect}")
+      rescue StandardError => ex
+        log_info(message: 'Error: invalidate_service_token', exception: ex)
         render_jsonp({ errors: { imports: ex.message } }, 400)
       end
 
@@ -173,7 +174,7 @@ class Api::Json::ImportsController < Api::ApplicationController
   def decorate_twitter_import_data!(data, data_import)
     return if data_import.service_name != CartoDB::Datasources::Search::Twitter::DATASOURCE_NAME
 
-    audit_entry = ::SearchTweet.where(data_import_id: data_import.id).first
+    audit_entry = Carto::SearchTweet.find_by(data_import_id: data_import.id)
     data[:tweets_georeferenced] = audit_entry.retrieved_items
     data[:tweets_cost] = audit_entry.price
     data[:tweets_overquota] = audit_entry.user.remaining_twitter_quota == 0
@@ -190,7 +191,7 @@ class Api::Json::ImportsController < Api::ApplicationController
   end
 
   def external_source(remote_visualization_id)
-    external_source = Carto::ExternalSource.where(visualization_id: remote_visualization_id).first
+    external_source = Carto::ExternalSource.find_by(visualization_id: remote_visualization_id)
     unless remote_visualization_id.present? && external_source.importable_by?(current_user)
       raise CartoDB::Datasources::AuthError.new('Illegal external load')
     end
@@ -209,9 +210,8 @@ class Api::Json::ImportsController < Api::ApplicationController
       # It's ok to decrease always as if over limit, will get just at limit and next try again go overlimit
       concurrent_import_limit.decrement!
       concurrent_import_limit.peek  # return limit value
-    rescue => sub_exception
-      CartoDB::StdoutLogger.info('Error decreasing concurrent import limit',
-                           "#{sub_exception.message} #{sub_exception.backtrace.inspect}")
+    rescue StandardError => e
+      log_info(message: 'Error decreasing concurrent import limit', exception: e)
       nil
     end
   end
@@ -231,5 +231,9 @@ class Api::Json::ImportsController < Api::ApplicationController
       end
       privacy
     end
+  end
+
+  def connector_parameters
+    Carto::Connector.normalized_parameters(user: current_user, parameters: params[:connector]).to_json
   end
 end

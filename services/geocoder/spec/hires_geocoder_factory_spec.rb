@@ -1,5 +1,3 @@
-# encoding: utf-8
-require_relative '../../../spec/rspec_configuration'
 require_relative '../../../spec/spec_helper'
 require_relative '../lib/hires_geocoder_factory'
 require_relative '../lib/geocoder_config'
@@ -15,7 +13,7 @@ describe CartoDB::HiresGeocoderFactory do
     @log = mock
     @log.stubs(:append)
     @log.stubs(:append_and_store)
-    @geocoding_model = FactoryGirl.create(:geocoding, kind: 'high-resolution', formatter: '{street}')
+    @geocoding_model = create(:geocoding, kind: 'high-resolution', formatter: '{street}')
   end
 
   describe '#get' do

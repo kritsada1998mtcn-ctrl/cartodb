@@ -1,10 +1,6 @@
-# encoding: utf-8
-
 module Carto
   module Api
     class OrganizationAssetsController < ::Api::ApplicationController
-      include Carto::ControllerHelper
-
       ssl_required :index, :show, :create, :destroy
 
       before_filter :load_organization,
@@ -48,7 +44,7 @@ module Carto
       private
 
       def load_organization
-        @organization = Organization.find(params[:organization_id])
+        @organization = Carto::Organization.find(params[:organization_id])
       rescue ActiveRecord::RecordNotFound
         raise LoadError.new('Organization not found')
       end

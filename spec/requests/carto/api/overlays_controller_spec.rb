@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require_relative '../../../spec_helper'
 require_relative '../../../../app/controllers/carto/api/overlays_controller'
 require_relative '../../../../spec/requests/api/json/overlays_controller_shared_examples'
@@ -31,7 +29,7 @@ describe Carto::Api::OverlaysController do
 
   let(:params) { { api_key: @user.api_key, visualization_id: @table.table_visualization.id } }
 
-  FAKE_UUID = UUIDTools::UUID.random_create
+  FAKE_UUID = Carto::UUIDHelper.random_uuid
 
   describe '#index' do
     it 'lists all overlays' do

@@ -5,7 +5,7 @@ describe AccountTokensController do
   describe 'token validation' do
 
     it 'returns 404 for nonexisting tokens' do
-      get enable_account_token_show_url(id: UUIDTools::UUID.timestamp_create.to_s)
+      get enable_account_token_show_url(id: Carto::UUIDHelper.random_uuid)
       response.status.should == 404
     end
 
@@ -13,7 +13,7 @@ describe AccountTokensController do
 
       before(:each) do
         CartoDB::UserModule::DBService.any_instance.stubs(:enable_remote_db_user).returns(true)
-        @user = FactoryGirl.create(:valid_user)
+        @user = create(:valid_user)
       end
 
       after(:each) do
@@ -36,7 +36,7 @@ describe AccountTokensController do
     describe 'resend validation mail' do
 
       it 'returns 404 for nonexisting users' do
-        get resend_validation_mail_url(user_id: UUIDTools::UUID.timestamp_create.to_s)
+        get resend_validation_mail_url(user_id: Carto::UUIDHelper.random_uuid)
         response.status.should == 404
       end
 
@@ -44,7 +44,7 @@ describe AccountTokensController do
 
         before(:each) do
           CartoDB::UserModule::DBService.any_instance.stubs(:enable_remote_db_user).returns(true)
-          @user = FactoryGirl.create(:valid_user)
+          @user = create(:valid_user)
         end
 
         after(:each) do

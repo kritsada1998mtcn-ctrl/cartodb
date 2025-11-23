@@ -1,4 +1,3 @@
-# encoding: utf-8
 require 'sequel'
 require 'rack/test'
 require 'json'
@@ -15,7 +14,7 @@ describe Admin::TablesController do
   before(:all) do
     CartoDB::Varnish.any_instance.stubs(:send_command).returns(true)
 
-    @user = FactoryGirl.create(:valid_user)
+    @user = create(:valid_user)
 
     @api_key = @user.api_key
     @user.stubs(:should_load_common_data?).returns(false)
@@ -44,6 +43,9 @@ describe Admin::TablesController do
 
   describe 'GET /dashboard' do
     it 'returns a list of tables' do
+      # we use this to avoid generating the static assets in CI
+      Admin::VisualizationsController.any_instance.stubs(:render).returns('')
+
       login_as(@user, scope: @user.username)
 
       get "/dashboard", {}, @headers

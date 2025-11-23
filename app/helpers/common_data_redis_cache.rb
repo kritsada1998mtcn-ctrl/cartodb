@@ -1,4 +1,5 @@
-# encoding: utf-8
+require 'redis'
+require 'json'
 
 class CommonDataRedisCache
 
@@ -24,7 +25,7 @@ class CommonDataRedisCache
 
   def set(is_https_request, response_headers, response_body)
     serialized = JSON.generate({headers: response_headers,
-                                body: response_body
+                                body: response_body.force_encoding('utf-8')
                                })
     redis.setex(key(is_https_request), 6.hours.to_i, serialized)
   rescue Redis::BaseError => exception

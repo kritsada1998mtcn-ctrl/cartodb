@@ -1,4 +1,19 @@
 namespace :cartodb do
+  namespace :db do
+    task :create, [:env] do |_t, args|
+      # When the db:create task runs, there is no prior database. Since we use models in our initializers, we need to
+      # skip the :environment dependency or Sequel will error out when trying to load the schema for the model table.
+      # This task overrides the default Sequel task, loading the bare minimum (db config) instead of all initializers
+      args.with_defaults(env: Rails.env)
+
+      config = SequelRails::Configuration.for(Rails.root, Carto::Conf.new.db_config)
+
+      unless SequelRails::Storage.create_environment(config.environment_for(args.env))
+        abort "Could not create database for #{args.env}."
+      end
+    end
+  end
+
   namespace :test do
     task :prepare do
       if (ENV['RAILS_ENV'] == "test")
@@ -9,7 +24,8 @@ namespace :cartodb do
         end
         Rake::Task['db:create'].invoke &&
         Rake::Task['db:migrate'].invoke &&
-        Rake::Task['cartodb:db:create_publicuser'].invoke
+        Rake::Task['cartodb:db:create_publicuser'].invoke &&
+        Rake::Task['cartodb:db:create_federated_server'].invoke
       else
         system("rake cartodb:test:prepare RAILS_ENV=test") || raise("Something went wrong")
       end
@@ -116,7 +132,11 @@ DESC
     end
 
     desc "make public and tile users"
-    task :create_publicuser => :environment do
+    task create_publicuser: :environment do
+      # Avoid deadlocks when trying to create the same user several times during parallel tests
+      # Don't use ParallelTests::first_process? to avoid requiring the gem in non-test environments
+      next if ENV['TEST_ENV_NUMBER'].to_i.positive?
+
       [CartoDB::PUBLIC_DB_USER, CartoDB::TILE_DB_USER].each do |u|
         puts "Creating user #{u}"
         ::SequelRails.connection.run("DO $$
@@ -130,6 +150,30 @@ DESC
         END;
         $$ LANGUAGE 'plpgsql';")
       end
+    end
+
+    desc "Create a federated server"
+    task :create_federated_server => :environment do
+      dir = Cartodb.get_config(:federated_server, 'dir')
+      port = Cartodb.get_config(:federated_server, 'port')
+      user = Cartodb.get_config(:federated_server, 'test_user')
+      pg_bindir = Cartodb.get_config(:federated_server, 'pg_bindir_path')
+      unless pg_bindir.present?
+        pg_bindir = `pg_config --bindir`.delete!("\n")
+      end
+      pg_ctl     = "#{pg_bindir}/pg_ctl"
+      psql       = "#{pg_bindir}/psql"
+
+      raise "Federated server port is not configured!" unless port.present?
+      raise "Federated server user is not configured!" unless user.present?
+      raise "Binary 'psql' could not be found" unless system("which #{psql}")
+
+      puts "Setting up the remote database (#{user})"
+
+      raise("Could not create the new remote user") unless system("psql -U postgres -h 127.0.0.1 -p #{port} -c \"CREATE ROLE #{user} PASSWORD '#{user}' SUPERUSER CREATEDB CREATEROLE INHERIT LOGIN;\"")
+      raise("Could not create the new remote database") unless system("psql -U postgres -h 127.0.0.1 -p #{port} -c \"CREATE DATABASE #{user} OWNER '#{user}';\"")
+      raise("Could not install postgis in the new remote database") unless system("psql -U postgres -h 127.0.0.1 -p #{port} -d #{user} -c \"CREATE EXTENSION postgis;\"")
+
     end
 
     # TODO: remove text bit and just use env
@@ -160,7 +204,7 @@ DESC
           raise u.errors.inspect
         end
         puts "USER_ID #{u.id}"
-      rescue => e
+      rescue StandardError => e
         puts e.inspect
       end
     end

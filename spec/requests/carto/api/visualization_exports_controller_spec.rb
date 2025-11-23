@@ -1,4 +1,3 @@
-# encoding: utf-8
 require 'spec_helper_min'
 require_dependency 'carto/uuidhelper'
 require 'factories/carto_visualizations'
@@ -21,8 +20,8 @@ describe Carto::Api::VisualizationExportsController, type: :controller do
 
   describe 'normal users' do
     before(:all) do
-      @user = FactoryGirl.create(:carto_user, private_maps_enabled: true)
-      @user2 = FactoryGirl.create(:carto_user, private_maps_enabled: true)
+      @user = create(:carto_user, private_maps_enabled: true)
+      @user2 = create(:carto_user, private_maps_enabled: true)
     end
 
     after(:all) do
@@ -94,7 +93,8 @@ describe Carto::Api::VisualizationExportsController, type: :controller do
       it 'enqueues a job and returns the id' do
         job_params = has_entries(
           download_path: regexp_matches(/download$/),
-          job_id: regexp_matches(UUIDTools::UUID_REGEXP))
+          job_id: regexp_matches(Carto::UUIDHelper::UUID_REGEXP)
+        )
         Resque.expects(:enqueue).with(Resque::ExporterJobs, job_params).once
         post_json create_visualization_export_url(@user), visualization_id: @visualization.id do |response|
           response.status.should eq 201
@@ -127,9 +127,9 @@ describe Carto::Api::VisualizationExportsController, type: :controller do
     describe '#show' do
       before(:all) do
         bypass_named_maps
-        @visualization = FactoryGirl.create(:carto_visualization, user: @user)
-        @export = FactoryGirl.create(:visualization_export, visualization: @visualization, user: @user)
-        @anonymous_export = FactoryGirl.create(:visualization_export, visualization: @visualization, user: nil)
+        @visualization = create(:carto_visualization, user: @user)
+        @export = create(:visualization_export, visualization: @visualization, user: @user)
+        @anonymous_export = create(:visualization_export, visualization: @visualization, user: nil)
       end
 
       after(:all) do
@@ -181,9 +181,9 @@ describe Carto::Api::VisualizationExportsController, type: :controller do
     describe '#download' do
       before(:all) do
         bypass_named_maps
-        @visualization = FactoryGirl.create(:carto_visualization, user: @user)
-        @export = FactoryGirl.create(:visualization_export, visualization: @visualization, user: @user)
-        @anonymous_export = FactoryGirl.create(:visualization_export, visualization: @visualization, user: nil)
+        @visualization = create(:carto_visualization, user: @user)
+        @export = create(:visualization_export, visualization: @visualization, user: @user)
+        @anonymous_export = create(:visualization_export, visualization: @visualization, user: nil)
       end
 
       after(:all) do
@@ -226,7 +226,7 @@ describe Carto::Api::VisualizationExportsController, type: :controller do
     include_context 'organization with users helper'
 
     it 'allows exporting a private map shared with a user' do
-      visualization = FactoryGirl.create(:carto_private_visualization, user: @carto_org_user_1)
+      visualization = create(:carto_private_visualization, user: @carto_org_user_1)
       share_visualization(CartoDB::Visualization::Member.new(id: visualization.id).fetch, @org_user_2)
 
       Resque.expects(:enqueue).with(Resque::ExporterJobs, anything).once

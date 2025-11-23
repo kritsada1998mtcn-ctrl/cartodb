@@ -12,6 +12,8 @@ module Carto
       SCHEMA_AGGREGATION_TABLES = 'aggregation'.freeze
 
       class << self
+        include ::LoggerHelper
+
         def connect(db_host, db_name, options = {})
           validate_options(options)
           if options[:statement_timeout]
@@ -44,11 +46,9 @@ module Carto
         private
 
         def get_database(options, configuration)
-          resolver = ActiveRecord::Base::ConnectionSpecification::Resolver.new(
-            configuration, get_connection_name(options[:as])
-          )
+          resolver = ActiveRecord::ConnectionAdapters::ConnectionSpecification::Resolver.new([])
           conn = ActiveRecord::Base.connection_handler.establish_connection(
-            get_connection_name(options[:as]), resolver.spec
+            get_connection_name(options[:as]), resolver.spec(configuration)
           ).connection
 
           # TODO: Maybe we should avoid doing this kind of operations here or remove it because
@@ -65,8 +65,15 @@ module Carto
           "#{quote_char}#{user_schema}#{quote_char}, #{SCHEMA_CARTODB}, #{SCHEMA_CDB_DATASERVICES_API}, #{SCHEMA_PUBLIC}"
         end
 
+        class NamedThing
+          def initialize(name)
+            @name = name
+          end
+          attr_reader :name
+        end
+
         def get_connection_name(kind = :carto_db_connection)
-          kind.to_s
+          NamedThing.new(kind.to_s)
         end
 
         def get_db_configuration_for(db_host, db_name, options)
@@ -83,7 +90,8 @@ module Carto
             password: base_config['password'],
             database: db_name,
             port:     base_config['port'],
-            encoding: base_config['encoding'].nil? ? 'unicode' : base_config['encoding']
+            encoding: base_config['encoding'].nil? ? 'unicode' : base_config['encoding'],
+            connect_timeout: base_config['connect_timeout']
           }
 
           case options[:as]
@@ -113,20 +121,25 @@ module Carto
 
         def validate_options(options)
           if !options[:user_schema] && options[:as] != :cluster_admin
-            CartoDB::Logger.error(message: 'Connection needs user schema if the user is not the cluster admin',
-                                  params: { user_type: options[:as],
-                                            username: options[:username],
-                                            schema: options[:user_schema] })
+            log_error(
+              message: 'Connection needs user schema if the user is not the cluster admin',
+              target_user: options[:username],
+              params: { user_type: options[:as], schema: options[:user_schema] }
+            )
             raise Carto::Db::InvalidConfiguration.new('Connection needs user schema if user is not the cluster admin')
           end
 
           ## If we don't pass user type we are using a regular user and username/password is mandatory
           if !options[:as] && (!options[:username] || !options[:password])
-            CartoDB::Logger.error(message: 'Db connection needs username/password for regular user',
-                                  params: { user_type: options[:as], username: options[:username] })
+            log_error(
+              message: 'Db connection needs username/password for regular user',
+              target_user: options[:username],
+              params: { user_type: options[:as] }
+            )
             raise Carto::Db::InvalidConfiguration.new('Db connection needs user username/password for regular user')
           end
         end
+
       end
     end
   end

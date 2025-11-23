@@ -1,4 +1,3 @@
-# coding: UTF-8
 # Proxies management of a table in the users database
 require 'forwardable'
 
@@ -12,6 +11,7 @@ require_relative './visualization/overlays'
 require_relative './visualization/table_blender'
 require_relative '../../services/importer/lib/importer/query_batcher'
 require_relative '../../services/importer/lib/importer/cartodbfy_time'
+require_relative '../../services/importer/lib/importer/column'
 require_relative '../../services/datasources/lib/datasources/decorators/factory'
 require_relative '../../services/table-geocoder/lib/internal-geocoder/latitude_longitude'
 require_relative '../model_factories/layer_factory'
@@ -24,6 +24,7 @@ require_dependency 'carto/valid_table_name_proposer'
 class Table
   extend Forwardable
   include Carto::TableUtils
+  include ::LoggerHelper
 
   # TODO Part of a service along with schema
   # INFO: created_at and updated_at cannot be dropped from existing tables without dropping the triggers first
@@ -38,13 +39,6 @@ class Table
   GEOMETRY_TYPES_PRESENT_CACHING_TIMEOUT = 24.hours
   STATEMENT_TIMEOUT = 1.hour * 1000
 
-  # See http://www.postgresql.org/docs/9.5/static/sql-syntax-lexical.html#SQL-SYNTAX-IDENTIFIERS
-  PG_IDENTIFIER_MAX_LENGTH = 63
-
-  # @see services/importer/lib/importer/column.rb -> RESERVED_WORDS
-  # @see config/initializers/carto_db.rb -> RESERVED_COLUMN_NAMES
-  RESERVED_COLUMN_NAMES = %w(oid tableoid xmin cmin xmax cmax ctid ogc_fid).freeze
-
   DEFAULT_THE_GEOM_TYPE = 'geometry'
 
   VALID_GEOMETRY_TYPES = %W{ geometry multipolygon point multilinestring }
@@ -52,6 +46,7 @@ class Table
   def_delegators :relator, *CartoDB::TableRelator::INTERFACE
   def_delegators :@user_table, *::UserTable::INTERFACE
 
+  attr_accessor :user_table
 
   def initialize(args = {})
     if args[:user_table].nil?
@@ -60,6 +55,7 @@ class Table
     else
       @user_table = args[:user_table]
     end
+    self.user_id = args[:user_id] if args[:user_id].present?
     # TODO: this probably makes sense only if user_table is not passed as argument
     @user_table.set_service(self)
   end
@@ -79,8 +75,6 @@ class Table
     if @user_table.respond_to?(:save!)
       @user_table.save!
     else
-      # This should not happen with production code. Trace would lead the refactor
-      CartoDB::Logger.debug(message: "::Table#save invoked on Sequel", user_table: @user_table)
       @user_table.save
     end
 
@@ -208,23 +202,30 @@ class Table
     if table_name =~ /\./
       table_name, schema = table_name.split('.').reverse
       # remove quotes from schema
-      [table_name, schema.gsub('"', '')]
+      schema = schema.delete('"')
+      [table_name, (schema if schema != 'public')]
     else
       [table_name, nil]
     end
   end
 
+  def data_import
+    @data_import ||= DataImport.where(id: @user_table.data_import_id).first || DataImport.new(user_id: owner.id)
+  end
+
   ## Callbacks
 
   def import_to_cartodb(uniname = nil)
-    @data_import ||= DataImport.where(id: @user_table.data_import_id).first || DataImport.new(user_id: owner.id)
     if migrate_existing_table.present? || uniname
-      @data_import.data_type = DataImport::TYPE_EXTERNAL_TABLE if @data_import.data_type.nil?
-      @data_import.data_source = migrate_existing_table || uniname
-      @data_import.save
+      data_import.data_type = DataImport::TYPE_EXTERNAL_TABLE if data_import.data_type.nil?
+      data_import.data_source = migrate_existing_table || uniname
+      data_import.save
 
       # ensure unique name, also ensures self.name can override any imported table name
       uniname = get_valid_name(name ? name : migrate_existing_table) unless uniname
+
+      # Make sure column names are sanitized. Make it consistently.
+      sanitize_columns(table_name: uniname, database_schema: owner.database_schema, connection: owner.in_database)
 
       # with table #{uniname} table created now run migrator to CartoDBify
       hash_in = ::SequelRails.configuration.environment_for(Rails.env).merge(
@@ -239,12 +240,12 @@ class Table
         :debug => Rails.env.development?,
         :remaining_quota => owner.remaining_quota,
         :remaining_tables => owner.remaining_table_quota,
-        :data_import_id => @data_import.id
+        :data_import_id => data_import.id
       ).symbolize_keys
       importer = CartoDB::Migrator.new(hash_in)
       imported_name = importer.migrate!
-      @data_import.reload
-      @data_import.save
+      data_import.reload
+      data_import.save
       imported_name
     end
   end
@@ -290,7 +291,7 @@ class Table
           owner.transaction_with_timeout(statement_timeout: STATEMENT_TIMEOUT) do |user_database|
             user_database.run(%{ALTER TABLE #{qualified_table_name} ADD COLUMN cartodb_id SERIAL})
           end
-        rescue
+        rescue StandardError
           already_had_cartodb_id = true
         end
         unless already_had_cartodb_id
@@ -354,7 +355,7 @@ class Table
 
     self.schema(reload:true)
     set_table_id
-  rescue => e
+  rescue StandardError => e
     self.handle_creation_error(e)
   end
 
@@ -392,7 +393,7 @@ class Table
 
     update_table_pg_stats
 
-  rescue => e
+  rescue StandardError => e
     handle_creation_error(e)
   end
 
@@ -423,13 +424,13 @@ class Table
         VACUUM ANALYZE #{qualified_table_name}
         })
     end
-  rescue => e
+  rescue StandardError => e
     CartoDB::notify_exception(e, { user: owner })
     false
   end
 
   def handle_creation_error(e)
-    CartoDB::StdoutLogger.info 'table#create error', "#{e.inspect}"
+    log_info(message: 'table#create error', exception: e)
     # Remove the table, except if it already exists
     unless self.name.blank? || e.message =~ /relation .* already exists/
       @data_import.log.append ("Import ERROR: Dropping table #{qualified_table_name}") if @data_import
@@ -441,7 +442,7 @@ class Table
   end
 
   def after_destroy
-    Tag.filter(user_id: user_id, table_id: id).delete
+    Carto::Tag.where(user_id: user_id, table_id: id).each(&:destroy)
     remove_table_from_stats
 
     cache.del geometry_types_key
@@ -454,13 +455,12 @@ class Table
 
   def remove_table_from_user_database
     owner.in_database(:as => :superuser) do |user_database|
-      begin
-        user_database.run("DROP SEQUENCE IF EXISTS cartodb_id_#{oid}_seq")
-      rescue => e
-        CartoDB::StdoutLogger.info 'Table#after_destroy error', "maybe table #{qualified_table_name} doesn't exist: #{e.inspect}"
+      user_database.transaction do
+        # Give up if it cannot get ExclusiveLocks for DDL operations in a reasonable time
+        user_database.run(%{SET LOCAL lock_timeout = '1s'})
+        Carto::OverviewsService.new(user_database).delete_overviews qualified_table_name
+        user_database.run(%{DROP TABLE IF EXISTS #{qualified_table_name}})
       end
-      Carto::OverviewsService.new(user_database).delete_overviews qualified_table_name
-      user_database.run(%{DROP TABLE IF EXISTS #{qualified_table_name}})
     end
   end
 
@@ -522,7 +522,7 @@ class Table
     first_columns     = []
     middle_columns    = []
     last_columns      = []
-    owner.in_database.schema(name, options.slice(:reload).merge(schema: owner.database_schema)).each do |column|
+    owner.in_database.schema(name, schema: owner.database_schema, reload: options.fetch(:reload, true)).each do |column|
       next if column[0] == THE_GEOM_WEBMERCATOR
 
       calculate_the_geom_type if column[0] == :the_geom
@@ -592,11 +592,6 @@ class Table
         else
           new_column_type = get_new_column_type(invalid_column)
           user_database.set_column_type(self.name, invalid_column.to_sym, new_column_type)
-          # INFO: There's a complex logic for retrying and need to know how often it is actually done
-          CartoDB::Logger.debug(message: 'Retrying insert_row!',
-                                user_id: user_id,
-                                qualified_table_name: qualified_table_name,
-                                raw_attributes: raw_attributes)
           retry
         end
       end
@@ -639,15 +634,8 @@ class Table
             new_column_type = get_new_column_type(invalid_column)
             if new_column_type
               user_database.set_column_type self.name, invalid_column.to_sym, new_column_type
-              # INFO: There's a complex logic for retrying and need to know how often it is actually done
-              CartoDB::Logger.debug(message: 'Retrying update_row!',
-                                    user_id: user_id,
-                                    qualified_table_name: qualified_table_name,
-                                    row_id: row_id,
-                                    raw_attributes: raw_attributes,
-                                    exception: e)
               if (retries += 1) > MAX_UPDATE_ROW_RETRIES
-                CartoDB::Logger.error(message: 'Max update_row! retries reached',
+                log_error(message: 'Max update_row! retries reached',
                                       user_id: user_id,
                                       qualified_table_name: qualified_table_name,
                                       row_id: row_id,
@@ -670,20 +658,21 @@ class Table
   # make all identifiers SEQUEL Compatible
   # https://github.com/Vizzuality/cartodb/issues/331
   def make_sequel_compatible(attributes)
-    attributes.except(THE_GEOM).convert_nulls.each_with_object({}) { |(k, v), h| h[k.identifier] = v }
+    attributes.except(THE_GEOM).convert_nulls.each_with_object({}) { |(k, v), h| h[Sequel.identifier(k)] = v }
   end
 
   def add_column!(options)
-    raise CartoDB::InvalidColumnName if RESERVED_COLUMN_NAMES.include?(options[:name]) || options[:name] =~ /^[0-9]/
+    raise CartoDB::InvalidColumnName if CartoDB::Importer2::Column.rejected?(options[:name])
     type = options[:type].convert_to_db_type
     cartodb_type = options[:type].convert_to_cartodb_type
-    column_name = options[:name].to_s.sanitize_column_name
+    # FIXME: consider CartoDB::Importer2::Column.get_valid_column_name with CURRENT_COLUMN_SANITIZATION_VERSION
+    column_name = CartoDB::Importer2::Column.sanitize_name(options[:name].to_s)
     owner.in_database.add_column name, column_name, type
 
     update_cdb_tablemetadata
     return {:name => column_name, :type => type, :cartodb_type => cartodb_type}
-  rescue => e
-    if e.message =~ /^(PG::Error|PGError)/
+  rescue StandardError => e
+    if e.message =~ /^(PG::Error|PGError|PG::UndefinedObject)/
       raise CartoDB::InvalidType, e.message
     else
       raise e
@@ -698,16 +687,19 @@ class Table
   end
 
   def modify_column!(options)
-    old_name  = options.fetch(:name, '').to_s.sanitize
-    new_name  = options.fetch(:new_name, '').to_s.sanitize
-    raise 'This column cannot be modified' if CARTODB_COLUMNS.include?(old_name.to_s)
+    old_name  = options.fetch(:name, '').to_s
+    new_name  = options.fetch(:new_name, '').to_s
+
+    # FIXME: consider CartoDB::Importer2::Column.get_valid_column_name with CURRENT_COLUMN_SANITIZATION_VERSION
+    old_sanitized_name = CartoDB::Importer2::Column.sanitize_name(old_name)
+    raise 'This column cannot be modified' if CARTODB_COLUMNS.include?(old_sanitized_name.to_s)
 
     if new_name.present? && new_name != old_name
-      new_name = new_name.sanitize_column_name
-      rename_column(old_name, new_name)
+      new_sanitized_name = CartoDB::Importer2::Column.sanitize_name(new_name)
+      rename_column(old_sanitized_name, new_sanitized_name)
     end
 
-    column_name = (new_name.present? ? new_name : old_name)
+    column_name = (new_name.present? ? new_sanitized_name : old_sanitized_name)
     convert_column_datatype(owner.in_database, name, column_name, options[:type])
     column_type = column_type_for(column_name)
 
@@ -729,7 +721,7 @@ class Table
     raise 'Please provide a column name' if new_name.empty?
     raise 'This column cannot be renamed' if CARTODB_COLUMNS.include?(old_name.to_s)
 
-    if new_name =~ /^[0-9]/ || RESERVED_COLUMN_NAMES.include?(new_name) || CARTODB_COLUMNS.include?(new_name)
+    if CartoDB::Importer2::Column.reserved_or_unsupported?(new_name) || CARTODB_COLUMNS.include?(new_name)
       raise CartoDB::InvalidColumnName, 'That column name is reserved, please choose a different one'
     end
 
@@ -808,7 +800,6 @@ class Table
       rows = user_database[%Q{
         SELECT #{select_columns} FROM #{qualified_table_name} #{where} ORDER BY "#{order_by_column}" #{mode} LIMIT #{per_page}+1 OFFSET #{page}
       }].all
-      CartoDB::StdoutLogger.info 'Query', "fetch: #{rows.length}"
 
       # Tweak estimation if needed
       fetched = rows.length
@@ -970,7 +961,7 @@ class Table
     if @data_import
       CartoDB::Importer2::CartodbfyTime::instance(@data_import.id).add(elapsed)
     end
-  rescue => exception
+  rescue StandardError => exception
     if !!(exception.message =~ /Error: invalid cartodb_id/)
       raise CartoDB::CartoDBfyInvalidID
     else
@@ -979,11 +970,25 @@ class Table
   end
 
   def update_table_pg_stats
-    owner.in_database[%Q{ANALYZE #{qualified_table_name};}]
+    owner.in_database.execute(%{ANALYZE #{qualified_table_name};})
+  rescue StandardError => exception
+    if exception.message =~ /canceling statement due to statement timeout/i
+      log_info(exception: exception, message: 'Analyze in import raised statement timeout')
+    else
+      raise exception
+    end
   end
 
   def update_table_geom_pg_stats
-    owner.in_database[%Q{ANALYZE #{qualified_table_name}(the_geom);}]
+    owner.in_database.execute(%{ANALYZE #{qualified_table_name}(the_geom);})
+  rescue StandardError => exception
+    if exception.message =~ /canceling statement due to statement timeout/i
+      log_info(exception: exception, message: 'Analyze in import raised statement timeout')
+    elsif exception.cause.is_a?(PG::UndefinedColumn)
+      log_info(exception: exception, message: 'Analyze in import raised column does not exist')
+    else
+      raise exception
+    end
   end
 
   def owner
@@ -995,10 +1000,11 @@ class Table
   end
 
   def data_last_modified
-    owner.in_database.select(:updated_at)
-                     .from(:cdb_tablemetadata.qualify(:cartodb))
-                     .where(tabname: "'#{self.name}'::regclass".lit).first[:updated_at]
-  rescue
+    owner.in_database
+         .select(:updated_at)
+         .from(Sequel.qualify(:cartodb, :cdb_tablemetadata))
+         .where(tabname: Sequel.lit("'#{name}'::regclass")).first[:updated_at]
+  rescue StandardError
     nil
   end
 
@@ -1061,12 +1067,11 @@ class Table
             layer.rename_table(@name_changed_from, name).save
           end
         end
-      rescue => exception
-        CartoDB::Logger.error(exception: exception,
-                              message: "Failed while renaming visualization",
-                              user: owner,
-                              from_name: @name_changed_from,
-                              to_name: name)
+      rescue StandardError => exception
+        log_error(
+          exception: exception, message: 'Error renaming visualization',
+          current_user: owner, error_detail: "Renaming from #{@name_changed_from} to #{name}"
+        )
         raise exception
       end
     end
@@ -1127,17 +1132,21 @@ class Table
       size_calc = is_raster? ? "pg_total_relation_size('\"' || ? || '\".\"' || relname || '\"')"
                                     : "pg_total_relation_size('\"' || ? || '\".\"' || relname || '\"') / 2"
 
-      data = owner.in_database.fetch(%Q{
+      data = owner.in_database.fetch(
+        %{
             SELECT
               #{size_calc} AS size,
               reltuples::integer AS row_count
             FROM pg_class
+            JOIN pg_catalog.pg_namespace n on n.oid = pg_class.relnamespace
             WHERE relname = ?
+            AND n.nspname = ?
           },
-          owner.database_schema,
-          name
-        ).first
-    rescue => exception
+        owner.database_schema,
+        name,
+        database_schema
+      ).first
+    rescue StandardError => exception
       data = nil
       # INFO: we don't want code to fail because of SQL error
       CartoDB.notify_exception(exception)
@@ -1168,13 +1177,11 @@ class Table
 
   def update_cdb_tablemetadata
     owner.in_database(as: :superuser).run(%{ SELECT CDB_TableMetadataTouch(#{table_id}::oid::regclass) })
-  rescue => exception
-    CartoDB::Logger.error(message: 'update_cdb_tablemetadata failed',
-                          exception: exception,
-                          user: owner,
-                          table_id: table_id,
-                          oid: get_table_id,
-                          table_name: name)
+  rescue StandardError => e
+    log_error(
+      message: 'update_cdb_tablemetadata failed', exception: e, current_user: owner,
+      table: { id: table_id, name: name, oid: get_table_id }
+    )
   end
 
   def propagate_attribution_change(attributions)
@@ -1198,6 +1205,19 @@ class Table
     polygon_sql = Carto::BoundingBoxUtils.to_polygon(bounds[:minx], bounds[:miny], bounds[:maxx], bounds[:maxy])
     update_sql = %{UPDATE visualizations SET bbox = #{polygon_sql} WHERE id = '#{table_visualization.id}';}
     SequelRails.connection.run(update_sql)
+  end
+
+  # Apply the sanitization defined for this table.
+  # If the table_name parameter is passed, the sanitization which was originally applied to self
+  # is applied to the table so named.
+  # If no table_name parameters is paseed the normalization is applied to self.
+  # This allows re-applying the same normalization to imported tables.
+  def sanitize_columns(table_name: name, **options)
+    self.class.sanitize_columns(table_name, column_sanitization_version, options)
+  end
+
+  def visualizations
+    Carto::Visualization.where(id: user_table.affected_visualizations.map(&:id))
   end
 
   private
@@ -1233,10 +1253,6 @@ class Table
     "#{prefix}#{name}_#{column}"
   end
 
-  def external_source_visualization
-    @user_table.try(:external_source_visualization)
-  end
-
   def previous_privacy
     # INFO: @user_table.initial_value(:privacy) weirdly returns incorrect value so using changes index instead
     privacy_changed? ? @user_table.privacy_was : nil
@@ -1256,17 +1272,23 @@ class Table
 
   def query_geometry_types
     # We do not query the DB, if the_geom does not exist we just recover
-    begin
-      owner.in_database[ %Q{
-        SELECT DISTINCT ST_GeometryType(the_geom) FROM (
+    owner.in_database[distinct_geometry_sql].all.map { |r| r[:st_geometrytype] }
+  rescue StandardError
+    []
+  end
+
+  def distinct_geometry_sql
+    %{
+      SELECT DISTINCT ST_GeometryType(the_geom) FROM (
+        SELECT the_geom
+        FROM (
           SELECT the_geom
-        FROM #{qualified_table_name}
-          WHERE (the_geom is not null) LIMIT 10
-        ) as foo
-      }].all.map {|r| r[:st_geometrytype] }
-    rescue
-      []
-    end
+          FROM #{qualified_table_name}
+          LIMIT 10000
+        ) as limited
+        WHERE (the_geom is not null) LIMIT 10
+      ) as not_null
+    }
   end
 
   def cache
@@ -1282,14 +1304,19 @@ class Table
     Carto::ValidTableNameProposer.new.propose_valid_table_name(contendent, taken_names: user_table_names)
   end
 
-  def self.sanitize_columns(table_name, options={})
+  def column_sanitization_version
+    data_import&.column_sanitization_version || CartoDB::Importer2::Column::NO_COLUMN_SANITIZATION_VERSION
+  end
+
+  def self.sanitize_columns(table_name, column_sanitization_version, options={})
+
     connection = options.fetch(:connection)
     database_schema = options.fetch(:database_schema, 'public')
 
     connection.schema(table_name, schema: database_schema, reload: true).each do |column|
       column_name = column[0].to_s
       column_type = column[1][:db_type]
-      column_name = ensure_column_has_valid_name(table_name, column_name, options)
+      column_name = ensure_column_has_valid_name(table_name, column_name, column_sanitization_version, options)
       if column_type == 'unknown'
         CartoDB::ColumnTypecaster.new(
           user_database:  connection,
@@ -1302,11 +1329,11 @@ class Table
     end
   end
 
-  def self.ensure_column_has_valid_name(table_name, column_name, options={})
+  def self.ensure_column_has_valid_name(table_name, column_name, column_sanitization_version, options={})
     connection = options.fetch(:connection)
     database_schema = options.fetch(:database_schema, 'public')
 
-    valid_column_name = get_valid_column_name(table_name, column_name, options)
+    valid_column_name = get_valid_column_name(table_name, column_name, column_sanitization_version, options)
     if valid_column_name != column_name
       connection.run(%Q{ALTER TABLE "#{database_schema}"."#{table_name}" RENAME COLUMN "#{column_name}" TO "#{valid_column_name}";})
     end
@@ -1314,30 +1341,8 @@ class Table
     valid_column_name
   end
 
-  def self.get_valid_column_name(table_name, candidate_column_name, options={})
-    reserved_words = options.fetch(:reserved_words, [])
-
-    existing_names = get_column_names(table_name, options) - [candidate_column_name]
-
-    candidate_column_name = 'untitled_column' if candidate_column_name.blank?
-    candidate_column_name = candidate_column_name.to_s.squish
-
-    # Subsequent characters can be letters, underscores or digits
-    candidate_column_name = candidate_column_name.gsub(/[^a-z0-9]/,'_').gsub(/_{2,}/, '_')
-
-    # Valid names start with a letter or an underscore
-    candidate_column_name = "column_#{candidate_column_name}" unless candidate_column_name[/^[a-z_]{1}/]
-
-    # Avoid collisions
-    count = 1
-    new_column_name = candidate_column_name
-    while existing_names.include?(new_column_name) || reserved_words.include?(new_column_name.upcase)
-      suffix = "_#{count}"
-      new_column_name = candidate_column_name[0..PG_IDENTIFIER_MAX_LENGTH-suffix.length] + suffix
-      count += 1
-    end
-
-    new_column_name
+  def self.get_valid_column_name(table_name, candidate_column_name, column_sanitization_version, options={})
+    CartoDB::Importer2::Column.get_valid_column_name(candidate_column_name, column_sanitization_version, get_column_names(table_name, options))
   end
 
   def self.get_column_names(table_name, options={})
@@ -1419,7 +1424,7 @@ class Table
         sanitized_force_schema = force_schema.split(',').map do |column|
           # Convert existing primary key into a unique key
           if column =~ /\A\s*\"([^\"]+)\"(.*)\z/
-            "#{$1.sanitize} #{$2.gsub(/primary\s+key/i,'UNIQUE')}"
+            "#{CartoDB::Importer2::Column.sanitize_name $1} #{$2.gsub(/primary\s+key/i,'UNIQUE')}"
           else
             column.gsub(/primary\s+key/i,'UNIQUE')
           end
@@ -1447,17 +1452,17 @@ class Table
       owner.in_database(:as => :superuser).run(%Q{UPDATE #{qualified_table_name} SET the_geom =
       ST_Transform(ST_GeomFromGeoJSON('#{geojson}'),4326) where cartodb_id =
       #{primary_key}})
-    rescue => e
+    rescue StandardError => e
       raise CartoDB::InvalidGeoJSONFormat, "Invalid geometry: #{e.message}"
     end
   end
 
   def manage_tags
     if @user_table[:tags].blank?
-      Tag.filter(:user_id => user_id, :table_id => id).delete
+      Carto::Tag.where(user_id: user_id, table_id: id).each(&:destroy)
     else
       tag_names = @user_table.tags.split(',')
-      table_tags = Tag.filter(:user_id => user_id, :table_id => id).all
+      table_tags = Carto::Tag.where(user_id: user_id, table_id: id).all
       unless table_tags.empty?
         # Remove tags that are not in the new names list
         table_tags.each do |tag|
@@ -1470,7 +1475,7 @@ class Table
       end
       # Create the new tags in the this table
       tag_names.each do |new_tag_name|
-        new_tag = Tag.new :name => new_tag_name
+        new_tag = Carto::Tag.new(name: new_tag_name)
         new_tag.user_id = user_id
         new_tag.table_id = id
         new_tag.save

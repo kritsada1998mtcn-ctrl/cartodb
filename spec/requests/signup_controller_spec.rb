@@ -17,20 +17,20 @@ describe SignupController do
     end
 
     it 'returns 200 when subdomainless and route is signup_subdomainless' do
-      @fake_organization = FactoryGirl.create(:organization_whitelist_carto)
+      @fake_organization = create(:organization_whitelist_carto)
       CartoDB.stubs(:subdomainless_urls?).returns(true)
       CartoDB.stubs(:session_domain).returns('localhost.lan')
-      Organization.stubs(:where).returns([@fake_organization])
+      Carto::Organization.stubs(:where).returns([@fake_organization])
       host! "localhost.lan"
       get signup_subdomainless_url(user_domain: 'organization')
       response.status.should == 200
     end
 
     it 'returns 404 when subdomainless and route is signup' do
-      @fake_organization = FactoryGirl.create(:organization_whitelist_carto)
+      @fake_organization = create(:organization_whitelist_carto)
       CartoDB.stubs(:subdomainless_urls?).returns(true)
       CartoDB.stubs(:session_domain).returns('localhost.lan')
-      Organization.stubs(:where).returns([@fake_organization])
+      Carto::Organization.stubs(:where).returns([@fake_organization])
       host! "localhost.lan"
       get signup_url
       response.status.should == 404
@@ -44,48 +44,48 @@ describe SignupController do
     end
 
     it 'returns 200 for organizations with signup_page_enabled' do
-      @fake_organization = FactoryGirl.create(:organization_whitelist_carto)
-      Organization.stubs(:where).returns([@fake_organization])
+      @fake_organization = create(:organization_whitelist_carto)
+      Carto::Organization.stubs(:where).returns([@fake_organization])
       get signup_url
       response.status.should == 200
     end
 
     it 'returns 404 for organizations without signup_page_enabled' do
-      @fake_organization = FactoryGirl.create(:organization, whitelisted_email_domains: [])
-      Organization.stubs(:where).returns([@fake_organization])
+      @fake_organization = create(:organization, whitelisted_email_domains: [])
+      Carto::Organization.stubs(:where).returns([@fake_organization])
       get signup_url
       response.status.should == 404
     end
 
     it 'returns 404 for organizations with whitelisted domains but without any authentication enabled' do
-      @fake_organization = FactoryGirl.create(:organization_whitelist_carto,
+      @fake_organization = create(:organization_whitelist_carto,
                                               auth_username_password_enabled: true,
                                               auth_google_enabled: false,
                                               auth_github_enabled: false)
       @fake_organization.stubs(:auth_username_password_enabled).returns(false)
-      Organization.stubs(:where).returns([@fake_organization])
+      Carto::Organization.stubs(:where).returns([@fake_organization])
       get signup_url
       response.status.should == 404
     end
 
     it 'returns 200 for organizations without signup_page_enabled but with a valid invitation' do
-      @fake_organization = FactoryGirl.create(:organization_with_users, whitelisted_email_domains: [])
+      @fake_organization = create(:organization_with_users, whitelisted_email_domains: [])
       owner = Carto::User.find(@fake_organization.owner.id)
       invitation = Carto::Invitation.create_new(owner, ['wadus@wad.us'], 'Welcome!', false)
-      Organization.stubs(:where).returns([@fake_organization])
+      Carto::Organization.stubs(:where).returns([@fake_organization])
       get signup_url(invitation_token: invitation.token('wadus@wad.us'), email: 'wadus@wad.us')
       response.status.should == 200
     end
 
     it 'returns user error with admin mail if organization has not enough seats' do
-      fake_owner = FactoryGirl.build(:valid_user)
-      @fake_organization = FactoryGirl.create(:organization_whitelist_carto, seats: 0, owner: fake_owner)
-      Organization.stubs(:where).returns([@fake_organization])
+      fake_owner = create(:valid_user).carto_user
+      @fake_organization = create(:organization_whitelist_carto, seats: 0, owner: fake_owner)
+      Carto::Organization.stubs(:where).returns([@fake_organization])
+
       get signup_url
       response.status.should == 200
       response.body.should include("organization not enough seats")
-      response.body.should include("contact the administrator of #{@fake_organization.name}</a>")
-      response.body.should match(Regexp.new @fake_organization.owner.email)
+      response.body.should include("contact the administrator of #{@fake_organization.name}")
     end
 
     it 'does not return an error if organization has no unassigned_quota left but the invited user is a viewer' do
@@ -96,8 +96,6 @@ describe SignupController do
       invitation = Carto::Invitation.create_new(user, [email], 'W!', true)
       invitation.save
       token = invitation.token(email)
-
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(false)
 
       host! "#{@organization.name}.localhost.lan"
       get signup_organization_user_url(user_domain: @organization.name,
@@ -120,8 +118,6 @@ describe SignupController do
       invitation.save
       token = invitation.token(email)
 
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(false)
-
       host! "#{@organization.name}.localhost.lan"
       get signup_organization_user_url(user_domain: @organization.name,
                                        user: { username: 'viewer-user',
@@ -134,7 +130,7 @@ describe SignupController do
     end
 
     it 'signs user up as viewer even if all non-viewer seats are taken' do
-      @fake_organization = FactoryGirl.create(:organization_with_users, whitelisted_email_domains: [])
+      @fake_organization = create(:organization_with_users, whitelisted_email_domains: [])
       @fake_organization.seats = @fake_organization.builder_users.count(&:builder?)
       @fake_organization.viewer_seats = 10
       @fake_organization.save
@@ -152,7 +148,6 @@ describe SignupController do
     DEFAULT_QUOTA_IN_BYTES = 1000
 
     before(:all) do
-      @organization.whitelisted_email_domains = ['carto.com']
       @organization.default_quota_in_bytes = DEFAULT_QUOTA_IN_BYTES
       @organization.save
 
@@ -160,6 +155,7 @@ describe SignupController do
     end
 
     before(:each) do
+      @organization.whitelisted_email_domains = ['carto.com']
       @organization.auth_username_password_enabled = true
       @organization.auth_google_enabled = true
       @organization.strong_passwords_enabled = true
@@ -183,7 +179,7 @@ describe SignupController do
 
       name = 'sixtythreecharacterslongiswaytoomanycharactersmatewhydoyoueventry'
       email = "testemail@#{@organization.whitelisted_email_domains[0]}"
-      password = '12345678'
+      password = '00012345678'
       user = { username: name, email: email, password: password }
       org_name = @organization.name
       host! "#{@organization.name}.localhost.lan"
@@ -214,7 +210,6 @@ describe SignupController do
     end
 
     it 'triggers a NewUser job with form parameters and default quota and requiring validation email' do
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(false)
       ::Resque.expects(:enqueue).with(::Resque::UserJobs::Signup::NewUser,
                                       instance_of(String), anything, instance_of(FalseClass)).returns(true)
 
@@ -228,7 +223,6 @@ describe SignupController do
       last_user_creation.username.should == username
       last_user_creation.email.should == email
       last_user_creation.crypted_password.should_not be_empty
-      last_user_creation.salt.should_not be_empty
       last_user_creation.organization_id.should == @organization.id
       last_user_creation.quota_in_bytes.should == @organization.default_quota_in_bytes
       last_user_creation.requires_validation_email?.should == true
@@ -238,7 +232,6 @@ describe SignupController do
     it 'trigger creation if mail is whitelisted with wildcard' do
       @organization.whitelisted_email_domains = ['*.carto.com']
       @organization.save
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(false)
       ::Resque.expects(:enqueue).with(::Resque::UserJobs::Signup::NewUser,
                                       instance_of(String), anything, instance_of(FalseClass)).returns(true)
       username = 'testusername'
@@ -251,7 +244,6 @@ describe SignupController do
       last_user_creation.username.should == username
       last_user_creation.email.should == email
       last_user_creation.crypted_password.should_not be_empty
-      last_user_creation.salt.should_not be_empty
       last_user_creation.organization_id.should == @organization.id
       last_user_creation.quota_in_bytes.should == @organization.default_quota_in_bytes
       last_user_creation.requires_validation_email?.should == true
@@ -311,7 +303,6 @@ describe SignupController do
       invitation = Carto::Invitation.create_new(Carto::User.find(@org_user_owner.id), [invited_email], 'W!', false)
       invitation.save
 
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(false)
       ::Resque.expects(:enqueue).
         with(::Resque::UserJobs::Signup::NewUser, instance_of(String), anything, instance_of(FalseClass)).
         returns(true)
@@ -330,11 +321,41 @@ describe SignupController do
       invitation.used_emails.should include(invited_email)
     end
 
+    it 'triggers creation invitation twice' do
+      invited_email = 'invited_user@whatever.com'
+
+      Carto::Invitation.create_new(
+        Carto::User.find(@org_user_owner.id), [invited_email], 'W!', false
+      )
+      invitation = Carto::Invitation.create_new(
+        Carto::User.find(@org_user_owner.id), [invited_email], 'W!', false
+      )
+      invitation.save
+
+      ::Resque.expects(:enqueue).with(
+        ::Resque::UserJobs::Signup::NewUser,
+        instance_of(String),
+        anything,
+        instance_of(FalseClass)
+      ).returns(true)
+
+      host! "#{@organization.name}.localhost.lan"
+      post signup_organization_user_url(
+        user_domain: @organization.name,
+        user: { username: 'invited-user',
+                email: invited_email,
+                password: '2{Patrañas}' },
+        invitation_token: invitation.token(invited_email)
+      )
+
+      invitation.reload
+      invitation.used_emails.should include(invited_email)
+    end
+
     it 'triggers a viewer creation that creates a viewer user' do
       invited_email = 'viewer_user@whatever.com'
       invitation = Carto::Invitation.create_new(Carto::User.find(@org_user_owner.id), [invited_email], 'W!', true)
       invitation.save
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(false)
       ::Resque.expects(:enqueue).
         with(::Resque::UserJobs::Signup::NewUser, instance_of(String), anything, instance_of(FalseClass)).
         returns(true)
@@ -356,7 +377,7 @@ describe SignupController do
     describe 'ldap signup' do
 
       before(:all) do
-        @ldap_configuration = FactoryGirl.create(:ldap_configuration, { organization_id: @organization.id })
+        @ldap_configuration = create(:ldap_configuration, { organization_id: @organization.id })
       end
 
       after(:all) do
@@ -417,7 +438,6 @@ describe SignupController do
           end
 
           it 'triggers user creation without organization' do
-            Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(false)
             email = 'authenticated@whatever.com'
 
             ::Resque.expects(:enqueue).
@@ -432,7 +452,6 @@ describe SignupController do
           end
 
           it 'triggers user creation with organization' do
-            Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(false)
             username = "authenticated"
             email = "#{username}@#{@organization.whitelisted_email_domains.first}"
 

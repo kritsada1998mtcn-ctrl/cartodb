@@ -1,12 +1,9 @@
-# encoding: UTF-8
-
 require 'active_record'
+require 'cartodb-common'
 require_dependency 'carto/db/connection'
 
 module Carto
   class UserService
-
-    AUTH_DIGEST = '47f940ec20a0993b5e9e4310461cc8a6a7fb84e3'
 
     def initialize(user_model)
       @user = user_model
@@ -21,7 +18,6 @@ module Carto
       Carto::VisualizationQueryBuilder.new
                                       .with_user_id(@user.id)
                                       .with_type(Carto::Visualization::TYPE_CANONICAL)
-                                      .build
                                       .count
     end
 
@@ -31,7 +27,6 @@ module Carto
       Carto::VisualizationQueryBuilder.new
                                       .with_user_id(@user.id)
                                       .with_type(Carto::Visualization::TYPE_DERIVED)
-                                      .build
                                       .count
     end
 
@@ -40,7 +35,6 @@ module Carto
 
       Carto::VisualizationQueryBuilder.new
                                       .with_owned_by_or_shared_with_user_id(@user.id)
-                                      .build
                                       .count
     end
 
@@ -48,7 +42,41 @@ module Carto
       return 0 unless @user.id
 
       Carto::VisualizationQueryBuilder.user_public_visualizations(@user)
-                                      .build
+                                      .count
+    end
+
+    def public_privacy_visualization_count
+      return 0 unless @user.id
+
+      Carto::VisualizationQueryBuilder.user_public_privacy_visualizations(@user)
+                                      .count
+    end
+
+    def public_privacy_dataset_count
+      return 0 unless @user.id
+
+      Carto::VisualizationQueryBuilder.user_public_privacy_visualizations(@user)
+                                      .count
+    end
+
+    def link_privacy_visualization_count
+      return 0 unless @user.id
+
+      Carto::VisualizationQueryBuilder.user_link_privacy_visualizations(@user)
+                                      .count
+    end
+
+    def password_privacy_visualization_count
+      return 0 unless @user.id
+
+      Carto::VisualizationQueryBuilder.user_password_privacy_visualizations(@user)
+                                      .count
+    end
+
+    def private_privacy_visualization_count
+      return 0 unless @user.id
+
+      Carto::VisualizationQueryBuilder.user_private_privacy_visualizations(@user)
                                       .count
     end
 
@@ -56,20 +84,13 @@ module Carto
       return 0 unless @user.id
 
       Carto::VisualizationQueryBuilder.user_all_visualizations(@user)
-        .build
-        .count
+                                      .count
     end
 
     def twitter_imports_count(options={})
       date_to = (options[:to] ? options[:to].to_date : Date.today)
       date_from = (options[:from] ? options[:from].to_date : @user.last_billing_cycle)
       Carto::SearchTweet.twitter_imports_count(@user.search_tweets, date_from, date_to)
-    end
-
-    # Returns an array representing the last 30 days, populated with api_calls
-    # from three different sources
-    def get_api_calls(options = {})
-      return CartoDB::Stats::APICalls.new.get_api_calls_without_dates(@user.username, {old_api_calls: false})
     end
 
     # This method is innaccurate and understates point based tables (the /2 is to account for the_geom_webmercator)
@@ -85,13 +106,17 @@ module Carto
         user_data_size_function = cartodb_extension_version_pre_mu? ?
           "CDB_UserDataSize()" :
           "CDB_UserDataSize('#{@user.database_schema}')"
-        in_database(as: :superuser).execute("SELECT cartodb.#{user_data_size_function}")
-                                   .first['cdb_userdatasize'].to_i
-      rescue => e
+        in_database(as: :superuser) do |user_database|
+          user_database.transaction do
+            user_database.execute(%{SET LOCAL lock_timeout = '1s'})
+            user_database.execute(%{SELECT cartodb.#{user_data_size_function}}).first['cdb_userdatasize'].to_i
+          end
+        end
+      rescue StandardError => e
         attempts += 1
         begin
           in_database(as: :superuser).execute("ANALYZE")
-        rescue => ee
+        rescue StandardError => ee
           CartoDB.report_exception(ee, "Failed to get user db size, retrying...", user: @user)
           raise ee
         end
@@ -110,18 +135,6 @@ module Carto
       else
         "#{Rails.env}_cartodb_user_#{@user.id}"
       end
-    end
-
-    def self.password_digest(password, salt)
-      digest = AUTH_DIGEST
-      10.times do
-        digest = secure_digest(digest, salt, password, AUTH_DIGEST)
-      end
-      digest
-    end
-
-    def self.make_token
-      secure_digest(Time.now, (1..10).map{ rand.to_s })
     end
 
     def cartodb_extension_version_pre_mu?
@@ -144,8 +157,6 @@ module Carto
       ).first['org_member_role']
     end
 
-    private
-
     # Returns a tree elements array with [major, minor, patch] as in http://semver.org/
     def cartodb_extension_semver(extension_version)
       extension_version.split('.').take(3).map(&:to_i)
@@ -156,12 +167,8 @@ module Carto
                                                                    .first['v']
     end
 
-    def self.secure_digest(*args)
-      Digest::SHA1.hexdigest(args.flatten.join('--'))
-    end
-
     def database_password
-      @user.crypted_password + database_username
+      Carto::Common::EncryptionService.hex_digest(@user.crypted_password) + database_username
     end
 
     def in_database(options = {})

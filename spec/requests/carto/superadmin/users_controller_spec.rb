@@ -24,7 +24,7 @@ describe Carto::Superadmin::UsersController do
 
   describe '#usage' do
     before(:all) do
-      @user = FactoryGirl.create(:carto_user)
+      @user = create(:carto_user)
     end
 
     after(:all) do
@@ -52,17 +52,17 @@ describe Carto::Superadmin::UsersController do
       it 'returns usage metrics' do
         get_json(usage_superadmin_user_url(@user.id), { from: Date.today - 5 }, superadmin_headers) do |response|
           success = response.body[@service][:success_responses]
-          success.find { |h| h['date'] == @date.to_s }['value'].should eq 10
-          success.find { |h| h['date'] == (@date - 2).to_s }['value'].should eq 100
+          success.find { |h| h[:date] == @date.to_s }[:value].should eq 10
+          success.find { |h| h[:date] == (@date - 2).to_s }[:value].should eq 100
 
           empty = response.body[@service][:empty_responses]
-          empty.find { |h| h['date'] == (@date - 2).to_s }['value'].should eq 20
+          empty.find { |h| h[:date] == (@date - 2).to_s }[:value].should eq 20
 
           error = response.body[@service][:failed_responses]
-          error.find { |h| h['date'] == (@date - 1).to_s }['value'].should eq 30
+          error.find { |h| h[:date] == (@date - 1).to_s }[:value].should eq 30
 
           total = response.body[@service][:total_requests]
-          total.find { |h| h['date'] == @date.to_s }['value'].should eq 40
+          total.find { |h| h[:date] == @date.to_s }[:value].should eq 40
         end
       end
 
@@ -139,6 +139,15 @@ describe Carto::Superadmin::UsersController do
       it_behaves_like 'dataservices usage metrics'
     end
 
+    describe 'geocoder_geocodio' do
+      before(:all) do
+        @class = CartoDB::GeocoderUsageMetrics
+        @service = :geocoder_geocodio
+      end
+
+      it_behaves_like 'dataservices usage metrics'
+    end
+
     describe 'here_isolines' do
       before(:all) do
         @class = CartoDB::IsolinesUsageMetrics
@@ -170,24 +179,6 @@ describe Carto::Superadmin::UsersController do
       before(:all) do
         @class = CartoDB::IsolinesUsageMetrics
         @service = :tomtom_isolines
-      end
-
-      it_behaves_like 'dataservices usage metrics'
-    end
-
-    describe 'obs_general' do
-      before(:all) do
-        @class = CartoDB::ObservatoryGeneralUsageMetrics
-        @service = :obs_general
-      end
-
-      it_behaves_like 'dataservices usage metrics'
-    end
-
-    describe 'obs_snapshot' do
-      before(:all) do
-        @class = CartoDB::ObservatorySnapshotUsageMetrics
-        @service = :obs_snapshot
       end
 
       it_behaves_like 'dataservices usage metrics'
@@ -227,24 +218,24 @@ describe Carto::Superadmin::UsersController do
       $users_metadata.ZADD(key, 1, "20160915")
       get_json(usage_superadmin_user_url(@user.id), { from: "2016-09-14" }, superadmin_headers) do |response|
         mapviews = response.body[:mapviews][:total_views]
-        mapviews.find { |h| h['date'] == "2016-09-15" }['value'].should eq 2
+        mapviews.find { |h| h[:date] == "2016-09-15" }[:value].should eq 2
       end
     end
 
     it 'returns Twitter imports' do
-      st = SearchTweet.create(
+      st = Carto::SearchTweet.create(
         user_id: @user.id,
         table_id: '96a86fb7-0270-4255-a327-15410c2d49d4',
         data_import_id: '96a86fb7-0270-4255-a327-15410c2d49d4',
         service_item_id: '555',
         retrieved_items: 42,
-        state: ::SearchTweet::STATE_COMPLETE
+        state: Carto::SearchTweet::STATE_COMPLETE
       )
       get_json(usage_superadmin_user_url(@user.id), { from: Date.today - 5 }, superadmin_headers) do |response|
         tweets = response.body[:twitter_imports][:retrieved_items]
         formatted_date = st.created_at.to_date.to_s
-        tweets.find { |h| h['date'] == formatted_date }['value'].should eq st.retrieved_items
-        tweets.find { |h| h['date'] == (Date.today - 5).to_s }['value'].should eq 0
+        tweets.find { |h| h[:date] == formatted_date }[:value].should eq st.retrieved_items
+        tweets.find { |h| h[:date] == (Date.today - 5).to_s }[:value].should eq 0
       end
       st.destroy
     end
@@ -259,7 +250,7 @@ describe Carto::Superadmin::UsersController do
     end
 
     it 'returns only requested services' do
-      get_json(usage_superadmin_user_url(@user.id), { services: ['mapviews'] }, superadmin_headers) do |response|
+      get_json(usage_superadmin_user_url(@user.id), { services: [:mapviews] }, superadmin_headers) do |response|
         response.body.keys.should eq [:mapviews]
       end
     end
@@ -277,36 +268,9 @@ describe Carto::Superadmin::UsersController do
     end
 
     it 'returns an error for unknown user' do
-      get_json(usage_superadmin_user_url(UUIDTools::UUID.random_create.to_s), {}, superadmin_headers) do |response|
+      get_json(usage_superadmin_user_url(Carto::UUIDHelper.random_uuid), {}, superadmin_headers) do |response|
         response.status.should eq 404
       end
-    end
-  end
-
-  describe '#destroy' do
-    before(:all) do
-      @user = FactoryGirl.create(:carto_user)
-    end
-
-    after(:all) do
-      @user.destroy
-    end
-
-    it 'should return specific error when user has related entities' do
-      User.any_instance.stubs(:destroy).raises(CartoDB::SharedEntitiesError, 'Cannot delete user, has shared entities')
-      delete_json(superadmin_user_url(@user), {}, superadmin_headers) do |response|
-        response.status.should eq 422
-        response.body[:errorCode].should eq 'userHasSharedEntities'
-      end
-      User.any_instance.unstub(:destroy)
-    end
-
-    it 'should remove user with shared entities if force is present' do
-      User.any_instance.stubs(:has_shared_entities?).returns(true)
-      delete_json(superadmin_user_url(@user), { force: true }, superadmin_headers) do |response|
-        response.status.should eq 204
-      end
-      User.any_instance.unstub(:has_shared_entities?)
     end
   end
 end

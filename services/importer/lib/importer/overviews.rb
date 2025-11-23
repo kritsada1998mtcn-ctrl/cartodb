@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 module CartoDB
   module Importer2
     # Overviews creation service
@@ -7,6 +5,8 @@ module CartoDB
     # Pending issues: metrics, quotas/limits, timing, logging, ...
     #
     class Overviews
+
+      include ::LoggerHelper
 
       DEFAULT_MIN_ROWS = 1000000
       DEFAULT_STATEMENT_TIMEOUT = 10 * 60 * 1000 # ms
@@ -46,19 +46,12 @@ module CartoDB
       end
 
       def can_create_overviews?
-        @user.reload
-        @user.has_feature_flag?('create_overviews')
+        false
       end
 
       def create_overviews!(table_name)
-        CartoDB::Logger.info message: "Creating overviews", user: @user, table_name: table_name
-        @user.transaction_with_timeout statement_timeout: @statement_timeout do |db|
-          log("Will create overviews for #{table_name}")
-          @importer_stats.timing('createviews') do
-            Carto::OverviewsService.new(db).create_overviews(table_name, @tolerance_px)
-          end
-          log("Overviews created for #{table_name}")
-        end
+        log_info(message: 'create_overviews! called: Doing nothing',
+                 target_user: @user, table: { name: table_name })
       end
 
       def delete_overviews!(table_name)
@@ -79,10 +72,7 @@ module CartoDB
         end
 
         def should_create_overviews?
-          # TODO: check quotas, etc...
-          @service.can_create_overviews? &&
-            supported_geometry? &&
-            table_row_count >= @service.min_rows
+          false
         end
 
         def create_overviews!

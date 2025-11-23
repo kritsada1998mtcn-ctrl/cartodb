@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require_dependency 'cartodb/errors'
 
 module Carto
@@ -7,7 +5,6 @@ module Carto
 
     class GrantablesController < ::Api::ApplicationController
       include PagedSearcher
-      include Carto::ControllerHelper
 
       respond_to :json
 
@@ -15,12 +12,10 @@ module Carto
 
       before_filter :load_organization
 
-      rescue_from Carto::OrderParamInvalidError, with: :rescue_from_carto_error
-
       VALID_ORDER_PARAMS = [:id, :name, :type, :avatar_url, :organization_id, :updated_at].freeze
 
       def index
-        page, per_page, order = page_per_page_order_params(VALID_ORDER_PARAMS)
+        page, per_page, order, _order_direction = page_per_page_order_params(VALID_ORDER_PARAMS)
         query = params[:q]
 
         grantable_query = Carto::GrantableQueryBuilder.new(@organization).with_filter(query)
@@ -31,9 +26,9 @@ module Carto
           grantables: grantables.map { |g| Carto::Api::GrantablePresenter.new(g).to_poro },
           total_entries: total_entries
         }, 200)
-      rescue Carto::OrderParamInvalidError => e
+      rescue Carto::ParamInvalidError => e
         render json: { errors: e.message }, status: e.status
-      rescue => e
+      rescue StandardError => e
         CartoDB.notify_exception(e, { params: params })
         render json: { errors: e.message }, status: 500
       end
@@ -50,5 +45,3 @@ module Carto
 
   end
 end
-
-

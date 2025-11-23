@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require_relative '../../../spec_helper_min'
 require 'support/helpers'
 require_relative '../../../../app/controllers/carto/api/maps_controller'
@@ -13,8 +11,8 @@ describe Carto::Api::MapsController do
 
   describe '#update' do
     before(:all) do
-      @user = FactoryGirl.create(:carto_user)
-      @user2 = FactoryGirl.create(:carto_user)
+      @user = create(:carto_user)
+      @user2 = create(:carto_user)
       @map, @table, @table_visualization, @visualization = create_full_visualization(@user)
     end
 
@@ -177,8 +175,8 @@ describe Carto::Api::MapsController do
 
   describe '#show' do
     before(:all) do
-      @user = FactoryGirl.create(:carto_user)
-      @user2 = FactoryGirl.create(:carto_user)
+      @user = create(:carto_user)
+      @user2 = create(:carto_user)
       @map, @table, @table_visualization, @visualization = create_full_visualization(@user)
     end
 

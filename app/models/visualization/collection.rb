@@ -1,8 +1,6 @@
-# encoding: utf-8
 require 'set'
 require_relative './member'
 require_relative './overlays'
-require_relative '../shared_entity'
 require_relative '../../../services/data-repository/structures/collection'
 
 module CartoDB
@@ -27,7 +25,7 @@ module CartoDB
       # 'exclude_shared' and
       # 'only_shared' are other filtes applied
       # 'only_liked'
-      AVAILABLE_FIELD_FILTERS   = %w{ name type description map_id privacy id parent_id}
+      AVAILABLE_FIELD_FILTERS   = %w{name type description map_id privacy id parent_id}
 
       # Keys in this list are the only filters that should be kept for calculating totals (if present)
       FILTERS_ALLOWED_AT_TOTALS = [ :type, :user_id, :unauthenticated ]
@@ -36,7 +34,7 @@ module CartoDB
       FILTER_SHARED_NO = 'no'
       FILTER_SHARED_ONLY = 'only'
 
-      ALLOWED_ORDERING_FIELDS = [:likes, :mapviews, :row_count, :size]
+      ALLOWED_ORDERING_FIELDS = [:mapviews, :row_count, :size].freeze
 
       # Same as services/data-repository/backend/sequel.rb
       PAGE          = 1
@@ -72,7 +70,7 @@ module CartoDB
       #   except if 'exclude_shared' filter is also present and true,
       # - 'only_shared' forces to use different flow because if there are no shared there's nothing else to do
       # - 'locked' filter has special behaviour
-      # - If 'only_liked' it will return all liked visualizations, not only user's.
+      # - If 'only_liked' it will return all favorited visualizations, not only user's.
       def fetch(filters={})
         filters = filters.dup   # Avoid changing state
         @user_id = filters.fetch(:user_id, nil)
@@ -155,57 +153,11 @@ module CartoDB
         total
       end
 
-      # @throws KeyError
-      def total_liked_entries(type = nil)
-        type ||= @type
-        if @user_id.nil?
-          raise KeyError.new("Can't retrieve likes count without specifying user id")
-        end
-
-        if @unauthenticated_flag
-          unauthenticated_likes(type)
-        else
-          authenticated_likes(type)
-        end
-      end
-
       attr_reader :total_entries
 
       private
 
       attr_reader :collection
-
-      # noinspection RubyArgCount
-      def unauthenticated_likes(type)
-        # visualizations.id == :visualizations__id in Sequel
-        options = {
-          visualizations__id: :subject,
-          privacy: Visualization::Member::PRIVACY_PUBLIC
-        }
-        count_likes(type, options)
-      end
-
-      # noinspection RubyArgCount
-      def authenticated_likes(type)
-        options = {
-          visualizations__id: :subject
-        }
-
-        count_likes(type, options)
-      end
-
-      def count_likes(type, options)
-        options.merge!(type: type) if type
-
-        user_id = @user_id
-
-        dataset = CartoDB::Like.select(:subject)
-                               .where(actor: @user_id)
-                               .join(:visualizations, options)
-        dataset = add_liked_by_conditions_to_dataset(dataset, user_id)
-        dataset.distinct
-               .count
-      end
 
       def paginate_and_get_entries(dataset, filters)
         if @can_paginate
@@ -227,19 +179,18 @@ module CartoDB
 
       def user_shared_entities_count(type = nil)
         type ||= @type
-        user_shared_count = CartoDB::SharedEntity.select(:entity_id)
-        .where(recipient_id: @user_id,
-               entity_type: CartoDB::SharedEntity::ENTITY_TYPE_VISUALIZATION,
-               recipient_type: CartoDB::SharedEntity::RECIPIENT_TYPE_USER)
-        if type.nil?
-          user_shared_count = user_shared_count.join(:visualizations,
-                                                     visualizations__id: :entity_id)
-        else
-          user_shared_count = user_shared_count.join(:visualizations,
-                                                     visualizations__id: :entity_id,
-                                                     type: type)
-        end
-        user_shared_count.count
+        entities = Carto::SharedEntity.select(:entity_id)
+                                      .where(
+                                        recipient_id: @user_id,
+                                        entity_type: Carto::SharedEntity::ENTITY_TYPE_VISUALIZATION,
+                                        recipient_type: Carto::SharedEntity::RECIPIENT_TYPE_USER
+                                      )
+        entities = if type.nil?
+                     entities.joins(:visualization, visualizations__id: :entity_id)
+                   else
+                     entities.joins(:visualization, visualizations__id: :entity_id, type: type)
+                   end
+        entities.count
       end
 
       def organization_shared_entities_count(type)
@@ -248,19 +199,18 @@ module CartoDB
         if user.nil? || user.organization.nil?
           0
         else
-          org_shared_count = CartoDB::SharedEntity.select(:entity_id)
-          .where(:recipient_id => user.organization_id,
-                 :entity_type => CartoDB::SharedEntity::ENTITY_TYPE_VISUALIZATION,
-                 :recipient_type => CartoDB::SharedEntity::RECIPIENT_TYPE_ORGANIZATION)
-          if type.nil?
-            org_shared_count = org_shared_count.join(:visualizations,
-                                                     visualizations__id: :entity_id)
-          else
-            org_shared_count = org_shared_count.join(:visualizations,
-                                                     visualizations__id: :entity_id,
-                                                     type: type)
-          end
-          org_shared_count.count
+          entities = Carto::SharedEntity.select(:entity_id)
+                                        .where(
+                                          recipient_id: user.organization_id,
+                                          entity_type: Carto::SharedEntity::ENTITY_TYPE_VISUALIZATION,
+                                          recipient_type: Carto::SharedEntity::RECIPIENT_TYPE_ORGANIZATION
+                                        )
+          entities = if type.nil?
+                       entities.join(:visualizations, visualizations__id: :entity_id)
+                     else
+                       entities.join(:visualizations, visualizations__id: :entity_id, type: type)
+                     end
+          entities.count
         end
       end
 
@@ -276,39 +226,6 @@ module CartoDB
           @unauthenticated_flag = true
         end
         filters
-      end
-
-      def compute_liked_filter_dataset(dataset, filters)
-        only_liked = filters.delete(:only_liked)
-        if only_liked == true || only_liked == "true"
-          if @user_id.nil?
-            nil
-          else
-            # If no order supplied, order by likes
-            filters[:order] = :likes if filters.fetch(:order, nil).nil?
-
-            liked_vis = user_liked_vis(@user_id)
-            if liked_vis.nil? || liked_vis.empty?
-              nil
-            else
-              dataset.where(id: liked_vis)
-            end
-          end
-        else
-          dataset
-        end
-      end
-
-      def add_liked_by_conditions_to_dataset(dataset, user_id)
-        user_shared_vis = user_shared_vis(user_id)
-        dataset = dataset.where {
-         ({ privacy: [CartoDB::Visualization::Member::PRIVACY_PUBLIC, CartoDB::Visualization::Member::PRIVACY_LINK] }) |
-         ({ user_id: user_id }) |
-         ({ visualizations__id: user_shared_vis })
-        }
-        # TODO: this probably introduces duplicates. See #2899.
-        # Should be removed when like count and list matches for organizations
-        #include_shared_entities(dataset, { user_id: user_id } )
       end
 
       def base_collection(filters)
@@ -356,6 +273,40 @@ module CartoDB
         dataset
       end
 
+      def compute_liked_filter_dataset(dataset, filters)
+        only_liked = filters.delete(:only_liked)
+        if [true, 'true'].include?(only_liked)
+          if @user_id.nil?
+            nil
+          else
+            filters[:order] = :updated_at if filters.fetch(:order, nil).nil?
+
+            liked_vis = user_liked_vis(@user_id)
+            if liked_vis.nil? || liked_vis.empty?
+              nil
+            else
+              dataset.where(id: liked_vis)
+            end
+          end
+        else
+          dataset
+        end
+      end
+
+      def add_liked_by_conditions_to_dataset(dataset, user_id)
+        user_shared_vis = user_shared_vis(user_id)
+        dataset.where {
+          Sequel.|(
+            { privacy: [CartoDB::Visualization::Member::PRIVACY_PUBLIC, CartoDB::Visualization::Member::PRIVACY_LINK] },
+            { user_id: user_id },
+            { visualizations__id: user_shared_vis }
+          )
+        }
+        # TODO: this probably introduces duplicates. See #2899.
+        # Should be removed when like count and list matches for organizations
+        # include_shared_entities(dataset, { user_id: user_id } )
+      end
+
       def apply_filters(dataset, filters)
         @type = filters.fetch(:type, nil)
         @type = nil if @type == ''
@@ -379,8 +330,6 @@ module CartoDB
       # Note: Not implemented ascending order for now, all are descending sorts
       def lazy_order_by(objects, field)
         case field
-        when :likes
-          lazy_order_by_likes(objects)
         when :mapviews
           lazy_order_by_mapviews(objects)
         when :row_count
@@ -388,10 +337,6 @@ module CartoDB
         when :size
           lazy_order_by_size(objects)
         end
-      end
-
-      def lazy_order_by_likes(objects)
-        objects.sort! { |obj_a, obj_b| obj_b.likes.count <=> obj_a.likes.count }
       end
 
       def lazy_order_by_mapviews(objects)
@@ -426,7 +371,6 @@ module CartoDB
       end
 
       # Allows to order by any CartoDB::Visualization::Member attribute (eg: updated_at, created_at), plus:
-      # - likes
       # - mapviews
       # - row_count
       # - size
@@ -518,17 +462,14 @@ module CartoDB
           end
         }
 
-        CartoDB::SharedEntity.where(
-            recipient_id: recipient_ids,
-            entity_type: CartoDB::SharedEntity::ENTITY_TYPE_VISUALIZATION
-        ).all
-        .map { |entity|
-          entity.entity_id
-        }
+        Carto::SharedEntity.where(
+          recipient_id: recipient_ids,
+          entity_type: Carto::SharedEntity::ENTITY_TYPE_VISUALIZATION
+        ).pluck(:entity_id)
       end
 
       def user_liked_vis(user_id)
-        Like.where(actor: user_id).all.map{ |like| like.subject }
+        Carto::Like.where(actor: user_id).all.map{ |like| like.subject }
       end
 
       def tags_from(filters={})

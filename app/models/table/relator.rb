@@ -1,4 +1,3 @@
-# encoding: utf-8
 require_relative '../visualization/collection'
 require_relative '../visualization/member'
 
@@ -81,7 +80,7 @@ module CartoDB
         AND synchronizations.name = '#{table.name}'
         LIMIT 1
       }).to_a
-    rescue => exception
+    rescue StandardError => exception
       puts exception.to_s
       puts exception.backtrace
       nil

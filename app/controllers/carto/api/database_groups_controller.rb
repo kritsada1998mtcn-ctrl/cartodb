@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require_dependency 'cartodb/errors'
 
 module Carto
@@ -34,7 +32,7 @@ module Carto
       before_filter :load_table, :only => [:update_permission, :destroy_permission]
 
       def create
-        group = Group.new_instance(@database_name, @name, @database_role)
+        group = Carto::Group.new_instance(@database_name, @name, @database_role)
         if group.save
           render json: group.to_json
         else
@@ -43,7 +41,7 @@ module Carto
       rescue CartoDB::ModelAlreadyExistsError => e
         CartoDB.notify_debug('Group already exists', { params: params })
         render json: { errors: "A group with that data already exists" }, status: 409
-      rescue => e
+      rescue StandardError => e
         CartoDB.notify_exception(e, { params: params , group: (group ? group : 'not created') })
         render json: { errors: e.message }, status: 500
       end
@@ -67,7 +65,7 @@ module Carto
             raise "Group not found and no matching rename found"
           end
         end
-      rescue => e
+      rescue StandardError => e
         CartoDB.notify_exception(e, { params: params , group: (@group ? @group : 'not loaded') })
         render json: { errors: e.message }, status: 500
       end
@@ -75,7 +73,7 @@ module Carto
       def destroy
         @group.destroy
         render json: {}, status: 204
-      rescue => e
+      rescue StandardError => e
         CartoDB.notify_exception(e, { params: params , group: (@group ? @group : 'not loaded') })
         render json: { errors: e.message }, status: 500
       end
@@ -94,7 +92,7 @@ module Carto
         else
           render json: { errors: "Some users were already in the group: #{@usernames - added_usernames }", users: added_usernames }, status: 409
         end
-      rescue => e
+      rescue StandardError => e
         CartoDB.notify_exception(e, { params: params , group: (@group ? @group : 'not loaded') })
         render json: { errors: e.message }, status: 500
       end
@@ -110,33 +108,33 @@ module Carto
         else
           render json: { errors: "Some users (#{@usernames - removed_usernames}) were not in the group", users: removed_usernames }, status: 404
         end
-      rescue => e
+      rescue StandardError => e
         CartoDB.notify_exception(e, { params: params , group: (@group ? @group : 'not loaded') })
         render json: { errors: e.message }, status: 500
       end
 
       def update_permission
-        permission = CartoDB::Permission[@table.permission.id]
+        permission = Carto::Permission.find(@table.permission.id)
         permission.set_group_permission(@group, @access)
         permission.save
         render json: {}, status: 200
       rescue CartoDB::ModelAlreadyExistsError => e
         CartoDB.notify_debug('Permission already granted', { params: params })
         render json: { errors: "That permission is already granted" }, status: 409
-      rescue => e
+      rescue StandardError => e
         CartoDB.notify_exception(e, { params: params , group: (@group ? @group : 'not loaded') })
         render json: { errors: e.message }, status: 500
       end
 
       def destroy_permission
-        permission = CartoDB::Permission[@table.permission.id]
+        permission = Carto::Permission.find(@table.permission.id)
         permission.remove_group_permission(@group)
         permission.save
         render json: {}, status: 200
       rescue CartoDB::ModelAlreadyExistsError => e
         CartoDB.notify_debug('Permission already revoked', { params: params })
         render json: { errors: "That permission is already revoked" }, status: 404
-      rescue => e
+      rescue StandardError => e
         CartoDB.notify_exception(e, { params: params , group: (@group ? @group : 'not loaded') })
         render json: { errors: e.message }, status: 500
       end
@@ -147,7 +145,8 @@ module Carto
         raise "missing org_metadata_api configuration" unless Cartodb.config[:org_metadata_api]
 
         authenticate_or_request_with_http_basic do |username, password|
-          username == Cartodb.config[:org_metadata_api]["username"] && password == Cartodb.config[:org_metadata_api]["password"]
+          username == Cartodb.get_config(:org_metadata_api, 'username') &&
+            password == Cartodb.get_config(:org_metadata_api, 'password')
         end
       end
 
@@ -159,13 +158,14 @@ module Carto
         @usernames = @username.present? ? [ @username ] : params[:users]
         @table_name = params[:table_name]
         case params['access']
-            when nil
-            when 'r'
-              @access = CartoDB::Permission::ACCESS_READONLY
-            when 'w'
-              @access = CartoDB::Permission::ACCESS_READWRITE
-            else raise "Unknown access #{params['access']}"
-            end
+        when 'r'
+          @access = Carto::Permission::ACCESS_READONLY
+        when 'w'
+          @access = Carto::Permission::ACCESS_READWRITE
+        when nil
+          nil
+        else raise "Unknown access #{params['access']}"
+        end
       end
 
       def get_group_from_loaded_parameters
@@ -173,7 +173,10 @@ module Carto
       end
 
       def get_group(database_name, name)
-        Group.where(organization_id: Organization.find_by_database_name(database_name).id, name: name).first
+        # rubocop:disable Rails/DynamicFindBy
+        organization = Carto::Organization.find_by_database_name(database_name)
+        # rubocop:enable Rails/DynamicFindBy
+        Carto::Group.where(organization_id: organization.id, name: name).first
       end
 
       def load_mandatory_group

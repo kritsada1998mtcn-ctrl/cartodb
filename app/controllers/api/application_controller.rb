@@ -1,9 +1,7 @@
-# coding: utf-8
-
 require_relative '../../../lib/cartodb/stats/editor_apis'
 
 class Api::ApplicationController < ApplicationController
-  protect_from_forgery with: :null_session
+  protect_from_forgery with: :null_session, except: :options
 
   # Don't force org urls
   skip_before_filter :ensure_org_url_if_org_user, :browser_is_html5_compliant?
@@ -13,6 +11,10 @@ class Api::ApplicationController < ApplicationController
   before_filter :ensure_account_has_been_activated
 
   before_filter :setup_stats_instance
+
+  def options
+    head :ok
+  end
 
   protected
 
@@ -34,16 +36,16 @@ class Api::ApplicationController < ApplicationController
     @stats_aggregator = CartoDB::Stats::EditorAPIs.instance
   end
 
+  def valid_password_confirmation
+    unless current_user.valid_password_confirmation(params[:password_confirmation])
+      raise Carto::PasswordConfirmationError.new
+    end
+  end
+
   private
 
   def callback_valid?
     # While only checks basic characters, represents most common use of JS function names
     params[:callback].nil?  || !!(params[:callback] =~ /\A[$a-z_][0-9a-z_$]*\z/i)
-  end
-
-  def json_formatted_request?
-    format = request.format
-
-    format.json? if format
   end
 end

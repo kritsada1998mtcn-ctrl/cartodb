@@ -85,7 +85,6 @@ module Carto
           options:        map_options(@visualization),
           id:             @visualization.id,
           layers:         layers_vizjson(forced_privacy_version),
-          likes:          @visualization.likes.count,
           map_provider:   map.provider,
           overlays:       overlays_vizjson(@visualization),
           title:          @visualization.qualified_name(user),
@@ -110,9 +109,7 @@ module Carto
         return nil unless map.view_bounds_sw && map.view_bounds_ne
 
         ::JSON.parse("[#{map.view_bounds_sw}, #{map.view_bounds_ne}]")
-      rescue => e
-        CartoDB::Logger.debug(
-          message: "Error parsing map bounds: #{map.id}, #{map.view_bounds_sw}, #{map.view_bounds_ne}", exception: e)
+      rescue StandardError
         nil
       end
 
@@ -169,8 +166,9 @@ module Carto
       end
 
       def datasource_vizjson(options, forced_privacy_version)
+        username = @visualization.user.username unless @visualization.user.nil?
         ds = {
-          user_name: @visualization.user.username,
+          user_name: username,
           maps_api_template: ApplicationHelper.maps_api_template(api_templates_type(options)),
           stat_tag: @visualization.id
         }
@@ -183,6 +181,8 @@ module Carto
       end
 
       def user_info_vizjson(user)
+        return {} if user.nil?
+
         {
           fullname: user.name_or_username,
           avatar_url: user.avatar_url,

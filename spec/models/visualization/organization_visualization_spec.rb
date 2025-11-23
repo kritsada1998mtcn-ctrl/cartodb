@@ -1,4 +1,3 @@
-# encoding: utf-8
 require_relative '../../spec_helper'
 require_relative '../../../services/data-repository/backend/sequel'
 require_relative '../../../app/models/visualization/member'
@@ -24,7 +23,7 @@ describe Visualization::Member do
       canonical_vis.has_permission?(@org_user_owner, CartoDB::Visualization::Member::PERMISSION_READONLY).should eq true
       canonical_vis.has_permission?(@org_user_1, CartoDB::Visualization::Member::PERMISSION_READONLY).should eq false
 
-      give_permission(canonical_vis, @org_user_1, CartoDB::Permission::ACCESS_READONLY)
+      give_permission(canonical_vis, @org_user_1, Carto::Permission::ACCESS_READONLY)
 
       canonical_vis.has_permission?(@org_user_1, CartoDB::Visualization::Member::PERMISSION_READONLY).should eq true
     end
@@ -109,7 +108,7 @@ describe Visualization::Member do
   def create_table(user)
     table = Table.new
     table.user_id = user.id
-    table.name = 'wadus_table_' + UUIDTools::UUID.timestamp_create.to_s
+    table.name = 'wadus_table_' + Carto::UUIDHelper.random_uuid
     table.save
     table.reload
 

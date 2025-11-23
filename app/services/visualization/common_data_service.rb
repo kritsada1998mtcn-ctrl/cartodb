@@ -1,6 +1,5 @@
 require 'rollbar'
 require_relative '../../models/carto/visualization'
-require_relative '../../models/carto/external_source'
 require_relative '../../models/common_data/singleton'
 
 module CartoDB
@@ -8,6 +7,9 @@ module CartoDB
   module Visualization
 
     class CommonDataService
+
+      include ::LoggerHelper
+      extend ::LoggerHelper
 
       def initialize(datasets = nil)
         @datasets = datasets
@@ -31,14 +33,21 @@ module CartoDB
         common_data_base_url = common_data_config['base_url']
         common_data_username = common_data_config['username']
         common_data_user = Carto::User.where(username: common_data_username).first
-        if !common_data_base_url.nil?
-          # We set user_domain to nil to avoid duplication in the url for subdomainfull urls. Ie. user.carto.com/u/cartodb/...
-          common_data_base_url + CartoDB.path(controller, 'api_v1_visualizations_index', {type: 'table', privacy: 'public', user_domain: nil})
-        elsif !common_data_user.nil?
-          CartoDB.url(controller, 'api_v1_visualizations_index', {type: 'table', privacy: 'public'}, common_data_user)
+        if common_data_base_url.present?
+          Rails.application.routes.url_helpers.api_v1_visualizations_index_url(
+            type: 'table',
+            privacy: 'public',
+            host: common_data_base_url
+          )
+        elsif common_data_user.present?
+          Rails.application.routes.url_helpers.api_v1_visualizations_index_url(
+            type: 'table',
+            privacy: 'public',
+            host: CartoDB.base_url_from_user(common_data_user)
+          )
         else
-          CartoDB.notify_error(
-            'cant create common-data url. User doesn\'t exist and base_url is nil',
+          log_error(
+            message: "Can't create common-data url. User doesn't exist and base_url is nil",
             username: common_data_username
           )
         end
@@ -50,7 +59,7 @@ module CartoDB
         datasets = begin
                      get_datasets(visualizations_api_url)
                    rescue StandardError => e
-                     CartoDB::Logger.error(message: "Loading common data failed", exception: e, user: user)
+                     log_error(message: "Loading common data failed", exception: e, target_user: user)
                      nil
                    end
         # As deletion would delete all user syncs, if the endpoint fails or return nothing, just do nothing.
@@ -97,7 +106,7 @@ module CartoDB
                 added += 1
               end
 
-              external_source = Carto::ExternalSource.where(visualization_id: visualization.id).first
+              external_source = Carto::ExternalSource.find_by(visualization_id: visualization.id)
               if external_source
                 if external_source.update_data(
                   dataset['url'],
@@ -109,7 +118,7 @@ module CartoDB
                   external_source.save!
                 end
               else
-                external_source = Carto::ExternalSource.create(
+                Carto::ExternalSource.create(
                   visualization_id: visualization.id,
                   import_url: dataset['url'],
                   rows_counted: dataset['rows'],
@@ -118,7 +127,7 @@ module CartoDB
                   username: 'common-data'
                 )
               end
-            rescue => e
+            rescue StandardError => e
               CartoDB.notify_exception(e, {
                 name: dataset.fetch('name', 'ERR: name'),
                 source: dataset.fetch('source', 'ERR: source'),
@@ -147,7 +156,7 @@ module CartoDB
             # This happens for the organization quota validation in the user model so we bypass this
             user.save(:validate => false, raise_on_failure: true)
           end
-        rescue => e
+        rescue StandardError => e
           CartoDB.notify_exception(e, {user: user})
         end
       end
@@ -173,20 +182,19 @@ module CartoDB
         begin
           visualization.destroy
           true
-        rescue => e
+        rescue StandardError => e
           match = e.message =~ /violates foreign key constraint "external_data_imports_external_source_id_fkey"/
-          if match.present? && match >= 0
+          if match&.positive?
             # After #13667 this should no longer happen: deleting remote visualizations is propagated, and external
             # sources, external data imports and syncs are deleted
-            CartoDB::Logger.error(message: "Couldn't delete, already imported", visualization_id: visualization.id)
+            log_error(message: "Couldn't delete, already imported", visualization: { id: visualization.id })
             false
           else
-            CartoDB.notify_error(
-              "Couldn't delete remote visualization",
-              visualization: visualization.id,
-              error: e.inspect
+            Rails.logger.error(
+              message: "Couldn't delete remote visualization",
+              visualization_id: visualization.id,
+              exception: e
             )
-            raise e
           end
         end
       end

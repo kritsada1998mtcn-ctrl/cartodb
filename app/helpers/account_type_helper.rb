@@ -21,15 +21,20 @@ module AccountTypeHelper
 
   PUBLIC_PLAN_NAME = {
     'FREE' => 'Free',
-    'PERSONAL30' => 'Professional Trial',
+    'Individual' => 'Individual',
+    'Annual Individual' => 'Annual Individual',
+    'PERSONAL30' => 'Professional',
     'BASIC' => 'Professional',
     'BASIC LUMP-SUM' => 'Professional Lump-Sum',
-    'ENTERPRISE' => 'Enterprise'
+    'ENTERPRISE' => 'Enterprise',
+    'Free 2020' => 'Free'
   }.freeze
 
   PLAN_NAME_BY_ACCOUNT_TYPE = {
     'FREE' => 'Free',
-    'PERSONAL30' => 'Professional Trial',
+    'Individual' => 'Individual',
+    'Annual Individual' => 'Annual Individual',
+    'PERSONAL30' => 'Professional',
     'BASIC' => 'Professional',
     'BASIC LUMP-SUM' => 'Professional',
     'BASIC ACADEMIC' => 'Professional Non-Profit',
@@ -37,11 +42,9 @@ module AccountTypeHelper
     'BASIC LUMP-SUM ACADEMIC' => 'Professional Non-Profit',
     'BASIC LUMP-SUM NON-PROFIT' => 'Professional Non-Profit',
     'Enterprise Builder - Annual' => 'Enterprise',
-    'Enterprise Builder - On-premises - Annual' => 'Enterprise',
     'Cloud Engine & Enterprise Builder - Annual' => 'Enterprise',
-    'Internal use engine - Cloud - Annual' => 'Internal',
-    'Internal use engine - On-premises - Annual' => 'Internal',
-    'Internal use engine - On-premises Lite - Annual' => 'Internal',
+    'Internal use engine - Cloud - Annual' => 'Enterprise Engine',
+    'Internal use engine - On-premises - Annual' => 'Enterprise Engine',
     'OEM engine - Cloud - Annual' => 'Enterprise',
     'OEM engine - On-premises - Annual' => 'Enterprise',
     'PARTNERS' => 'Partner',
@@ -53,7 +56,9 @@ module AccountTypeHelper
     'CARTO for Community - Annual' => 'Ambassador',
     'Free Basemap LDS - Annual' => 'Free',
     'Enterprise LDS - Annual' => 'Enterprise',
-    'CARTO Trial Account - Annual' => 'Trial'
+    'CARTO Trial Account - Annual' => 'Trial',
+    'Free 2020' => 'Free',
+    'Grant' => 'Grant'
   }.freeze
 
   PLAN_NAME_BY_ACCOUNT_TYPE_DOWN = Hash[PLAN_NAME_BY_ACCOUNT_TYPE.map { |k, v| [k.downcase, v] }]

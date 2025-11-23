@@ -1,13 +1,7 @@
-# encoding: utf-8
-
-require_relative '../../../spec_helper'
+require 'spec_helper_unit'
 
 describe Carto::Visualization::Watcher do
-  before(:all) do
-    $tables_metadata.flushdb
-  end
-
-  after(:all) do
+  before do
     $tables_metadata.flushdb
   end
 
@@ -15,7 +9,7 @@ describe Carto::Visualization::Watcher do
     it 'tests notify and list methods' do
       watcher_ttl = 2
 
-      org_id = UUIDTools::UUID.timestamp_create.to_s
+      org_id = Carto::UUIDHelper.random_uuid
       organization_mock = mock
       organization_mock.stubs(:id).returns(org_id)
 
@@ -31,7 +25,7 @@ describe Carto::Visualization::Watcher do
       user2_mock.stubs(:username).returns(user2_name)
       user2_mock.stubs(:organization).returns(organization_mock)
 
-      vis_id = UUIDTools::UUID.timestamp_create.to_s
+      vis_id = Carto::UUIDHelper.random_uuid
       visualization_mock = mock
       visualization_mock.stubs(:id).returns(vis_id)
 

@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require 'fileutils'
 require_relative '../../../../spec/spec_helper'
 require_relative '../../lib/importer/csv_normalizer'
@@ -13,7 +11,7 @@ describe CartoDB::Importer2::CsvNormalizer do
   BUG_COLUMNS_WRONG_SPLIT_FIXTURE_FILE = "#{File.dirname(__FILE__)}/bug_columns_wrong_split.csv"
 
   before(:all) do
-    @user = FactoryGirl.create(:user)
+    @user = create(:user)
   end
 
   after(:all) do
@@ -60,6 +58,12 @@ describe CartoDB::Importer2::CsvNormalizer do
 
     it 'detects it correctly with escaped quotes' do
       fixture = string_with_escaped_quote_factory
+      csv = CartoDB::Importer2::CsvNormalizer.new(fixture, Log.new(@user))
+      csv.detect_delimiter.should eq ','
+    end
+
+    it 'detects it correctly with newlines' do
+      fixture = string_with_newlines_factory
       csv = CartoDB::Importer2::CsvNormalizer.new(fixture, Log.new(@user))
       csv.detect_delimiter.should eq ','
     end
@@ -164,9 +168,9 @@ describe CartoDB::Importer2::CsvNormalizer do
 
     filepath = get_temp_csv_fullpath
 
-    File.open(filepath, 'wb') do |f2|  
+    File.open(filepath, 'wb') do |f2|
       f2.puts invalid_content
-    end  
+    end
 
     return filepath
   end
@@ -266,6 +270,18 @@ describe CartoDB::Importer2::CsvNormalizer do
     filepath
   end
 
+  def string_with_newlines_factory
+    filepath = get_temp_csv_fullpath
+
+    ::File.open(filepath, 'w') do |file|
+      file << 'name,description with spaces,wadus,wadus' << "\n"
+      file << "foo,,,bar" << "\n"
+      file << "foo,\"newline with spaces\nnewline with spaces\n\",,bar" << "\n"
+    end
+
+    filepath
+  end
+
   def bug_columns_wrong_split_factory
     temp_destination = get_temp_csv_fullpath
 
@@ -274,12 +290,8 @@ describe CartoDB::Importer2::CsvNormalizer do
     temp_destination
   end
 
-
-
-
   def get_temp_csv_fullpath
-    "/var/tmp/#{Time.now.to_f}-#{rand(999)}.csv"
+    "/tmp/#{Time.now.to_f}-#{rand(999)}.csv"
   end
 
 end
-

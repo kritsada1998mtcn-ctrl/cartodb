@@ -1,6 +1,4 @@
-# encoding: utf-8
-
-require 'spec_helper_min'
+require 'spec_helper_unit'
 require 'support/helpers'
 
 describe Carto::Analysis do
@@ -106,18 +104,11 @@ describe Carto::Analysis do
     include Carto::Factories::Visualizations
     include HelperMethods
 
-    before(:all) do
+    before do
       bypass_named_maps
-      @user = FactoryGirl.create(:carto_user)
+      @user = create(:carto_user, factory_bot_context: { only_db_setup: true })
       @map, @table, @table_visualization, @visualization = create_full_visualization(@user)
-      @analysis = FactoryGirl.create(:source_analysis, visualization_id: @visualization.id, user_id: @user.id)
-    end
-
-    after(:all) do
-      destroy_full_visualization(@map, @table, @table_visualization, @visualization)
-      # This avoids connection leaking.
-      ::User[@user.id].destroy
-      @analysis.destroy
+      @analysis = create(:source_analysis, visualization_id: @visualization.id, user_id: @user.id)
     end
 
     it 'triggers notify_map_change on related map(s)' do
@@ -138,39 +129,23 @@ describe Carto::Analysis do
     include Carto::Factories::Visualizations
     include HelperMethods
 
-    before(:all) do
-      @user = FactoryGirl.create(:carto_user)
+    before do
+      @user = create(:carto_user, factory_bot_context: { only_db_setup: true })
       @map, @table, @table_visualization, @visualization = create_full_visualization(@user)
-    end
-
-    after(:all) do
-      destroy_full_visualization(@map, @table, @table_visualization, @visualization)
-      # This avoids connection leaking.
-      ::User[@user.id].destroy
-      @analysis.destroy if @analysis
-    end
-
-    before(:each) do
-      bypass_named_maps
-    end
-
-    after(:each) do
-      @user.viewer = false
-      @user.save
     end
 
     it "can't create a new analysis" do
       @user.viewer = true
       @user.save
 
-      @analysis = FactoryGirl.build(:source_analysis, visualization_id: @visualization.id, user_id: @user.id)
+      @analysis = build(:source_analysis, visualization_id: @visualization.id, user_id: @user.id)
 
       @analysis.save.should be_false
       @analysis.errors[:user].should eq(["Viewer users can't edit analyses"])
     end
 
     it "can't delete analyses" do
-      @analysis = FactoryGirl.create(:source_analysis, visualization_id: @visualization.id, user_id: @user.id)
+      @analysis = create(:source_analysis, visualization_id: @visualization.id, user_id: @user.id)
 
       @user.viewer = true
       @user.save
@@ -185,48 +160,63 @@ describe Carto::Analysis do
   describe '#source_analysis_for_layer' do
     include Carto::Factories::Visualizations
 
-    before(:all) do
-      @user = FactoryGirl.create(:carto_user)
-      @map, @table, @table_visualization, @visualization = create_full_visualization(@user)
-      @layer = @visualization.data_layers.first
+    context 'with regular user' do
+      let(:user) { create(:carto_user, factory_bot_context: { only_db_setup: true }) }
+      let(:visualization_objects) { create_full_visualization(user) }
+      let(:layer) { visualization_objects[3].data_layers.first }
+      let(:table_name) { visualization_objects[1].name }
+
+      it 'copies the layer query' do
+        layer.options[:query] = 'SELECT * FROM wadus'
+        analysis = described_class.source_analysis_for_layer(layer, 0)
+
+        expect(analysis.analysis_node.params[:query].should).to eq('SELECT * FROM wadus')
+      end
+
+      it 'copies the layer table_name prepending "public"' do
+        layer.options[:table_name] = table_name
+        analysis = described_class.source_analysis_for_layer(layer, 0)
+
+        expect(analysis.analysis_node.options[:table_name]).to eq("public.#{table_name}")
+      end
+
+      it 'prepends "public" to table_name' do
+        layer.options.merge!(table_name: table_name, user_name: 'juan')
+        analysis = described_class.source_analysis_for_layer(layer, 0)
+
+        expect(analysis.analysis_node.options[:table_name]).to eq("public.#{table_name}")
+      end
     end
 
-    after(:all) do
-      destroy_full_visualization(@map, @table, @table_visualization, @visualization)
-      # This avoids connection leaking.
-      ::User[@user.id].destroy
-    end
+    context 'with organization user' do
+      let(:organization_owner) { create(:carto_user, factory_bot_context: { only_db_setup: true }) }
+      let(:organization) { create(:organization, :with_owner, owner: organization_owner) }
+      let(:visualization_objects) { create_full_visualization(organization.owner) }
+      let(:layer) { visualization_objects[3].data_layers.first }
+      let(:table_name) { visualization_objects[1].name }
 
-    it 'copies the layer query' do
-      @layer.options[:query] = 'SELECT * FROM wadus'
-      analysis = Carto::Analysis.source_analysis_for_layer(@layer, 0)
-      analysis.analysis_node.params[:query].should eq 'SELECT * FROM wadus'
-    end
+      it 'copies the layer query' do
+        layer.options[:query] = 'SELECT * FROM wadus'
+        analysis = described_class.source_analysis_for_layer(layer, 0)
 
-    it 'copies the layer table_name' do
-      @layer.options[:table_name] = 'tt11'
-      analysis = Carto::Analysis.source_analysis_for_layer(@layer, 0)
-      analysis.analysis_node.options[:table_name].should eq 'tt11'
-    end
+        expect(analysis.analysis_node.params[:query]).to eq('SELECT * FROM wadus')
+      end
 
-    it 'copies only the table_name for non-org users' do
-      @layer.options.merge!(table_name: 'tt11', user_name: 'juan')
-      analysis = Carto::Analysis.source_analysis_for_layer(@layer, 0)
-      analysis.analysis_node.options[:table_name].should eq 'tt11'
-    end
+      it 'always qualifies table_name in organizations' do
+        layer.options.merge!(table_name: table_name, user_name: organization_owner.username)
+        analysis = described_class.source_analysis_for_layer(layer, 0)
 
-    it 'always qualifies table_name in organizations' do
-      @layer.options.merge!(table_name: 'tt33', user_name: @user.username)
-      @layer.user.stubs(:organization_user?).returns(true)
-      analysis = Carto::Analysis.source_analysis_for_layer(@layer, 0)
-      analysis.analysis_node.options[:table_name].should eq "#{@user.username}.tt33"
-    end
+        expect(analysis.analysis_node.options[:table_name]).to eq("#{organization_owner.username}.#{table_name}")
+      end
 
-    it 'uses default SQL query if missing' do
-      @layer.options.merge!(table_name: 'tt33', user_name: @user.username, query: '')
-      Carto::User.any_instance.stubs(:organization_user?).returns(true)
-      analysis = Carto::Analysis.source_analysis_for_layer(@layer, 0)
-      analysis.analysis_node.params[:query].should eq "SELECT * FROM #{@user.username}.tt33"
+      it 'uses default SQL query if missing' do
+        layer.options.merge!(table_name: table_name, user_name: organization_owner.username, query: '')
+        analysis = described_class.source_analysis_for_layer(layer, 0)
+
+        expect(analysis.analysis_node.params[:query]).to(
+          eq("SELECT * FROM #{organization_owner.username}.#{table_name}")
+        )
+      end
     end
   end
 end

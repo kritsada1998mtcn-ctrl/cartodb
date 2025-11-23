@@ -1,5 +1,3 @@
-# encoding: UTF-8
-
 require_dependency 'carto/api/infowindow_migrator'
 require_dependency 'carto/table_utils'
 
@@ -261,22 +259,22 @@ module Carto
 
       def infowindow_data_v1
         with_template(@layer.infowindow, @layer.infowindow_template_path)
-      rescue => e
-        CartoDB::Logger.error(exception: e)
+      rescue StandardError => e
+        log_error(exception: e)
         throw e
       end
 
       def infowindow_data_v2
         whitelisted_infowindow(with_template(@layer.infowindow, @layer.infowindow_template_path))
-      rescue => e
-        CartoDB::Logger.error(exception: e)
+      rescue StandardError => e
+        log_error(exception: e)
         throw e
       end
 
       def tooltip_data_v2
         whitelisted_infowindow(with_template(@layer.tooltip, @layer.tooltip_template_path))
-      rescue => e
-        CartoDB::Logger.error(exception: e)
+      rescue StandardError => e
+        log_error(exception: e)
         throw e
       end
 

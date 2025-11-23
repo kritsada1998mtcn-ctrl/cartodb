@@ -1,5 +1,3 @@
-# encoding: utf-8
-require 'uuidtools'
 require_relative '../../geocoder/lib/hires_geocoder_factory'
 require_relative '../../geocoder/lib/geocoder_config'
 require_relative 'geocoder_cache'
@@ -169,7 +167,7 @@ module CartoDB
     end
 
     def import_results_to_temp_table
-      connection.copy_into(temp_table_name.lit, data: File.read(deflated_results_path), format: :csv)
+      connection.copy_into(Sequel.lit(temp_table_name), data: File.read(deflated_results_path), format: :csv)
     end
 
     def load_results_into_original_table
@@ -190,7 +188,7 @@ module CartoDB
     end
 
     def temp_table_name
-      @temp_table_name ||= "#{@schema}.geo_#{UUIDTools::UUID.timestamp_create.to_s.gsub('-', '')}"
+      @temp_table_name ||= "#{@schema}.geo_#{Carto::UUIDHelper.random_uuid.gsub('-', '')}"
     end
 
     def deflated_results_path

@@ -1,4 +1,3 @@
-# encoding: utf-8
 require_relative 'exceptions'
 require_relative '../../../lib/carto/http/client'
 
@@ -38,7 +37,7 @@ module CartoDB
       @hits = connection.select.from(temp_table_name).where('longitude is not null and latitude is not null').count.to_i
       copy_results_to_table
       @log.append_and_store "Finished geocoder cache job"
-    rescue => e
+    rescue StandardError => e
       @log.append_and_store "Error getting results from geocoder cache: #{e.inspect}"
       handle_cache_exception e
     ensure
@@ -100,7 +99,7 @@ module CartoDB
         sql.gsub! '%%VALUES%%', rows.map { |r| "(#{r[:searchtext]}, '#{r[:the_geom]}')" }.join(',')
         run_query(sql) if rows && rows.size > 0
       end while rows.size >= @batch_size
-    rescue => e
+    rescue StandardError => e
       handle_cache_exception e
     ensure
       drop_temp_table
@@ -115,7 +114,7 @@ module CartoDB
     end
 
     def load_results_to_temp_table
-      connection.copy_into(temp_table_name.lit, data: File.read(cache_results), format: :csv)
+      connection.copy_into(Sequel.lit(temp_table_name), data: File.read(cache_results), format: :csv)
     end
 
     def copy_results_to_table

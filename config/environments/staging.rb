@@ -1,5 +1,3 @@
-# coding: UTF-8
-
 require 'carto/configuration'
 
 CartoDB::Application.configure do
@@ -22,21 +20,15 @@ CartoDB::Application.configure do
   # If you have no front-end server that supports something like X-Sendfile,
   # just comment this out and Rails will serve the files
 
-  # Note that we pass the desired log level to the logger's constructor;
-  # assigning to `config.log_level` would have no effect here, since we have set the logger explicitly.
-  config.logger = ActiveSupport::TaggedLogging.new(
-    ActiveSupport::BufferedLogger.new(Carto::Conf.new.log_file_path('staging.log'), Logger::INFO)
-  )
-
-  # Use a different logger for distributed setups
-  # config.logger = SyslogLogger.new
+  # Setting this to true will enable ActiveController's enforcement of SSL.
+  config.ssl_required = true
 
   # Use a different cache store in production
   # config.cache_store = :mem_cache_store
 
   # Disable Rails's static asset server
   # In production, Apache or nginx will already do this
-  config.serve_static_assets = false
+  config.serve_static_files = false
 
   # Enable serving of images, stylesheets, and javascripts from an asset server
   # config.action_controller.asset_host = "http://assets.example.com"
@@ -47,6 +39,8 @@ CartoDB::Application.configure do
 
   # Enable threaded mode
   # config.threadsafe!
+
+  config.eager_load = true
 
   # Enable locale fallbacks for I18n (makes lookups for any locale fall back to
   # the I18n.default_locale when a translation can not be found)

@@ -5,6 +5,8 @@ require_relative '../../lib/carto_api/json_client'
 
 class CommonData
 
+  include ::LoggerHelper
+
   def initialize(visualizations_api_url)
     @datasets = nil
     @http_client = Carto::Http::Client.get('common_data', log_requests: true)
@@ -27,16 +29,16 @@ class CommonData
             @datasets = get_datasets(response.response_body)
             redis_cache.set(is_https_request, response.headers, response.response_body)
           else
-            CartoDB::Logger.warning(message: "Error retrieving common data datasets", response: response.to_s)
+            log_warning(message: "Error retrieving common data datasets", error_detail: response.inspect)
           end
         rescue StandardError => e
-          CartoDB::Logger.error(exception: e)
+          log_error(exception: e)
         end
       else
         @datasets = get_datasets(cached_data[:body])
       end
 
-      CartoDB::Logger.error(message: 'common-data empty', url: @visualizations_api_url) if @datasets.empty?
+      log_error(message: 'common-data empty', url: @visualizations_api_url) if @datasets.empty?
     end
 
     @datasets
@@ -52,7 +54,7 @@ class CommonData
     begin
       rows = JSON.parse(json).fetch('visualizations', [])
     rescue StandardError => e
-      CartoDB::Logger.error(exception: e)
+      log_error(exception: e)
       rows = []
     end
 
@@ -86,7 +88,7 @@ class CommonData
 
   def export_url(table_name)
     query = %Q[select * from "#{table_name}"]
-    sql_api_url(query, table_name, config('format', 'shp'))
+    sql_api_url(query, table_name, config('format', 'gpkg'))
   end
 
   def sql_api_url(query, filename, format)
@@ -98,12 +100,8 @@ class CommonData
     }).url(query, format, filename)
   end
 
-  def config(key, default=nil)
-    if Cartodb.config[:common_data].present?
-      Cartodb.config[:common_data][key].present? ? Cartodb.config[:common_data][key] : default
-    else
-      default
-    end
+  def config(key, default = nil)
+    Cartodb.get_config(:common_data, key) || default
   end
 
   def redis_cache

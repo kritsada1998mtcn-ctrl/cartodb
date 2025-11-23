@@ -1,11 +1,9 @@
-# encoding: utf-8
-
+require 'spec_helper_min'
 require_relative '../../lib/datasources'
 require_relative '../doubles/organization'
 require_relative '../doubles/user'
 require_relative '../doubles/search_tweet'
 require_relative '../doubles/data_import'
-require_relative '../../../../lib/cartodb/logger'
 
 include CartoDB::Datasources
 

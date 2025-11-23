@@ -1,48 +1,58 @@
-require_relative '../../spec_helper'
+require 'spec_helper_unit'
 require_relative '../../../app/models/carto/user_creation'
 
 describe Carto::UserCreation do
+  let(:organization_owner) { create(:carto_user, factory_bot_context: { only_db_setup: true }) }
+  let(:organization) do
+    create(
+      :organization,
+      :with_owner,
+      owner: organization_owner,
+      quota_in_bytes: 1.gigabyte,
+      seats: 5,
+      viewer_seats: 5
+    )
+  end
 
   describe 'autologin?' do
-
     it 'is true for autologin_user_creation factory' do
-      FactoryGirl.build(:autologin_user_creation).autologin?.should == true
+      build(:autologin_user_creation).autologin?.should == true
     end
 
     it 'is false for states other than success' do
-      FactoryGirl.build(:autologin_user_creation, state: 'creating_user').autologin?.should == false
-      FactoryGirl.build(:autologin_user_creation, state: 'validating_user').autologin?.should == false
-      FactoryGirl.build(:autologin_user_creation, state: 'saving_user').autologin?.should == false
-      FactoryGirl.build(:autologin_user_creation, state: 'promoting_user').autologin?.should == false
-      FactoryGirl.build(:autologin_user_creation, state: 'creating_user_in_central').autologin?.should == false
-      FactoryGirl.build(:autologin_user_creation, state: 'load_common_data').autologin?.should == false
-      FactoryGirl.build(:autologin_user_creation, state: 'failure').autologin?.should == false
+      build(:autologin_user_creation, state: 'creating_user').autologin?.should == false
+      build(:autologin_user_creation, state: 'validating_user').autologin?.should == false
+      build(:autologin_user_creation, state: 'saving_user').autologin?.should == false
+      build(:autologin_user_creation, state: 'promoting_user').autologin?.should == false
+      build(:autologin_user_creation, state: 'creating_user_in_central').autologin?.should == false
+      build(:autologin_user_creation, state: 'load_common_data').autologin?.should == false
+      build(:autologin_user_creation, state: 'failure').autologin?.should == false
 
-      FactoryGirl.build(:autologin_user_creation, state: 'success').autologin?.should == true
+      build(:autologin_user_creation, state: 'success').autologin?.should == true
     end
 
     it 'is stops working after one minute' do
-      FactoryGirl.build(:autologin_user_creation, created_at: Time.now - 61.seconds).autologin?.should == false
-      FactoryGirl.build(:autologin_user_creation, created_at: Time.now - 60.seconds).autologin?.should == false
-      FactoryGirl.build(:autologin_user_creation, created_at: Time.now - 59.seconds).autologin?.should == true
+      build(:autologin_user_creation, created_at: Time.now - 61.seconds).autologin?.should == false
+      build(:autologin_user_creation, created_at: Time.now - 60.seconds).autologin?.should == false
+      build(:autologin_user_creation, created_at: Time.now - 59.seconds).autologin?.should == true
     end
 
     it 'is false for users with enable_account_token' do
-      user_creation = FactoryGirl.build(:autologin_user_creation)
+      user_creation = build(:autologin_user_creation)
       user = user_creation.instance_variable_get(:@cartodb_user)
       user.enable_account_token = 'whatever'
       user_creation.autologin?.should == false
     end
 
     it 'is false for disabled users' do
-      user_creation = FactoryGirl.build(:autologin_user_creation)
+      user_creation = build(:autologin_user_creation)
       user = user_creation.instance_variable_get(:@cartodb_user)
       user.enabled = false
       user_creation.autologin?.should == false
     end
 
     it 'is false for users that have seen their dashboard' do
-      user_creation = FactoryGirl.build(:autologin_user_creation)
+      user_creation = build(:autologin_user_creation)
       user = user_creation.instance_variable_get(:@cartodb_user)
       user.dashboard_viewed_at = Time.now
       user_creation.autologin?.should == false
@@ -51,13 +61,13 @@ describe Carto::UserCreation do
   end
 
   describe 'validation token' do
-    include_context 'organization with users helper'
+    before { Cartodb::Central.stubs(:message_broker_sync_enabled?).returns(false) }
 
     it 'assigns an enable_account_token if user has not signed up with Google' do
       ::User.any_instance.stubs(:create_in_central).returns(true)
       CartoDB::UserModule::DBService.any_instance.stubs(:enable_remote_db_user).returns(true)
-      user_data = FactoryGirl.build(:valid_user)
-      user_data.organization = @organization
+      user_data = build(:carto_user_light)
+      user_data.organization = organization
       user_data.google_sign_in = false
 
       user_creation = Carto::UserCreation.new_user_signup(user_data)
@@ -70,8 +80,8 @@ describe Carto::UserCreation do
     it 'does not assign an enable_account_token if user has signed up with Google' do
       ::User.any_instance.stubs(:create_in_central).returns(true)
       CartoDB::UserModule::DBService.any_instance.stubs(:enable_remote_db_user).returns(true)
-      user_data = FactoryGirl.build(:valid_user)
-      user_data.organization = @organization
+      user_data = build(:carto_user_light)
+      user_data.organization = organization
       user_data.google_sign_in = true
 
       user_creation = Carto::UserCreation.new_user_signup(user_data)
@@ -85,8 +95,8 @@ describe Carto::UserCreation do
     it 'does not assign an enable_account_token if user has signed up with GitHub' do
       ::User.any_instance.stubs(:create_in_central).returns(true)
       CartoDB::UserModule::DBService.any_instance.stubs(:enable_remote_db_user).returns(true)
-      user_data = FactoryGirl.build(:valid_user)
-      user_data.organization = @organization
+      user_data = build(:carto_user_light)
+      user_data.organization = organization
       user_data.github_user_id = 123
 
       user_creation = Carto::UserCreation.new_user_signup(user_data)
@@ -102,11 +112,11 @@ describe Carto::UserCreation do
       ::Resque.expects(:enqueue).with(Resque::OrganizationJobs::Mail::Invitation, instance_of(String)).once
       ::User.any_instance.stubs(:create_in_central).returns(true)
       CartoDB::UserModule::DBService.any_instance.stubs(:enable_remote_db_user).returns(true)
-      user_data = FactoryGirl.build(:valid_user)
-      user_data.organization = @organization
+      user_data = build(:carto_user_light)
+      user_data.organization = organization
       user_data.google_sign_in = false
 
-      invitation = Carto::Invitation.create_new(@carto_org_user_owner, [user_data.email], 'Welcome!', false)
+      invitation = Carto::Invitation.create_new(organization.owner, [user_data.email], 'Welcome!', false)
       invitation.save
 
       user_creation = Carto::UserCreation.
@@ -120,17 +130,80 @@ describe Carto::UserCreation do
       saved_user.enable_account_token.should be_nil
     end
 
+    it 'does create an account if user had and invitation' do
+      ::User.any_instance.stubs(:create_in_central).returns(true)
+      CartoDB::UserModule::DBService
+        .any_instance.stubs(:enable_remote_db_user)
+        .returns(true)
+
+      user_data = build(
+        :carto_user_light,
+        organization: organization,
+        google_sign_in: false
+      )
+
+      invitation = Carto::Invitation.create_new(organization.owner,
+                                                [user_data.email],
+                                                'Welcome!',
+                                                false)
+      invitation.save
+
+      user_creation = Carto::UserCreation.new_user_signup(user_data)
+      user_creation.with_invitation_token(invitation.token(user_data.email))
+      user_creation.save
+
+      user_creation = Carto::UserCreation.find(user_creation.id)
+      user_creation.next_creation_step! until user_creation.finished?
+      user_creation.reload
+
+      user_creation.state.should eq('success')
+    end
+
+    it 'does create an account if user had multiple invitations' do
+      ::User.any_instance.stubs(:create_in_central).returns(true)
+      CartoDB::UserModule::DBService
+        .any_instance.stubs(:enable_remote_db_user)
+        .returns(true)
+
+      user_data = build(
+        :carto_user_light,
+        organization: organization,
+        google_sign_in: false
+      )
+
+      # Dismissed invitations
+      4.times do
+        Carto::Invitation.create_new(
+          organization.owner, [user_data.email], 'Welcome!', false
+        ).save
+      end
+
+      invitation = Carto::Invitation.create_new(organization.owner,
+                                                [user_data.email], 'Welcome!',
+                                                false)
+      invitation.save
+
+      user_creation = Carto::UserCreation.new_user_signup(user_data)
+      user_creation.with_invitation_token(invitation.token(user_data.email))
+      user_creation.save
+
+      user_creation = Carto::UserCreation.find(user_creation.id)
+      user_creation.next_creation_step! until user_creation.finished?
+      user_creation.reload
+
+      user_creation.state.should eq('success')
+    end
+
     it 'with viewer invitations creates viewer users' do
       ::User.any_instance.stubs(:create_in_central).returns(true)
       CartoDB::UserModule::DBService.any_instance.stubs(:enable_remote_db_user).returns(true)
-      user_data = FactoryGirl.build(:valid_user, organization: @organization, google_sign_in: false)
+      user_data = build(:carto_user_light, organization: organization, google_sign_in: false)
 
-      invitation = Carto::Invitation.create_new(@carto_org_user_owner, [user_data.email], 'Welcome!', true)
+      invitation = Carto::Invitation.create_new(organization.owner, [user_data.email], 'Welcome!', true)
       invitation.save
 
-      user_creation = Carto::UserCreation.
-                      new_user_signup(user_data).
-                      with_invitation_token(invitation.token(user_data.email))
+      user_creation = described_class.new_user_signup(user_data)
+                                     .with_invitation_token(invitation.token(user_data.email))
       user_creation.next_creation_step until user_creation.finished?
       user_creation.reload
 
@@ -138,13 +211,14 @@ describe Carto::UserCreation do
     end
 
     it 'neither creates a new User nor sends the mail and marks creation as failure if saving fails' do
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(false)
+      organization.save
+
+      Cartodb::Central.stubs(:api_sync_disabled?).returns(true)
+      ::Resque.expects(:enqueue).with(::Resque::UserJobs::Mail::NewOrganizationUser).never
       ::User.any_instance.stubs(:save).raises('saving error')
 
-      ::Resque.expects(:enqueue).with(::Resque::UserJobs::Mail::NewOrganizationUser).never
-
-      user_data = FactoryGirl.build(:valid_user)
-      user_data.organization = @organization
+      user_data = build(:carto_user_light)
+      user_data.organization = organization
       user_data.google_sign_in = true
 
       user_creation = Carto::UserCreation.new_user_signup(user_data)
@@ -157,18 +231,14 @@ describe Carto::UserCreation do
       user_creation.state.should == 'failure'
     end
 
-    after(:each) do
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(false)
-    end
-
     it 'neither creates a new User nor sends the mail and marks creation as failure if Central fails' do
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(true)
+      Cartodb::Central.stubs(:api_sync_disabled?).returns(false)
       ::User.any_instance.stubs(:create_in_central).raises('Error on state creating_user_in_central, mark_as_failure: false. Error: Application server responded with http 422: {"errors":["Existing username."]}')
 
       ::Resque.expects(:enqueue).with(::Resque::UserJobs::Mail::NewOrganizationUser).never
 
-      user_data = FactoryGirl.build(:valid_user)
-      user_data.organization = @organization
+      user_data = build(:carto_user_light)
+      user_data.organization = organization
       user_data.google_sign_in = true
 
       user_creation = Carto::UserCreation.new_user_signup(user_data)
@@ -188,7 +258,7 @@ describe Carto::UserCreation do
 
       ::Resque.expects(:enqueue).with(::Resque::UserJobs::Mail::NewOrganizationUser).never
 
-      user.organization = @organization
+      user.organization = organization
 
       user_creation = Carto::UserCreation.new_user_signup(user)
       user_creation.next_creation_step until user_creation.finished?
@@ -206,7 +276,7 @@ describe Carto::UserCreation do
 
       ::Resque.expects(:enqueue).with(::Resque::UserJobs::Mail::NewOrganizationUser).never
 
-      user.organization = @organization
+      user.organization = organization
 
       user_creation = Carto::UserCreation.new_user_signup(user)
       user_creation.next_creation_step until user_creation.finished?
@@ -224,7 +294,7 @@ describe Carto::UserCreation do
 
       ::Resque.expects(:enqueue).with(::Resque::UserJobs::Mail::NewOrganizationUser).never
 
-      user.organization = @organization
+      user.organization = organization
 
       expect {
         user_creation = Carto::UserCreation.new_user_signup(user)
@@ -232,12 +302,12 @@ describe Carto::UserCreation do
     end
 
     def prepare_fake_central_user
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(true)
+      Cartodb::Central.stubs(:api_sync_disabled?).returns(false)
       fake_central_client = {}
       fake_central_client.stubs(:create_organization_user).returns(true)
       ::User.any_instance.stubs(:cartodb_central_client).returns(fake_central_client)
       Cartodb::Central.stubs(:new).returns(fake_central_client)
-      user = FactoryGirl.build(:valid_user)
+      user = build(:carto_user_light)
       central_user_data = JSON.parse(user.to_json)
       # Central doesn't return exactly the same attributes, but this is good enough for testing
       Cartodb::Central.any_instance.stubs(:get_user).returns(central_user_data)
@@ -247,16 +317,14 @@ describe Carto::UserCreation do
   end
 
   describe 'validation email' do
-    include_context 'organization with users helper'
-
     # INFO : this mail contains validation link
     it 'triggers a ::Resque::UserJobs::Mail::NewOrganizationUser' do
       ::User.any_instance.stubs(:create_in_central).returns(true)
       CartoDB::UserModule::DBService.any_instance.stubs(:enable_remote_db_user).returns(true)
       ::Resque.expects(:enqueue).with(Resque::UserJobs::Mail::NewOrganizationUser, instance_of(String)).once
 
-      user_data = FactoryGirl.build(:valid_user)
-      user_data.organization = @organization
+      user_data = build(:carto_user_light)
+      user_data.organization = organization
       user_data.google_sign_in = false
 
       user_creation = Carto::UserCreation.new_user_signup(user_data)
@@ -268,8 +336,8 @@ describe Carto::UserCreation do
       CartoDB::UserModule::DBService.any_instance.stubs(:enable_remote_db_user).returns(true)
       ::User.any_instance.expects(:load_common_data).with('http://www.example.com').once
 
-      user_data = FactoryGirl.build(:valid_user)
-      user_data.organization = @organization
+      user_data = build(:carto_user_light)
+      user_data.organization = organization
       user_data.google_sign_in = false
 
       user_creation = Carto::UserCreation.new_user_signup(user_data)
@@ -282,8 +350,8 @@ describe Carto::UserCreation do
       CartoDB::UserModule::DBService.any_instance.stubs(:enable_remote_db_user).returns(true)
       ::User.any_instance.expects(:load_common_data).with('http://www.example.com').never
 
-      user_data = FactoryGirl.build(:valid_user)
-      user_data.organization = @organization
+      user_data = build(:carto_user_light)
+      user_data.organization = organization
       user_data.google_sign_in = false
 
       user_creation = Carto::UserCreation.new_user_signup(user_data)
@@ -296,8 +364,8 @@ describe Carto::UserCreation do
       ::Resque.expects(:enqueue).with(Resque::OrganizationJobs::Mail::Invitation, instance_of(String)).never
       ::Resque.expects(:enqueue).with(Resque::UserJobs::Mail::NewOrganizationUser, instance_of(String)).once
 
-      user_data = FactoryGirl.build(:valid_user)
-      user_data.organization = @organization
+      user_data = build(:carto_user_light)
+      user_data.organization = organization
 
       user_creation = Carto::UserCreation.new_user_signup(user_data, Carto::UserCreation::CREATED_VIA_API)
       user_creation.next_creation_step until user_creation.finished?
@@ -305,18 +373,16 @@ describe Carto::UserCreation do
   end
 
   describe 'organization overquota email' do
-    include_context 'organization with users helper'
-
     it 'triggers a DiskQuotaLimitReached mail if organization has run out of quota for new users' do
       ::User.any_instance.stubs(:create_in_central).returns(true)
       CartoDB::UserModule::DBService.any_instance.stubs(:enable_remote_db_user).returns(true)
       ::Resque.expects(:enqueue).with(Resque::UserJobs::Mail::NewOrganizationUser, instance_of(String)).once
       ::Resque.expects(:enqueue).with(Resque::OrganizationJobs::Mail::DiskQuotaLimitReached, instance_of(String)).once
 
-      user_data = FactoryGirl.build(:valid_user)
-      user_data.organization = @organization
-      @organization.quota_in_bytes = @organization.assigned_quota + @organization.default_quota_in_bytes + 1
-      @organization.save
+      user_data = build(:carto_user_light)
+      user_data.organization = organization
+      organization.quota_in_bytes = organization.assigned_quota + organization.default_quota_in_bytes + 1
+      organization.save
 
       user_creation = Carto::UserCreation.new_user_signup(user_data)
       user_creation.next_creation_step until user_creation.finished?
@@ -324,18 +390,17 @@ describe Carto::UserCreation do
   end
 
   describe 'organization over seats email' do
-    include_context 'organization with users helper'
-
     it 'triggers a SeatLimitReached mail if organization has run out of seats new users' do
+      organization.seats = 2
+      organization.save
+
       ::User.any_instance.stubs(:create_in_central).returns(true)
       CartoDB::UserModule::DBService.any_instance.stubs(:enable_remote_db_user).returns(true)
       ::Resque.expects(:enqueue).with(Resque::UserJobs::Mail::NewOrganizationUser, instance_of(String)).once
       ::Resque.expects(:enqueue).with(Resque::OrganizationJobs::Mail::SeatLimitReached, instance_of(String)).once
 
-      user_data = FactoryGirl.build(:valid_user)
-      user_data.organization = @organization
-      @organization.seats = 4
-      @organization.save
+      user_data = build(:carto_user_light)
+      user_data.organization = organization
 
       user_creation = Carto::UserCreation.new_user_signup(user_data)
       user_creation.next_creation_step until user_creation.finished?
@@ -348,11 +413,11 @@ describe Carto::UserCreation do
       ::Resque.expects(:enqueue).with(Resque::OrganizationJobs::Mail::SeatLimitReached, instance_of(String)).never
       ::Resque.expects(:enqueue).with(Resque::OrganizationJobs::Mail::DiskQuotaLimitReached, instance_of(String)).never
 
-      user_data = FactoryGirl.build(:valid_user)
+      user_data = build(:carto_user_light)
 
-      user_data.organization = @organization
-      @organization.seats = 15
-      @organization.save
+      user_data.organization = organization
+      organization.seats = 15
+      organization.save
 
       user_creation = Carto::UserCreation.new_user_signup(user_data)
       user_creation.next_creation_step until user_creation.finished?
@@ -362,7 +427,7 @@ describe Carto::UserCreation do
   describe '#initialize_user' do
     it 'initializes users with http_authentication without organization' do
       created_via = Carto::UserCreation::CREATED_VIA_HTTP_AUTENTICATION
-      user = FactoryGirl.build(:valid_user)
+      user = build(:carto_user_light)
       user.organization_id.should == nil
       user_creation = Carto::UserCreation.new_user_signup(user, created_via)
       initialized_user = user_creation.send(:initialize_user)
@@ -372,15 +437,11 @@ describe Carto::UserCreation do
   end
 
   describe 'state machine' do
-    before(:each) do
+    before do
       CartoDB::UserModule::DBService.any_instance.stubs(:enable_remote_db_user).returns(true)
       created_via = Carto::UserCreation::CREATED_VIA_HTTP_AUTENTICATION
-      user = FactoryGirl.build(:valid_user)
+      user = build(:carto_user_light)
       @user_creation = Carto::UserCreation.new_user_signup(user, created_via)
-    end
-
-    after(:each) do
-      @user_creation.user.destroy
     end
 
     def creation_steps(user_creation)
@@ -394,7 +455,7 @@ describe Carto::UserCreation do
     end
 
     it 'with Central and builder, does all the steps' do
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(true)
+      Cartodb::Central.stubs(:message_broker_sync_enabled?).returns(true)
       User.any_instance.stubs(:validate_credentials_not_taken_in_central).returns(true)
       @user_creation.expects(:create_in_central).once
       @user_creation.expects(:load_common_data).once
@@ -405,7 +466,7 @@ describe Carto::UserCreation do
     end
 
     it 'without Central, skips creation in central' do
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(false)
+      Cartodb::Central.stubs(:message_broker_sync_enabled?).returns(false)
       @user_creation.expects(:create_in_central).never
       @user_creation.expects(:load_common_data).once
 
@@ -414,7 +475,7 @@ describe Carto::UserCreation do
     end
 
     it 'with Central as a viewer, skips loading common data' do
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(true)
+      Cartodb::Central.stubs(:message_broker_sync_enabled?).returns(true)
       User.any_instance.stubs(:validate_credentials_not_taken_in_central).returns(true)
       @user_creation.viewer = true
       @user_creation.expects(:create_in_central).once
@@ -425,7 +486,7 @@ describe Carto::UserCreation do
     end
 
     it 'without Central as a viewer, skips loading common data and creation in central' do
-      Cartodb::Central.stubs(:sync_data_with_cartodb_central?).returns(false)
+      Cartodb::Central.stubs(:message_broker_sync_enabled?).returns(false)
       @user_creation.viewer = true
       @user_creation.expects(:create_in_central).never
       @user_creation.expects(:load_common_data).never

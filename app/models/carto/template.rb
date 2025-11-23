@@ -1,5 +1,3 @@
-# encoding: UTF-8
-
 require 'active_record'
 
 module Carto
@@ -63,9 +61,8 @@ module Carto
             Carto::VisualizationQueryBuilder.new
                                             .with_name(table_name)
                                             .with_user_id(user.id)
-                                            .build
                                             .count == 0
-          rescue
+          rescue StandardError
             true
           end
         }

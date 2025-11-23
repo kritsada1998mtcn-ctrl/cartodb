@@ -1,17 +1,17 @@
-# encoding: utf-8
-
-require 'spec_helper_min'
+require 'spec_helper_unit'
 require 'models/layer_shared_examples'
 
 describe Carto::Layer do
   include Carto::Factories::Visualizations
 
+  let(:user) { create(:carto_user, private_tables_enabled: true, factory_bot_context: { only_db_setup: true }) }
+
   it_behaves_like 'Layer model' do
-    let(:layer_class) { Carto::Layer }
+    let(:layer_class) { described_class }
     def create_map(options = {})
       options.delete(:table_id)
       map = Carto::Map.create(options)
-      FactoryGirl.create(:carto_visualization, map: map, user_id: options[:user_id]) if options[:user_id].present?
+      create(:carto_visualization, map: map, user_id: options[:user_id]) if options[:user_id].present?
 
       map
     end
@@ -20,20 +20,10 @@ describe Carto::Layer do
       entity.layers << layer
     end
 
-    before(:all) do
-      @user = FactoryGirl.create(:carto_user, private_tables_enabled: true)
-
+    before do
       @table = Table.new
-      @table.user_id = @user.id
+      @table.user_id = user.id
       @table.save
-    end
-
-    before(:each) do
-      bypass_named_maps
-    end
-
-    after(:all) do
-      @user.destroy
     end
 
     describe '#copy' do
@@ -49,21 +39,14 @@ describe Carto::Layer do
   end
 
   describe '#affected_tables' do
-    before(:all) do
+    before do
       bypass_named_maps
-      @user = FactoryGirl.create(:carto_user)
-      @map, @table1, @table_visualization, @visualization = create_full_visualization(@user)
-      @table2 = FactoryGirl.create(:carto_user_table, user_id: @user.id, map_id: @map.id)
-      @analysis = FactoryGirl.create(:analysis_point_in_polygon,
-                                     user: @user, visualization: @visualization,
+      @map, @table1, _, @visualization = create_full_visualization(user)
+      @table2 = create(:carto_user_table, user_id: user.id, map_id: @map.id)
+      @analysis = create(:analysis_point_in_polygon,
+                                     user: user, visualization: @visualization,
                                      source_table: @table1.name, target_table: @table2.name)
       @layer = @map.data_layers.first
-    end
-
-    after(:all) do
-      @analysis.destroy
-      destroy_full_visualization(@map, @table1, @table_visualization, @visualization)
-      @user.destroy
     end
 
     let(:source_analysis_id) { @analysis.analysis_node.children[0].id }
@@ -124,6 +107,27 @@ describe Carto::Layer do
         sql = "select coalesce('tabname', null) from cdb_tablemetadata;select 1;select * from spatial_ref_sys"
         @layer.send(:affected_table_names, sql).should =~ ["cartodb.cdb_tablemetadata", "public.spatial_ref_sys"]
       end
+    end
+  end
+
+  describe '#backup' do
+    before do
+      @map, @table1, _, @visualization = create_full_visualization(user)
+    end
+
+    it 'creates a backup when layer is destroyed' do
+      layer = @visualization.layers.first
+      layer.destroy
+
+      Carto::VisualizationBackup.all.count.should eq 1
+
+      backup = Carto::VisualizationBackup.where(visualization_id: @visualization.id).first
+      backup.should_not eq nil
+      backup.user_id.should eq user.id
+      backup.created_at.should_not eq nil
+      backup.category.should eq Carto::VisualizationBackup::CATEGORY_LAYER
+      backup.export.should_not be_empty
+      backup.destroy
     end
   end
 end

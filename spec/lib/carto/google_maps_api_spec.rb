@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require_relative '../../spec_helper_min.rb'
 require 'carto/google_maps_api'
 
@@ -11,7 +9,7 @@ module Carto
       describe 'with client_id' do
         # You can generate test signature with https://developers.google.com/maps/documentation/static-maps/get-api-key
         let(:user) do
-          FactoryGirl.build(:user, google_maps_key: 'client=wds', google_maps_private_key: 'MjM0MzJk-3N_czQzJmFkc2Rhc2Q=')
+          build(:user, google_maps_key: 'client=wds', google_maps_private_key: 'MjM0MzJk-3N_czQzJmFkc2Rhc2Q=')
         end
 
         it 'signs google maps urls' do
@@ -22,7 +20,7 @@ module Carto
 
       describe 'with api_key' do
         let(:user) do
-          FactoryGirl.build(:user, google_maps_key: 'key=xxx')
+          build(:user, google_maps_key: 'key=xxx')
         end
 
         it 'signs google maps urls' do

@@ -1,24 +1,16 @@
 require 'ruby-prof'
-
-require 'carto/configuration'
+require 'stringio'
 
 module CartoDB
 
   # A profiler based on https://github.com/justinweiss/request_profiler/
   class Profiler
-    include Carto::Configuration
 
-    def initialize(options = {})
-      @printer = options[:printer] || ::RubyProf::CallTreePrinter
-      @exclusions = options[:exclude]
-
-      @path = options[:path]
-      @path ||= log_dir_path + 'tmp/performance' if defined?(Rails)
-      @path ||= ::File.join((ENV["TMPDIR"] || "/tmp"), 'performance')
-      @path = Pathname(@path)
+    def initialize(exclude: nil)
+      @exclusions = exclude
     end
 
-    def call(request)
+    def call(request, response)
       mode = profile_mode(request)
 
       ::RubyProf.measure_mode = mode
@@ -27,7 +19,7 @@ module CartoDB
         yield
       ensure
         result = ::RubyProf.stop
-        write_result(result, request)
+        write_result(result, request, response)
       end
     end
 
@@ -42,45 +34,23 @@ module CartoDB
       end
     end
 
-    def format(printer)
-      case printer
-      when ::RubyProf::FlatPrinter
-        'txt'
-      when ::RubyProf::FlatPrinterWithLineNumbers
-        'txt'
-      when ::RubyProf::GraphPrinter
-        'txt'
-      when ::RubyProf::GraphHtmlPrinter
-        'html'
-      when ::RubyProf::DotPrinter
-        'dot'
-      when ::RubyProf::CallTreePrinter
-        "out.#{Process.pid}"
-      when ::RubyProf::CallStackPrinter
-        'html'
-      else
-        'txt'
-      end
-    end
-
-    def prefix(printer)
-      case printer
-      when ::RubyProf::CallTreePrinter
-        "callgrind."
-      else
-        ""
-      end
-    end
-
-    def write_result(result, request)
+    def write_result(result, request, response)
       result.eliminate_methods!(@exclusions) if @exclusions
-      printer = @printer.new(result)
-      Dir.mkdir(@path) unless ::File.exists?(@path)
+      printer = ::RubyProf::CallTreePrinter.new(result)
       url = request.fullpath.gsub(/[?\/]/, '-')
-      filename = "#{prefix(printer)}#{Time.now.strftime('%Y-%m-%d-%H-%M-%S')}-#{url.slice(0, 50)}.#{format(printer)}"
-      ::File.open(@path + filename, 'w+') do |f|
-        printer.print(f)
-      end
+      base_name = "callgrind.#{Time.now.strftime('%Y-%m-%d-%H-%M-%S')}-#{url.slice(0, 50)}"
+      printer.print(path: Dir.tmpdir, profile: base_name)
+
+      # see https://github.com/ruby-prof/ruby-prof/blob/1.4.1/lib/ruby-prof/printers/call_tree_printer.rb#L115
+      output_file_name = [base_name, "callgrind.out", $$].join(".")
+      output_file_path = File.join(Dir.tmpdir, output_file_name)
+
+      response.body = File.read(output_file_path)
+      response.status = 200
+      response.content_type = 'text/plain'
+      response.headers['Content-Disposition'] = "attachment; filename=\"#{output_file_name}\""
+    ensure
+      File.delete(output_file_path) if File.exist?(output_file_path)
     end
 
   end

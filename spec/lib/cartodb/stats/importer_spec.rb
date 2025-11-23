@@ -1,10 +1,4 @@
-# encoding: utf-8
-require_relative '../../../simplecov_helper'
-require 'rspec/core'
-require 'rspec/expectations'
-require 'rspec/mocks'
-require_relative '../../../rspec_configuration.rb'
-
+require 'spec_helper_min'
 require_relative '../../../../lib/cartodb/stats/importer'
 
 include Mocha::ParameterMatchers
@@ -98,7 +92,7 @@ module CartoDB
             importer_stats.timing(TIMING_TEST_KEY_A) do
               raise 'error'
             end
-          rescue
+          rescue StandardError
             # INFO: keep going
           end
           importer_stats.timing(TIMING_TEST_KEY_B) do

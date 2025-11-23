@@ -1,7 +1,4 @@
-# encoding: utf-8
-
 require_relative '../../lib/importer/table_sampler'
-require_relative '../../../../spec/rspec_configuration.rb'
 
 # Open the class for adition of some stuff used only for testing
 class CartoDB::Importer2::TableSampler

@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require_relative 'group_presenter'
 
 module Carto
@@ -33,16 +31,12 @@ module Carto
           geocoding_quota:            @organization.geocoding_quota,
           here_isolines_quota:        @organization.here_isolines_quota,
           here_isolines_block_price:  @organization.here_isolines_block_price,
-          obs_snapshot_quota:         @organization.obs_snapshot_quota,
-          obs_snapshot_block_price:   @organization.obs_snapshot_block_price,
-          obs_general_quota:          @organization.obs_general_quota,
-          obs_general_block_price:    @organization.obs_general_block_price,
           mapzen_routing_quota:       @organization.mapzen_routing_quota,
           mapzen_routing_block_price: @organization.mapzen_routing_block_price,
           geocoder_provider:          @organization.geocoder_provider,
           isolines_provider:          @organization.isolines_provider,
           routing_provider:           @organization.routing_provider,
-          map_view_quota:             @organization.map_view_quota,
+          map_views_quota:            @organization.map_views_quota,
           twitter_datasource_quota:   @organization.twitter_datasource_quota,
           map_view_block_price:       @organization.map_view_block_price,
           geocoding_block_price:      @organization.geocoding_block_price,
@@ -54,7 +48,9 @@ module Carto
           website:                    @organization.website,
           admin_email:                @organization.admin_email,
           avatar_url:                 @organization.avatar_url,
-          user_count:                 @organization.users.count
+          user_count:                 @organization.users.count,
+          password_expiration_in_d:   @organization.password_expiration_in_d,
+          random_saml_username:       @organization.random_saml_username
         }
       end
 

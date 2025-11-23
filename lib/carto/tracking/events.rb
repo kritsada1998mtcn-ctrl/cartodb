@@ -1,6 +1,7 @@
-# encoding: utf-8
+require 'carto/tracking/services/pubsub_tracker'
 
 require_dependency 'carto/tracking/formats/internal'
+require_dependency 'carto/tracking/services/pubsub'
 require_dependency 'carto/tracking/services/segment'
 require_dependency 'carto/tracking/services/hubspot'
 require_dependency 'carto/tracking/validators/visualization'
@@ -8,17 +9,30 @@ require_dependency 'carto/tracking/validators/layer'
 require_dependency 'carto/tracking/validators/user'
 require_dependency 'carto/tracking/validators/widget'
 
+#  IMPORTANT: Events must be kept in sync with frontend!
+#  See `/lib/assets/javascripts/builder/components/metrics/metrics-types.js`
+
+DEFAULT_EVENT_VERSION = 1
+
 module Carto
   module Tracking
     module Events
       class Event
+        include ::LoggerHelper
+
         def initialize(reporter_id, properties)
+          properties.merge!({event_version: event_version})
+
           @format = Carto::Tracking::Formats::Internal.new(properties)
-          @reporter = Carto::User.find(reporter_id)
+          @reporter = Carto::User.find(reporter_id || properties[:user_id])
         end
 
         def name
           self.class.name.demodulize.underscore.humanize.capitalize
+        end
+
+        def event_version
+          DEFAULT_EVENT_VERSION
         end
 
         def self.required_properties(*required_properties)
@@ -35,6 +49,7 @@ module Carto
         def self.optional_properties(*optional_properties)
           @optional_properties ||= []
           @optional_properties += optional_properties
+          @optional_properties += [:event_version]
         end
 
         def optional_properties
@@ -45,11 +60,12 @@ module Carto
 
         def report
           report!
-        rescue => exception
-          CartoDB::Logger.error(message: 'Carto::Tracking: Couldn\'t report event',
-                                exception: exception,
-                                name: name,
-                                properties: @format.to_hash)
+        rescue StandardError => e
+          log_error(
+            message: 'Carto::Tracking: Error reporting event',
+            exception: e,
+            event: @format.to_hash.merge(name: name)
+          )
         end
 
         def report!
@@ -57,6 +73,8 @@ module Carto
           check_no_extra_properties!
           authorize!
 
+          # NOTE: beware of this metaprogramming piece when browsing
+          # the code
           report_to_methods = methods.select do |method_name|
             method_name.to_s.start_with?('report_to')
           end
@@ -108,15 +126,25 @@ module Carto
       class ExportedMap < Event
         include Carto::Tracking::Services::Hubspot
         include Carto::Tracking::Services::Segment
+        include Carto::Tracking::Services::PubSub
 
         include Carto::Tracking::Validators::Visualization::Readable
         include Carto::Tracking::Validators::User
 
         required_properties :user_id, :visualization_id
+
+        def pubsub_name
+          'map_exported'
+        end
+
+        def event_version
+          2
+        end
       end
 
       class MapEvent < Event
         include Carto::Tracking::Services::Segment
+        include Carto::Tracking::Services::PubSub
 
         include Carto::Tracking::Validators::Visualization::Writable
         include Carto::Tracking::Validators::User
@@ -125,19 +153,57 @@ module Carto
       end
 
       class CreatedMap < MapEvent
+        include Carto::Tracking::Services::Hubspot
+
         required_properties :origin
+        optional_properties :connection
+
+        def pubsub_name
+          'map_created'
+        end
+
+        def event_version
+          3
+        end
       end
 
-      class DeletedMap < MapEvent; end
+      class DeletedMap < MapEvent
+        def pubsub_name
+          'map_deleted'
+        end
+
+        def event_version
+          2
+        end
+      end
+
+      class ModifiedMap < MapEvent
+        def pubsub_name
+          'map_updated'
+        end
+
+        def event_version
+          2
+        end
+      end
 
       class PublishedMap < Event
         include Carto::Tracking::Services::Hubspot
         include Carto::Tracking::Services::Segment
+        include Carto::Tracking::Services::PubSub
 
         include Carto::Tracking::Validators::Visualization::Writable
         include Carto::Tracking::Validators::User
 
         required_properties :user_id, :visualization_id
+
+        def pubsub_name
+          'map_published'
+        end
+
+        def event_version
+          2
+        end
       end
 
       class ConnectionEvent < Event
@@ -150,15 +216,41 @@ module Carto
       end
 
       class CompletedConnection < ConnectionEvent; end
-      class FailedConnection < ConnectionEvent; end
+
+      class FailedConnection < ConnectionEvent
+        include Carto::Tracking::Services::PubSub
+
+        def pubsub_name
+          'import_failed'
+        end
+
+        def event_version
+          3
+        end
+      end
+
+      class FailedSync < Event
+        include Carto::Tracking::Services::PubSub
+
+        required_properties :user_id, :connection
+
+        def pubsub_name
+          'sync_failed'
+        end
+      end
 
       class ExceededQuota < Event
         include Carto::Tracking::Services::Segment
+        include Carto::Tracking::Services::PubSub
 
         include Carto::Tracking::Validators::User
 
         required_properties :user_id
         optional_properties :quota_overage
+
+        def pubsub_name
+          'quota_exceeded'
+        end
       end
 
       class ScoredTrendingMap < Event
@@ -176,10 +268,15 @@ module Carto
         include Carto::Tracking::Validators::User
 
         required_properties :user_id, :page
+
+        def report_to_user_model
+          @format.fetch_record!(:user).view_dashboard if @format.to_hash['page'] == 'dashboard'
+        end
       end
 
       class DatasetEvent < Event
         include Carto::Tracking::Services::Segment
+        include Carto::Tracking::Services::PubSub
 
         include Carto::Tracking::Validators::Visualization::Writable
         include Carto::Tracking::Validators::User
@@ -188,14 +285,34 @@ module Carto
       end
 
       class CreatedDataset < DatasetEvent
+        include Carto::Tracking::Services::Hubspot
+
         required_properties :origin
+        optional_properties :connection
+
+        def pubsub_name
+          'dataset_created'
+        end
+
+        def event_version
+          3
+        end
       end
 
-      class DeletedDataset < DatasetEvent; end
+      class DeletedDataset < DatasetEvent
+        def pubsub_name
+          'dataset_deleted'
+        end
+
+        def event_version
+          2
+        end
+      end
 
       class AnalysisEvent < Event
         include Carto::Tracking::Services::Hubspot
         include Carto::Tracking::Services::Segment
+        include Carto::Tracking::Services::PubSub
 
         include Carto::Tracking::Validators::Visualization::Writable
         include Carto::Tracking::Validators::User
@@ -203,9 +320,23 @@ module Carto
         required_properties :user_id, :visualization_id, :analysis
       end
 
-      class CreatedAnalysis < AnalysisEvent; end
-      class ModifiedAnalysis < AnalysisEvent; end
-      class DeletedAnalysis < AnalysisEvent; end
+      class CreatedAnalysis < AnalysisEvent
+        def pubsub_name
+          'analysis_created'
+        end
+      end
+
+      class ModifiedAnalysis < AnalysisEvent
+        def pubsub_name
+          'analysis_updated'
+        end
+      end
+
+      class DeletedAnalysis < AnalysisEvent
+        def pubsub_name
+          'analysis_deleted'
+        end
+      end
 
       class AppliedSql < Event
         include Carto::Tracking::Services::Hubspot
@@ -308,6 +439,71 @@ module Carto
         required_properties :user_id, :visualization_id, :mode_type
       end
 
+      class OauthAppEvent < Event
+        include Carto::Tracking::Services::Segment
+        include Carto::Tracking::Services::PubSub
+
+        include Carto::Tracking::Validators::User
+
+        required_properties :user_id, :app_id, :app_name
+      end
+
+      class CreatedOauthApp < OauthAppEvent
+        def pubsub_name
+          'oauth_app_created'
+        end
+      end
+
+      class DeletedOauthApp < OauthAppEvent
+        def pubsub_name
+          'oauth_app_deleted'
+        end
+      end
+
+      class CreatedOauthAppUser < OauthAppEvent
+        def pubsub_name
+          'oauth_app_user_created'
+        end
+      end
+
+      class DeletedOauthAppUser < OauthAppEvent
+        def pubsub_name
+          'oauth_app_user_deleted'
+        end
+      end
+
+      class UpdatedFeatureFlag < Event
+        include Carto::Tracking::Services::PubSub
+
+        required_properties :user_id, :feature_flag
+
+        def pubsub_name
+          'feature_flag_updated'
+        end
+      end
+
+      class DoFullAccessAttempt < Event
+        include Carto::Tracking::Services::PubSub
+        include Carto::Tracking::Validators::User
+
+        required_properties :user_id, :dataset_id, :db_type, :license_type
+
+        def pubsub_name
+          'do_full_access_attempt'
+        end
+      end
+
+      class DoFullAccessRequest < Event
+        include Carto::Tracking::Services::PubSub
+        include Carto::Tracking::Validators::User
+
+        required_properties :user_id, :dataset_id, :db_type
+
+        def pubsub_name
+          'do_full_access_request'
+        end
+      end
+
       # Models a generic event for segment.
       class SegmentEvent < Event
         include Carto::Tracking::Services::Segment
@@ -340,6 +536,7 @@ module Carto
           data
         end
       end
+
     end
   end
 end

@@ -1,20 +1,10 @@
-require 'helpers/unique_names_helper'
+FactoryBot.define do
+  factory :feature_flag, class: 'Carto::FeatureFlag' do
+    sequence(:id)
+    sequence(:name) { |n| "feature-flag-name-#{n}" }
+    restricted { true }
 
-include UniqueNamesHelper
-
-FactoryGirl.define do
-  factory :feature_flag, class: ::FeatureFlag do
-    to_create(&:save)
-
-    id { unique_integer }
-    name { unique_name('ff') }
-    restricted true
+    trait(:restricted) { restricted { true } }
+    trait(:not_restricted) { restricted { false } }
   end
-
-  factory :carto_feature_flag, class: Carto::FeatureFlag do
-    id { unique_integer }
-    name { unique_name('ff') }
-    restricted true
-  end
-
 end

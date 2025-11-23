@@ -1,4 +1,3 @@
-# coding: UTF-8
 require 'cartodb/per_request_sequel_cache'
 require 'forwardable'
 
@@ -35,7 +34,6 @@ class UserTable < Sequel::Model
     user_id
     user_id=
     updated_at
-    automatic_geocoding
     private?
     public?
     public_with_link_only?
@@ -51,6 +49,7 @@ class UserTable < Sequel::Model
     affected_visualizations
     fully_dependent_visualizations
     partially_dependent_visualizations
+    dependent_visualizations
     reload
   }
 
@@ -64,25 +63,18 @@ class UserTable < Sequel::Model
     PRIVACY_LINK => 'link'
   }
 
-  # For compatibility with AR model
-  def new_record?
-    new?
-  end
-
   # Associations
   many_to_one  :map
   many_to_many :layers, join_table: :layers_user_tables,
                         left_key:   :user_table_id,
                         right_key:  :layer_id,
                         reciprocal: :user_tables
-  one_to_one   :automatic_geocoding, key: :table_id
   one_to_many  :geocodings, key: :table_id
   many_to_one  :data_import, key: :data_import_id
   many_to_one  :user
 
   plugin :association_dependencies, map:                  :destroy,
-                                    layers:               :nullify,
-                                    automatic_geocoding:  :destroy
+                                    layers:               :nullify
   plugin :dirty
 
   def_delegators :relator, :affected_visualizations, :synchronization
@@ -208,26 +200,13 @@ class UserTable < Sequel::Model
     service.after_save
   end
 
-  def before_destroy
-    raise CartoDB::InvalidMember.new(user: "Viewer users can't destroy tables") if user && user.viewer
+  def destroy
+    ar_user_table = Carto::UserTable.find_by(id: id)
 
-    @table_visualization = table_visualization
-    @fully_dependent_visualizations_cache = fully_dependent_visualizations.to_a
-    @partially_dependent_visualizations_cache = partially_dependent_visualizations.to_a
+    return if ar_user_table.nil?
 
-    super
-  end
-
-  def after_destroy
-    @table_visualization.delete_from_table if @table_visualization
-    @fully_dependent_visualizations_cache.each(&:delete)
-    @partially_dependent_visualizations_cache.each do |visualization|
-      visualization.unlink_from(self)
-    end
-    synchronization.delete if synchronization
-
-    service.after_destroy
-    super
+    ar_user_table.set_service(service)
+    ar_user_table.destroy
   end
 
   def before_update
@@ -302,7 +281,11 @@ class UserTable < Sequel::Model
   end
 
   def external_source_visualization
-    data_import.try(:external_data_imports).try(:first).try(:external_source).try(:visualization)
+    if data_import_id
+      Carto::ExternalDataImports.where(data_import_id: data_import_id)&.first&.external_source&.visualization
+    else
+      nil
+    end
   end
 
   def table_visualization
@@ -326,6 +309,10 @@ class UserTable < Sequel::Model
 
   def partially_dependent_visualizations
     affected_visualizations.select { |v| v.partially_dependent_on?(self) }
+  end
+
+  def dependent_visualizations
+    affected_visualizations.select { |v| v.dependent_on?(self) }
   end
 
   def is_owner?(user)

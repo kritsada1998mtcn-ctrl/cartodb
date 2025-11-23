@@ -1,4 +1,3 @@
-# encoding: utf-8
 require_relative '../../../../spec/spec_helper_min'
 require_relative '../../lib/importer/downloader'
 require_relative '../../../../lib/carto/url_validator'
@@ -24,7 +23,7 @@ describe Downloader do
     @ftp_filepath   = path_to('INDEX.txt')
   end
 
-  before(:all) { @user = FactoryGirl.create(:carto_user) }
+  before(:all) { @user = create(:carto_user) }
   after(:all)  { @user.destroy }
 
   describe '#run' do
@@ -61,6 +60,15 @@ describe Downloader do
       downloader = Downloader.new(@user.id, url)
       downloader.run
       downloader.source_file.name.should eq 'ne_110m_lakes'
+    end
+
+    it 'extracts the source_file name from the URL for FGDB ZIP files' do
+      url = "http://s3.amazonaws.com/filegeodatabase.gdb.zip"
+      stub_download(url: url, filepath: @file_filepath, content_disposition: false)
+
+      downloader = Downloader.new(@user.id, url)
+      downloader.run
+      downloader.source_file.name.should eq 'filegeodatabase.gdb'
     end
 
     it 'uses Content-Type header for files without extension' do

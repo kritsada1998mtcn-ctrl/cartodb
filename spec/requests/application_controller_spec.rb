@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require_relative '../spec_helper'
 require_relative './http_authentication_helper'
 
@@ -7,7 +5,7 @@ describe ApplicationController do
   include HttpAuthenticationHelper
 
   before(:all) do
-    @user = FactoryGirl.create(:valid_user)
+    @user = create(:valid_user)
   end
 
   after(:all) do
@@ -47,10 +45,12 @@ describe ApplicationController do
       end
 
       it 'loads the dashboard for a known user email' do
+        # we use this to avoid generating the static assets in CI
+        Admin::VisualizationsController.any_instance.stubs(:render).returns('')
+
         stub_load_common_data
         get dashboard_url, {}, authentication_headers(@user.email)
         response.status.should == 200
-        response.body.should_not include("Log in")
       end
 
       it 'does not load the dashboard for an unknown user email' do
@@ -70,10 +70,12 @@ describe ApplicationController do
       end
 
       it 'loads the dashboard for a known user username' do
+        # we use this to avoid generating the static assets in CI
+        Admin::VisualizationsController.any_instance.stubs(:render).returns('')
+
         stub_load_common_data
         get dashboard_url, {}, authentication_headers(@user.username)
         response.status.should == 200
-        response.body.should_not include("Log in")
       end
 
       it 'does not load the dashboard for an unknown user username' do
@@ -93,14 +95,16 @@ describe ApplicationController do
       end
 
       it 'loads the dashboard for a known user id' do
+        # we use this to avoid generating the static assets in CI
+        Admin::VisualizationsController.any_instance.stubs(:render).returns('')
+
         stub_load_common_data
         get dashboard_url, {}, authentication_headers(@user.id)
         response.status.should == 200
-        response.body.should_not include("Log in")
       end
 
       it 'does not load the dashboard for an unknown user id' do
-        get dashboard_url, {}, authentication_headers(UUIDTools::UUID.timestamp_create.to_s)
+        get dashboard_url, {}, authentication_headers(Carto::UUIDHelper.random_uuid)
         response.status.should == 302
       end
 
@@ -116,28 +120,34 @@ describe ApplicationController do
       end
 
       it 'loads the dashboard for a known user id' do
+        # we use this to avoid generating the static assets in CI
+        Admin::VisualizationsController.any_instance.stubs(:render).returns('')
+
         stub_load_common_data
         get dashboard_url, {}, authentication_headers(@user.id)
         response.status.should == 200
-        response.body.should_not include("Log in")
       end
 
       it 'loads the dashboard for a known user username' do
+        # we use this to avoid generating the static assets in CI
+        Admin::VisualizationsController.any_instance.stubs(:render).returns('')
+
         stub_load_common_data
         get dashboard_url, {}, authentication_headers(@user.username)
         response.status.should == 200
-        response.body.should_not include("Log in")
       end
 
       it 'loads the dashboard for a known user email' do
+        # we use this to avoid generating the static assets in CI
+        Admin::VisualizationsController.any_instance.stubs(:render).returns('')
+
         stub_load_common_data
         get dashboard_url, {}, authentication_headers(@user.email)
         response.status.should == 200
-        response.body.should_not include("Log in")
       end
 
       it 'does not load the dashboard for an unknown user id' do
-        get dashboard_url, {}, authentication_headers(UUIDTools::UUID.timestamp_create.to_s)
+        get dashboard_url, {}, authentication_headers(Carto::UUIDHelper.random_uuid)
         response.status.should == 302
       end
 
@@ -181,7 +191,7 @@ describe ApplicationController do
         # This behaviour allows recreation of deleted users. Related to next one.
         it 'redirects to user creation for unknown emails if there is another finished user creation for that user' do
           email = 'unknown@company.com'
-          FactoryGirl.create(:user_creation, state: 'success', email: email)
+          create(:user_creation, state: 'success', email: email)
           get dashboard_url, {}, authentication_headers(email)
           response.status.should == 302
           response.location.should match /#{signup_http_authentication_path}/
@@ -191,7 +201,7 @@ describe ApplicationController do
         # and makes frontend to redirect nicely to the dashboard on finish (failing stopped redirection from working)
         it 'redirects to creation in progress instead of creation if that user has a not finished user creation' do
           email = 'unknown2@company.com'
-          FactoryGirl.create(:user_creation, state: 'enqueuing', email: email)
+          create(:user_creation, state: 'enqueuing', email: email)
           get dashboard_url, {}, authentication_headers(email)
           response.status.should eq 302
           response.location.should match(/#{signup_http_authentication_in_progress_path}/)
@@ -200,7 +210,7 @@ describe ApplicationController do
         it 'redirects to user creation for unknown emails if there is other enqueued user creation (for other user)' do
           email1 = 'unknown1@company.com'
           email2 = 'unknown2@company.com'
-          FactoryGirl.create(:user_creation, state: 'enqueuing', email: email1)
+          create(:user_creation, state: 'enqueuing', email: email1)
           get dashboard_url, {}, authentication_headers(email2)
           response.status.should eq 302
           response.location.should match(/#{signup_http_authentication_path}/)

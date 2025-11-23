@@ -1,15 +1,29 @@
 module Carto
   module Configuration
     def db_config
-      @@db_config ||= YAML.load(File.read(db_config_file)).freeze
+      @@db_config ||= begin
+        template = ERB.new File.new(db_config_file).read
+        YAML.load(template.result(binding)).freeze
+      end
     end
 
     def app_config
-      @@app_config ||= YAML.load_file(app_config_file).freeze
+      @@app_config ||= begin
+        template = ERB.new File.new(app_config_file).read
+        YAML.load(template.result(binding)).freeze
+      end
     end
 
     def frontend_version
       @@frontend_version ||= JSON::parse(File.read(Rails.root.join("package.json")))["version"]
+    end
+
+    def read_editor_assets_version
+      File.read(Rails.root.join("config/editor_assets_version.json"))
+    end
+
+    def editor_assets_version
+      @@editor_assets_version ||= JSON::parse(read_editor_assets_version)["version"]
     end
 
     def env_app_config
@@ -57,22 +71,13 @@ module Carto
       (config && config['custom_paths'] && config['custom_paths']['views']) || Array.new
     end
 
-    def saas?
-      Cartodb.config[:cartodb_com_hosted] == false
+    def geocoder_config
+      {
+        provider: Cartodb.get_config(:geocoder, 'search_bar_provider'),
+        mapbox: Cartodb.get_config(:geocoder, 'mapbox'),
+        tomtom: Cartodb.get_config(:geocoder, 'tomtom')
+      }
     end
-
-    def mapzen_api_key
-      Cartodb.get_config(:geocoder, 'mapzen', 'search_bar_api_key')
-    end
-
-    def mapbox_api_key
-      Cartodb.get_config(:geocoder, 'mapbox', 'search_bar_api_key')
-    end
-
-    # Make some methods available. Remember that this sets methods as private.
-    # More information: https://idiosyncratic-ruby.com/8-self-improvement.html
-    # This is the chosen approach to avoid including `Configuration` all over the place. Check #12757
-    module_function :saas?
 
     private
 
@@ -99,11 +104,7 @@ module Carto
     end
 
     def db_config_file
-      if ENV['RAILS_DATABASE_FILE']
-        File.join(config_files_root, 'config/' + ENV['RAILS_DATABASE_FILE'])
-      else
-        File.join(config_files_root, 'config/database.yml')
-      end
+      "#{config_files_root}/config/#{ENV['RAILS_DATABASE_FILE'] || 'database.yml'}"
     end
 
     def app_config_file

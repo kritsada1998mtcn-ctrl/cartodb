@@ -1,9 +1,6 @@
-# encoding: utf-8
-
 module Carto
   module Api
     class OrganizationNotificationsController < ::Api::ApplicationController
-      include Carto::ControllerHelper
       extend Carto::DefaultRescueFroms
 
       ssl_required :create, :destroy
@@ -16,7 +13,8 @@ module Carto
       respond_to :json
 
       def create
-        notification = @organization.notifications.create!(params[:notification])
+        notification_parameters = params.require(:notification).permit(:icon, :body, :recipients)
+        notification = @organization.notifications.create!(notification_parameters)
         render_jsonp(NotificationPresenter.new(notification).to_hash, :created)
       end
 

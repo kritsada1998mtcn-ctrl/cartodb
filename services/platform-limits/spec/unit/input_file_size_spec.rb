@@ -1,9 +1,6 @@
-# encoding: utf-8
-
+require 'spec_helper_min'
 require_relative '../../platform_limits'
-
 require_relative '../doubles/user'
-require 'uuidtools'
 
 include CartoDB::PlatformLimits
 

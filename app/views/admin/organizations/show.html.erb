@@ -7,7 +7,7 @@
     var type = "oauth";
     var config = <%= safe_js_object frontend_config %>;
     var organization_data = {
-      base_url: "<%= CartoDB.url(self, 'create_organization_user', {}, current_user) %>", // HACK!!!
+      base_url: "<%= CartoDB.url(self, 'create_organization_user', user: current_user) %>", // HACK!!!
       id: "<%= current_user.organization.id %>",
       quota_in_bytes: <%= current_user.organization.quota_in_bytes %>,
       seats: <%= current_user.organization.seats %>,
@@ -22,11 +22,7 @@
     var upgrade_url = "<%= current_user.upgrade_url(request.protocol) %>";
     var organization_notifications = <%= safe_js_object @organization_notifications.to_json %>;
   </script>
-  <% if @has_new_dashboard %>
-    <%= javascript_include_tag 'common_dashboard', 'organization_new_vendor', 'organization_new' %>
-  <% else %>
-    <%= javascript_include_tag 'cdb.js', 'models.js', 'organization_templates.js', 'organization_deps.js', 'organization.js' -%>
-  <% end %>
+  <%= javascript_include_tag 'common', 'common_vendor', 'organization' %>
 <% end %>
 <%= content_for(:css) do %>
   <%= stylesheet_link_tag  'organization.css',  :media => 'all' %>
@@ -46,4 +42,4 @@
   </div>
 </div>
 
-<%= render 'admin/shared/footer' %>
+<%= render 'admin/shared/new_private_footer' %>

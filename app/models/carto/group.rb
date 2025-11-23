@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require 'active_record'
 require_dependency 'cartodb/errors'
 require_dependency 'carto/helpers/auth_token_generator'
@@ -34,7 +32,9 @@ module Carto
 
     # Constructor for groups already existing in the database
     def self.new_instance(database_name, name, database_role, display_name = name)
-      organization = Organization.find_by_database_name(database_name)
+      # rubocop:disable Rails/DynamicFindBy
+      organization = Carto::Organization.find_by_database_name(database_name)
+      # rubocop:enable Rails/DynamicFindBy
 
       raise "Organization not found for database #{database_name}" unless organization
 
@@ -105,11 +105,11 @@ module Carto
     def grant_db_permission(table, access)
       table.owner.in_database do |conn|
         case access
-        when CartoDB::Permission::ACCESS_NONE
+        when Carto::Permission::ACCESS_NONE
           Carto::Group.revoke_all(conn, name, table.database_schema, table.name)
-        when CartoDB::Permission::ACCESS_READONLY
+        when Carto::Permission::ACCESS_READONLY
           Carto::Group.grant_read(conn, name, table.database_schema, table.name)
-        when CartoDB::Permission::ACCESS_READWRITE
+        when Carto::Permission::ACCESS_READWRITE
           Carto::Group.grant_write(conn, name, table.database_schema, table.name)
         else
           raise "Unknown access: #{access}"
@@ -152,8 +152,8 @@ module Carto
     private
 
     def destroy_shared_with
-      if transaction_include_action?(:destroy)
-        Carto::SharedEntity.where(recipient_id: id).each do |se|
+      if transaction_include_any_action?([:destroy])
+        Carto::SharedEntity.where(recipient_id: id).find_each do |se|
           viz = Carto::Visualization.find(se.entity_id)
           permission = viz.permission
           permission.remove_group_permission(self)

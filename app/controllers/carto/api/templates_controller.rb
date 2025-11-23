@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 module Carto
   module Api
     class TemplatesController < ::Api::ApplicationController
@@ -16,14 +14,14 @@ module Carto
                                    .all
 
         render_jsonp({ items: templates.map { |template| Carto::Api::TemplatePresenter.new(template).public_values } })
-      rescue => e
+      rescue StandardError => e
         CartoDB.notify_exception(e)
         render json: { error: [e.message] }, status: 400
       end
 
       def show
         render_jsonp(Carto::Api::TemplatePresenter.new(@template).public_values)
-      rescue => e
+      rescue StandardError => e
         CartoDB.notify_exception(e)
         render json: { error: [e.message] }, status: 400
       end
@@ -50,7 +48,7 @@ module Carto
             render_jsonp({ :errors => ["#{@template.errors.messages.values.join(',')}"] }, 400) and return unless result
 
             render_jsonp(Carto::Api::TemplatePresenter.new(@template).public_values)
-          rescue => e
+          rescue StandardError => e
             CartoDB.notify_exception(e)
             render json: { error: [e.message] }, status: 400
           end
@@ -78,7 +76,7 @@ module Carto
             @template.reload
 
             render_jsonp(Carto::Api::TemplatePresenter.new(@template).public_values)
-          rescue => e
+          rescue StandardError => e
             CartoDB.notify_exception(e)
             render json: { error: [e.message] }, status: 400
           end
@@ -95,7 +93,7 @@ module Carto
             end
 
             head :ok
-          rescue => e
+          rescue StandardError => e
             CartoDB.notify_exception(e)
             render json: { error: [e.message] }, status: 400
           end
@@ -112,7 +110,7 @@ module Carto
         templates = vis.related_templates
 
         render_jsonp({ items: templates.map { |template| Carto::Api::TemplatePresenter.new(template).public_values } })
-      rescue => e
+      rescue StandardError => e
         CartoDB.notify_exception(e)
         render json: { error: [e.message] }, status: 400
       end
@@ -122,7 +120,7 @@ module Carto
         templates = user_table.service.related_templates
 
         render_jsonp(items: templates.map { |template| Carto::Api::TemplatePresenter.new(template).public_values })
-      rescue => e
+      rescue StandardError => e
         CartoDB.notify_exception(e)
         render json: { error: [e.message] }, status: 400
       end
@@ -132,7 +130,7 @@ module Carto
       def load_template
         @template = Carto::Template.where(id: params[:id]).first
         return render json: { errors: ["Template #{params[:id]} not found"] }, status: 404 if @template.nil?
-      rescue => e
+      rescue StandardError => e
         CartoDB.notify_exception(e)
         render json: { error: [e.message] }, status: 400
       end

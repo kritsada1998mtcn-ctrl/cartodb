@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require 'json'
 require 'addressable/uri'
 require_relative '../base_direct_stream'
@@ -26,7 +24,9 @@ module CartoDB
         # In seconds, for connecting
         HTTP_CONNECTION_TIMEOUT = 60
         # In seconds, for the full request
-        HTTP_TIMEOUT = 60
+        HTTP_TIMEOUT = 120
+        # In seconds, for writting to logs
+        LOG_TIMEOUT = 120
 
         # Amount to multiply or divide
         BLOCK_FACTOR = 2
@@ -34,12 +34,12 @@ module CartoDB
         # GeoJSON can get too big in memory, or ArcGIS have mem problems, so keep reasonable number
         MAX_BLOCK_SIZE = 100
         # In seconds, use 0 to disable
-        BLOCK_SLEEP_TIME = 1
+        BLOCK_SLEEP_TIME = 0
 
         # Each retry will be after SLEEP_REQUEST_TIME^(current_retries_count). Set to 0 to disable retrying
-        MAX_RETRIES = 0
-        SLEEP_REQUEST_TIME = 3
-        SKIP_FAILED_IDS = true
+        MAX_RETRIES = 5
+        SLEEP_REQUEST_TIME = 5
+        SKIP_FAILED_IDS = false
 
         # Used to display more data only (for local debugging purposes)
         DEBUG = false
@@ -79,6 +79,7 @@ module CartoDB
           @current_stream_status = true
           @last_stream_status = true
           @ids = nil
+          @log_timer = nil
         end
 
         # Factory method
@@ -114,6 +115,22 @@ module CartoDB
           raise 'Not supported by this datasource'
         end
 
+        def timed_log(s)
+          t2 = Time.now
+          if ((@log_timer == nil) || ((t2 - @log_timer) > LOG_TIMEOUT))
+            append_and_store(s)
+            @log_timer = t2
+          end
+        end
+
+        def build_empty_initial_stream
+          {
+            geometryType: @metadata[:geometry_type],
+            fields: @metadata[:fields],
+            features: []
+          }.to_json
+        end
+
         # Initial stream, to be used for container creation (table usually)
         # @param id string
         # @return String
@@ -123,13 +140,17 @@ module CartoDB
 
           @ids = get_ids_list(@url)
 
+          return build_empty_initial_stream if @ids.empty?
+
           @ids_total = @ids.length
 
           first_item = get_by_ids(@url, [@ids.slice!(0)], @metadata[:fields])
           @ids_retrieved += 1
 
-          # Start optimistic
-          @block_size = [MAX_BLOCK_SIZE, @metadata[:max_records_per_query]].min
+          timed_log("Retrieved the first element (Total elements: #{@ids_total})")
+
+          # Start with a pesimistic setup
+          @block_size = [MIN_BLOCK_SIZE * BLOCK_FACTOR, MAX_BLOCK_SIZE, @metadata[:max_records_per_query]].min
 
           ::JSON.dump(first_item)
         end
@@ -146,7 +167,7 @@ module CartoDB
             puts "#{@ids_retrieved}/#{@ids_total} (#{ids_block.length})" if DEBUG
 
             items = get_by_ids(@url, ids_block, @metadata[:fields])
-            @last_stream_status = @current_stream_status
+            timed_log("Downloaded a chunk of #{ids_block.length} ids (#{@ids_retrieved + ids_block.length} so far)")
             @current_stream_status = true
             retries = 0
             sleep(BLOCK_SLEEP_TIME) unless BLOCK_SLEEP_TIME == 0
@@ -155,10 +176,11 @@ module CartoDB
               if SKIP_FAILED_IDS
                 items = []
               else
+                append_and_store("Too many download failures. Giving up.")
                 raise exception
               end
             else
-              @last_stream_status = @current_stream_status
+              timed_log("FAILED to download a chunk of #{ids_block.length} ids (#{@ids_retrieved} ids already downloaded). Retrying...")
               @current_stream_status = false
               # Add back, next pass will get fewer items
               @ids = ids_block + @ids
@@ -230,6 +252,10 @@ module CartoDB
           @http_client ||= Carto::Http::Client.get('arcgis')
         end
 
+        def append_and_store(str, truncate = true, timestamp = Time.now.utc)
+          @logger.append_and_store(str, truncate, timestamp) unless @logger.nil?
+        end
+
         # @param id String
         # @param subresource_id String
         # @return Hash
@@ -272,7 +298,7 @@ module CartoDB
               supported_formats:          supported_formats,
               advanced_queries_supported: data.fetch(:supportsAdvancedQueries, false)
             }
-          rescue => exception
+          rescue StandardError => exception
             raise ResponseError.new("Missing data: #{exception.to_s} #{exception.backtrace}")
           end
 
@@ -335,7 +361,7 @@ module CartoDB
 
           begin
             data = ::JSON.parse(response.body).fetch('layers')
-          rescue => exception
+          rescue StandardError => exception
             raise ResponseError.new("Missing data: #{exception.to_s} #{request_url} #{exception.backtrace}")
           end
 
@@ -352,7 +378,7 @@ module CartoDB
                 title: item.fetch('name')
               }
             }
-          rescue => exception
+          rescue StandardError => exception
             raise ResponseError.new("Missing data: #{exception.to_s} #{request_url} #{exception.backtrace}")
           end
         end
@@ -371,11 +397,9 @@ module CartoDB
 
           begin
             data = ::JSON.parse(response.body).fetch('objectIds').sort
-          rescue => exception
+          rescue StandardError => exception
             raise ResponseError.new("Missing data: #{exception.to_s} #{request_url} #{exception.backtrace}")
           end
-
-          raise ResponseError.new("Empty ids list #{request_url}") if data.length == 0
 
           data
         end
@@ -436,17 +460,15 @@ module CartoDB
 
           begin
             body = ::JSON.parse(response.body)
-            success = true
           rescue JSON::ParserError
-            success = false
-          end
-
-          unless success
             begin
               # HACK: JSON spec does not cover Infinity
               body = ::JSON.parse(response.body.gsub(':INF,', ':"Infinity",'))
-            rescue JSON::ParserError
-              raise ResponseError.new("JSON parsing error. URL: #{prepared_url} #{to_s}")
+            rescue JSON::ParserError => e
+              # We cannot do much about it, log, skip and continue
+              append_and_store("get_by_ids: #{e.inspect}")
+              append_and_store("get_by_ids: #{prepared_url} (POST) Params: #{params_data}", _truncate=false)
+              return []
             end
           end
 
@@ -459,7 +481,7 @@ module CartoDB
             retrieved_fields = body.fetch('fields')
             geometry_type = body.fetch('geometryType')
             spatial_reference = body.fetch('spatialReference')
-          rescue => exception
+          rescue StandardError => exception
             raise ResponseError.new("Missing data: #{exception.to_s} #{prepared_url} #{exception.backtrace}")
           end
           raise ResponseError.new("'fields' empty or invalid #{prepared_url}") \
@@ -484,17 +506,15 @@ module CartoDB
         end
 
         # By default, will update the block size, incrementing or decrementing it according to stream operation results
-        # Block size only gets incremented after 2 successful streams to avoid scenario of:
-        # X items -> FAIL
-        # X/2 items -> PASS
-        # X items -> FAIL (again, because erroring item was at second half of X)
+        # We decrement faster (BLOCK_FACTOR ** BLOCK_FACTOR) then we increment on success (BLOCK_FACTOR) to
+        # reduce the load of the remote server faster
         def block_size(update=true)
           if update
-            if @current_stream_status && @last_stream_status && @block_size < MAX_BLOCK_SIZE
+            if @current_stream_status && (@block_size < MAX_BLOCK_SIZE)
               @block_size = [@block_size * BLOCK_FACTOR, MAX_BLOCK_SIZE].min
             end
             if !@current_stream_status && @block_size > MIN_BLOCK_SIZE
-              @block_size = [[(@block_size / BLOCK_FACTOR).floor, 1].max, MAX_BLOCK_SIZE].min
+              @block_size = [[(@block_size / (BLOCK_FACTOR ** BLOCK_FACTOR)).floor, MIN_BLOCK_SIZE].max, MAX_BLOCK_SIZE].min
             end
             @block_size = [@block_size, @metadata[:max_records_per_query]].min
           end
@@ -523,8 +543,8 @@ module CartoDB
 
         def validate_response(request_url, response)
           raise ExternalServiceTimeoutError.new("TIMEOUT: #{request_url} : #{response.return_message}") \
-            if response.code.zero? && !response.return_message.nil? \
-              && response.return_message.downcase.include?('timeout')
+            if response.timed_out? || (response.code.zero? && !response.return_message.nil? \
+              && response.return_message.downcase.include?('timeout'))
 
           raise UnsupportedOperationError.new("#{request_url} (#{response.code}) : #{response.body}") \
             if response.code == 400 && !response.return_message.nil? \

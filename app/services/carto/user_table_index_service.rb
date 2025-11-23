@@ -1,5 +1,8 @@
 module Carto
   class UserTableIndexService
+
+    include ::LoggerHelper
+
     AUTO_INDEX_TTL_MS = 600000
     AUTO_INDEX_PREFIX = '_auto_idx_'.freeze
     INDEXABLE_WIDGET_TYPES = %w(histogram category time-series).freeze
@@ -31,7 +34,6 @@ module Carto
 
     def generate_indices
       auto_indices(valid: false).each do |idx|
-        CartoDB::Logger.debug(message: 'Auto index', action: 'drop invalid', table: @user_table, column: idx[:column])
         @table.drop_index(idx[:column], AUTO_INDEX_PREFIX, concurrent: true)
       end
 
@@ -41,7 +43,6 @@ module Carto
       indexed_columns = valid_indices.map { |i| i[:column] }
       create_index_on = columns_to_index - indexed_columns
       create_index_on.each do |col|
-        CartoDB::Logger.debug(message: 'Auto index', action: 'create', table: @user_table, column: col)
         @table.create_index(col, AUTO_INDEX_PREFIX, concurrent: true)
       end
 
@@ -50,8 +51,8 @@ module Carto
       drop_index_on.each do |col|
         @table.drop_index(col, AUTO_INDEX_PREFIX, concurrent: true)
       end
-    rescue => e
-      CartoDB::Logger.error(exception: e, message: 'Error auto-indexing table', table: @user_table)
+    rescue StandardError => e
+      log_error(exception: e, message: 'Error auto-indexing table', table: @user_table)
     end
 
     def indexable_column?(column)
@@ -124,7 +125,7 @@ module Carto
       if stats && !stats.empty?
         stats.map { |s| { s[:attname] => s } }.reduce(:merge)
       else
-        CartoDB::Logger.warning(message: 'Error retrieving stats for table', table: @user_table)
+        log_warning(message: 'Error retrieving stats for table', table: @user_table.attributes.slice(:id))
         {}
       end
     end

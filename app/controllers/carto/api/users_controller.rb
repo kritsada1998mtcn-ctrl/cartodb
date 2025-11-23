@@ -1,6 +1,5 @@
-require_dependency 'google_plus_api'
-require_dependency 'google_plus_config'
 require_relative '../../helpers/avatar_helper'
+require_dependency 'carto/controller_helper'
 
 module Carto
   module Api
@@ -8,24 +7,32 @@ module Carto
       include OrganizationUsersHelper
       include AppAssetsHelper
       include MapsApiHelper
+      include MapsApiV2Helper
       include SqlApiHelper
       include CartoDB::ConfigUtils
       include FrontendConfigHelper
       include AccountTypeHelper
       include AvatarHelper
+      begin
+        include OnpremisesLicensingGear::ApplicationHelper
+      rescue NameError
+      end
 
-      UPDATE_ME_FIELDS = [
-        :name, :last_name, :website, :description, :location, :twitter_username,
-        :disqus_shortname, :available_for_hire
-      ].freeze
+      UPDATE_ME_FIELDS = %i(
+        name last_name website description location twitter_username disqus_shortname available_for_hire company
+        industry phone job_role company_employees use_case
+      ).freeze
 
       PASSWORD_DOES_NOT_MATCH_MESSAGE = 'Password does not match'.freeze
 
-      ssl_required :show, :me, :update_me, :delete_me, :get_authenticated_users
+      ssl_required
 
-      before_filter :initialize_google_plus_config, only: [:me]
-      before_filter :optional_api_authorization, only: [:me]
-      skip_before_filter :api_authorization_required, only: [:me, :get_authenticated_users]
+      before_action :optional_api_authorization, only: [:me]
+      before_action :recalculate_user_db_size, only: [:me]
+      skip_before_action :api_authorization_required, only: [:me, :get_authenticated_users]
+      skip_before_action :check_user_state, only: [:me, :delete_me]
+
+      rescue_from StandardError, with: :rescue_from_standard_error
 
       def show
         render json: Carto::Api::UserPresenter.new(uri_user).data
@@ -34,64 +41,68 @@ module Carto
       def me
         carto_viewer = current_viewer.present? ? Carto::User.find(current_viewer.id) : nil
 
-        cant_be_deleted_reason = carto_viewer.try(:cant_be_deleted_reason)
-        can_be_deleted = carto_viewer.present? ? cant_be_deleted_reason.nil? : nil
-
-        render json: {
-          user_data: carto_viewer.present? ? Carto::Api::UserPresenter.new(carto_viewer).data : nil,
-          default_fallback_basemap: carto_viewer.try(:default_basemap),
-          config: frontend_config_hash(current_viewer),
-          dashboard_notifications: carto_viewer.try(:notifications_for_category, :dashboard),
-          is_just_logged_in: carto_viewer.present? ? !!flash['logged'] : nil,
-          is_first_time_viewing_dashboard: !carto_viewer.try(:dashboard_viewed_at),
-          can_change_email: carto_viewer.try(:can_change_email?),
-          auth_username_password_enabled: carto_viewer.try(:organization).try(:auth_username_password_enabled),
-          should_display_old_password: carto_viewer.try(:should_display_old_password?),
-          can_change_password: carto_viewer.try(:can_change_password?),
-          plan_name: carto_viewer.present? ? plan_name(carto_viewer.account_type) : nil,
-          plan_url: carto_viewer.try(:plan_url, request.protocol),
-          can_be_deleted: can_be_deleted,
-          cant_be_deleted_reason: cant_be_deleted_reason,
-          services: carto_viewer.try(:get_oauth_services),
-          user_frontend_version: carto_viewer.try(:relevant_frontend_version) || CartoDB::Application.frontend_version,
-          asset_host: carto_viewer.try(:asset_host),
-          google_sign_in: carto_viewer.try(:google_sign_in),
-          google_plus_iframe_src: carto_viewer.present? ? google_plus_iframe_src : nil,
-          google_plus_client_id: carto_viewer.present? ? google_plus_client_id : nil
+        config = {
+          user_frontend_version: CartoDB::Application.frontend_version
         }
+
+        if carto_viewer.present?
+          cant_be_deleted_reason = carto_viewer.cant_be_deleted_reason
+
+          config = {
+            user_data: Carto::Api::UserPresenter.new(carto_viewer).data,
+            default_fallback_basemap: carto_viewer.default_basemap,
+            dashboard_notifications: carto_viewer.notifications_for_category(:dashboard),
+            organization_notifications: organization_notifications(carto_viewer),
+            unfiltered_organization_notifications: unfiltered_organization_notifications(carto_viewer),
+            is_just_logged_in: !!flash['logged'],
+            is_first_time_viewing_dashboard: !carto_viewer.dashboard_viewed_at,
+            can_change_email: carto_viewer.can_change_email?,
+            auth_username_password_enabled: carto_viewer.organization.try(:auth_username_password_enabled),
+            can_change_password: carto_viewer.can_change_password?,
+            plan_name: plan_name(carto_viewer.account_type),
+            plan_url: carto_viewer.plan_url(request.protocol),
+            can_be_deleted: cant_be_deleted_reason.nil?,
+            cant_be_deleted_reason: cant_be_deleted_reason,
+            services: carto_viewer.get_oauth_services,
+            user_frontend_version: carto_viewer.relevant_frontend_version,
+            asset_host: carto_viewer.asset_host,
+            google_sign_in: carto_viewer.google_sign_in,
+            mfa_required: multifactor_authentication_required?,
+            license_expiration: license_expiration
+          }
+        end
+
+        config[:config] = frontend_config_hash(current_viewer)
+
+        render json: config
       end
 
       def update_me
         user = current_viewer
-
         attributes = params[:user]
 
         if attributes.present?
-          update_password_if_needed(user, attributes)
-
-          if user.can_change_email? && attributes[:email].present?
-            user.set_fields(attributes, [:email])
+          unless user.valid_password_confirmation(attributes[:password_confirmation])
+            raise Carto::PasswordConfirmationError.new
           end
-
-          if attributes[:avatar_url].present? && valid_avatar_file?(attributes[:avatar_url])
-            user.set_fields(attributes, [:avatar_url])
-          end
-
-          fields_to_be_updated = UPDATE_ME_FIELDS.select { |field| attributes.has_key?(field) }
-
-          user.set_fields(attributes, fields_to_be_updated) if fields_to_be_updated.present?
-
+          update_user_attributes(user, attributes)
           raise Sequel::ValidationFailed.new('Validation failed') unless user.errors.try(:empty?) && user.valid?
-          user.update_in_central
-          user.save(raise_on_failure: true)
+
+          ActiveRecord::Base.transaction do
+            update_user_multifactor_authentication(user, attributes[:mfa])
+            user.update_in_central
+            user.save(raise_on_failure: true)
+          end
         end
 
         render_jsonp(Carto::Api::UserPresenter.new(user, current_viewer: current_viewer).to_poro)
       rescue CartoDB::CentralCommunicationFailure => e
-        CartoDB::Logger.error(exception: e, user: user, params: params)
+        log_error(exception: e, target_user: user, params: params)
         render_jsonp({ errors: "There was a problem while updating your data. Please, try again." }, 422)
-      rescue Sequel::ValidationFailed
+      rescue Sequel::ValidationFailed, ActiveRecord::RecordInvalid
         render_jsonp({ message: "Error updating your account details", errors: user.errors }, 400)
+      rescue Carto::PasswordConfirmationError
+        render_jsonp({ message: "Error updating your account details", errors: user.errors }, 403)
       end
 
       def delete_me
@@ -100,16 +111,22 @@ module Carto
         deletion_password_confirmation = params[:deletion_password_confirmation]
 
         if user.needs_password_confirmation? && !user.validate_old_password(deletion_password_confirmation)
-          render_jsonp({ message: "Error deleting user: #{PASSWORD_DOES_NOT_MATCH_MESSAGE}" }, 400) and return
+          render_jsonp({ message: "Error deleting user: #{PASSWORD_DOES_NOT_MATCH_MESSAGE}" }, 400)
+          return
+        end
+
+        if user.has_shared_entities?
+          render_jsonp({ message: "User can't be deleted because there are shared entities. Please, unshare or delete them and try again." }, 401)
+          return
         end
 
         user.destroy_account
 
         render_jsonp({ logout_url: logout_url }, 200)
       rescue CartoDB::CentralCommunicationFailure => e
-        CartoDB::Logger.error(exception: e, message: 'Central error deleting user at CartoDB', user: @user)
+        log_error(exception: e, message: 'Central error deleting user at CartoDB', target_user: @user)
         render_jsonp({ errors: "Error deleting user: #{e.user_message}" }, 422)
-      rescue => e
+      rescue StandardError => e
         CartoDB.notify_exception(e, user: user.inspect)
         render_jsonp({ message: "Error deleting user: #{e.message}", errors: user.errors }, 400)
       end
@@ -137,17 +154,14 @@ module Carto
 
       private
 
-      def google_plus_iframe_src
-        @google_plus_config.present? ? @google_plus_config.iframe_src : nil
+      def unfiltered_organization_notifications(carto_viewer)
+        carto_viewer.received_notifications.order('received_at DESC').limit(10).map do |n|
+          Carto::Api::ReceivedNotificationPresenter.new(n).to_hash
+        end
       end
 
-      def google_plus_client_id
-        @google_plus_config.present? ? @google_plus_config.client_id : nil
-      end
-
-      def initialize_google_plus_config
-        signup_action = Cartodb::Central.sync_data_with_cartodb_central? ? Cartodb::Central.new.google_signup_url : '/google/signup'
-        @google_plus_config = ::GooglePlusConfig.instance(CartoDB, Cartodb.config, signup_action)
+      def organization_notifications(carto_viewer)
+        carto_viewer.received_notifications.unread.map { |n| Carto::Api::ReceivedNotificationPresenter.new(n).to_hash }
       end
 
       def render_auth_users_data(user, referrer, subdomain, referrer_organization_username=nil)
@@ -202,19 +216,54 @@ module Carto
         @session_user ||= (current_viewer.nil? ? nil : Carto::User.where(id: current_viewer.id).first)
       end
 
-      def update_password_if_needed(user, attributes)
-        password_change = (attributes[:new_password].present? || attributes[:confirm_password].present?) &&
-                          user.can_change_password?
+      def update_user_attributes(user, attributes)
+        update_password_if_needed(user, attributes)
 
-        if password_change
+        if user.can_change_email? && attributes[:email].present?
+          user.set_fields(attributes, [:email])
+        end
+
+        if attributes[:avatar_url].present? && valid_avatar_file?(attributes[:avatar_url])
+          user.set_fields(attributes, [:avatar_url])
+        end
+
+        fields_to_be_updated = UPDATE_ME_FIELDS.select { |field| attributes.has_key?(field) }
+
+        user.set_fields(attributes, fields_to_be_updated) if fields_to_be_updated.present?
+      end
+
+      def update_password_if_needed(user, attributes)
+        if password_change?(user, attributes)
           user.change_password(
-            attributes[:old_password],
+            attributes[:password_confirmation],
             attributes[:new_password],
             attributes[:confirm_password]
           )
 
           update_session_security_token(user)
         end
+      end
+
+      def password_change?(user, attributes)
+        (attributes[:new_password].present? || attributes[:confirm_password].present?) && user.can_change_password?
+      end
+
+      def recalculate_user_db_size
+        current_user && Carto::UserDbSizeCache.new.update_if_old(current_user)
+      end
+
+      def update_user_multifactor_authentication(user, mfa_enabled)
+        return if mfa_enabled.nil?
+
+        service = Carto::UserMultifactorAuthUpdateService.new(user_id: user.id)
+        service.update(enabled: mfa_enabled)
+        warden.session(user.username)[:multifactor_authentication_performed] = false unless mfa_enabled
+      end
+
+      def license_expiration
+        return nil unless cartodb_com_hosted?
+
+        send(:license_expiration_date) if respond_to?(:license_expiration_date)
       end
     end
   end

@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require_relative '../../../../../lib/carto/http/client'
 
 module CartoDB
@@ -75,7 +73,7 @@ module CartoDB
           else
             raise "Box Error status: #{res.response_code}, body: #{res.response_body}, headers: #{res.response_headers}"
           end
-        rescue => e
+        rescue StandardError => e
           CartoDB.notify_exception(e, self: inspect, response: res.inspect)
           raise e
         end
@@ -113,7 +111,10 @@ module CartoDB
             client_secret = options[:client_secret]
 
             @access_token = access_token
-            raise "Access token cannot be nil" if @access_token.nil?
+            if @access_token.nil?
+              raise CartoDB::Datasources::TokenExpiredOrInvalidError.new('Access token cannot be nil', DATASOURCE_NAME)
+            end
+
             @client_id = client_id
             @client_secret = client_secret
           end
@@ -144,8 +145,24 @@ module CartoDB
             query[:limit] = limit unless limit.nil?
             query[:offset] = offset unless offset.nil?
 
-            results, _response = get(SEARCH_URI, query: query)
-            results['entries']
+            if offset.present? && offset > 0
+              # external pagination
+              results, _response = get(SEARCH_URI, query: query)
+              return results['entries']
+            end
+
+            entries = []
+            offset = 0
+            loop do
+              query[:offset] = offset
+              query[:limit] = limit - entries.size if limit.present? # possibly capped by the Box API
+              results, _response = get(SEARCH_URI, query: query)
+              new_entries = results['entries']
+              entries += new_entries
+              offset += new_entries.size
+              break if entries.size >= results['total_count'] || entries.size >= limit
+            end
+            entries
           end
 
           def download_url(file, options = {})
@@ -213,7 +230,7 @@ module CartoDB
             body = "client_id=#{@client_id}&client_secret=#{@client_secret}&token=#{token}"
 
             BoxAPI::auth_post(uri, body, false)
-          rescue => ex
+          rescue StandardError => ex
             raise AuthError.new("revoke_token: #{ex.message}", DATASOURCE_NAME)
           end
 
@@ -230,10 +247,10 @@ module CartoDB
           end
 
           def ensure_id(item)
-            return item if item.class == String || item.class == Fixnum || item.nil?
+            return item if item.class == String || item.class == Integer || item.nil?
             return item.id if item.respond_to?(:id)
             return item['id'] if item.class == Hash
-            raise "Expecting an id of class String or Fixnum, or object that responds to :id"
+            raise "Expecting an id of class String or Integer, or object that responds to :id"
           end
 
           def get(uri, options = {})
@@ -315,7 +332,7 @@ module CartoDB
         # @return string | nil
         def get_auth_url
           service_name = service_name_for_user(DATASOURCE_NAME, @user)
-          state = CALLBACK_STATE_DATA_PLACEHOLDER.sub('user', @user.username).sub('service', service_name)
+          state = CALLBACK_STATE_DATA_PLACEHOLDER.sub('service', service_name).sub('user', @user.username)
           BoxAPI::oauth_url(state,
                             host: config['box_host'],
                             response_type: "code",
@@ -374,7 +391,7 @@ module CartoDB
           self.filter = filter
 
           # Box doesn't have a way to "retrieve everything" but it supports whitespaces for multiple search terms
-          result = client.search(SUPPORTED_EXTENSIONS.join(' '),
+          result = client.search(supported_extensions.join(' '),
                                  scope: nil,
                                  file_extensions: nil,
                                  created_at_range: nil,
@@ -384,7 +401,7 @@ module CartoDB
                                  ancestor_folder_ids: nil,
                                  content_types: nil,
                                  type: nil,
-                                 limit: 200,
+                                 limit: 2000,
                                  offset: 0)
 
           result = result.map { |i| format_item_data(i) }.sort { |x, y| y[:updated_at] <=> x[:updated_at] }
@@ -466,7 +483,7 @@ module CartoDB
           # Any call would do, we just want to see if communicates or refuses the token
           result = client.search('test search')
           !result.nil?
-        rescue => e
+        rescue StandardError => e
           if e.message =~ /invalid_token/
             CartoDB.notify_debug('Box invalid_token', self: inspect)
             false
@@ -520,8 +537,10 @@ module CartoDB
         def update_user_oauth(refresh_token)
           carto_user = Carto::User.find(@user.id)
           oauth = carto_user.oauth_for_service('box')
-          oauth.token = refresh_token
-          oauth.save
+          if oauth
+            oauth.token = refresh_token
+            oauth.save
+          end
         end
 
         # Formats all data to comply with our desired format

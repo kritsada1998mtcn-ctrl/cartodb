@@ -22,9 +22,9 @@ shared_examples_for 'vizjson generator' do
     before(:all) do
       bypass_named_maps
 
-      @user_1 = FactoryGirl.create(:valid_user, private_tables_enabled: false)
+      @user_1 = create(:valid_user, private_tables_enabled: false)
       @api_key = @user_1.api_key
-      @user_2 = FactoryGirl.create(:valid_user)
+      @user_2 = create(:valid_user)
 
       @headers = { 'CONTENT_TYPE'  => 'application/json' }
       host! "#{@user_1.subdomain}.localhost.lan"
@@ -60,7 +60,8 @@ shared_examples_for 'vizjson generator' do
         private_tables_enabled: true
       )
 
-      organization = test_organization.save
+      organization = test_organization
+      organization.save
 
       user_org = CartoDB::UserOrganization.new(organization.id, user_1.id)
       user_org.promote_user_to_admin
@@ -86,12 +87,17 @@ shared_examples_for 'vizjson generator' do
       last_response.status.should == 200
 
       # Share vis with user_2 in readonly (vis can never be shared in readwrite)
-      put api_v1_permissions_update_url(user_domain: user_1.username, api_key: user_1.api_key, id: u1_vis_1_perm_id),
-          { acl: [{
-                   type: CartoDB::Permission::TYPE_USER,
-                   entity: { id:   user_2.id },
-                   access: CartoDB::Permission::ACCESS_READONLY
-                  }] }.to_json, http_json_headers
+      request_payload = {
+        acl: [
+          {
+            type: Carto::Permission::TYPE_USER,
+            entity: { id: user_2.id },
+            access: Carto::Permission::ACCESS_READONLY
+          }
+        ]
+      }.to_json
+      request_url_params = { user_domain: user_1.username, api_key: user_1.api_key, id: u1_vis_1_perm_id }
+      put api_v1_permissions_update_url(request_url_params), request_payload, http_json_headers
       last_response.status.should == 200
 
       # privacy private checks
@@ -190,7 +196,7 @@ shared_examples_for 'vizjson generator' do
       viz_id = viz.id
       get api_vx_visualizations_vizjson_url(id: viz_id, api_key: @api_key, callback: valid_callback), {}, @headers
       last_response.status.should == 200
-      (last_response.body =~ /^#{valid_callback}\(\{/i).should eq 0
+      (last_response.body =~ /^(\/\*\*\/)?#{valid_callback}\(\{/i).should eq 0
 
       get api_vx_visualizations_vizjson_url(id: viz_id, api_key: @api_key, callback: invalid_callback1), {}, @headers
       last_response.status.should == 400
@@ -207,7 +213,7 @@ shared_examples_for 'vizjson generator' do
 
       get api_vx_visualizations_vizjson_url(id: viz_id, api_key: @api_key, callback: valid_callback2), {}, @headers
       last_response.status.should == 200
-      (last_response.body =~ /^#{valid_callback2}\(\{/i).should eq 0
+      (last_response.body =~ /^(\/\*\*\/)?#{valid_callback2}\(\{/i).should eq 0
 
       get api_vx_visualizations_vizjson_url(id: viz_id, api_key: @api_key), {}, @headers
       last_response.status.should == 200
@@ -254,7 +260,7 @@ shared_examples_for 'vizjson generator' do
         source_visualization  = table.fetch('table_visualization')
         map_id = source_visualization[:map_id]
 
-        derived_visualization = FactoryGirl.create(:derived_visualization, user_id: @user_1.id, map_id: map_id)
+        derived_visualization = create(:derived_visualization, user_id: @user_1.id, map_id: map_id)
         viz_id = derived_visualization.id
 
         put api_v1_visualizations_show_url(user_domain: @user_1.username, id: viz_id, api_key: @api_key),
@@ -410,7 +416,7 @@ shared_examples_for 'vizjson generator' do
     include_context 'visualization creation helpers'
 
     before(:all) do
-      @user_1 = FactoryGirl.create(:valid_user, private_tables_enabled: false)
+      @user_1 = create(:valid_user, private_tables_enabled: false)
       host! "#{@user_1.subdomain}.localhost.lan"
       @map, @table, @table_visualization, @visualization = create_full_visualization(Carto::User.find(@user_1.id))
     end

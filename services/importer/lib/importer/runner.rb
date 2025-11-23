@@ -1,4 +1,3 @@
-# encoding: utf-8
 require_relative './loader'
 require_relative './tiff_loader'
 require_relative './sql_loader'
@@ -18,6 +17,7 @@ module CartoDB
     class Runner
       include CartoDB::Importer2::QuotaCheckHelpers
       include CartoDB::Importer2::RunnerHelper
+      include ::LoggerHelper
 
       # Legacy guessed average "final size" of an imported file
       # e.g. a Shapefile shrinks after import. This won't help in scenarios like CSVs (which tend to grow)
@@ -29,13 +29,13 @@ module CartoDB
       UNKNOWN_ERROR_CODE      = 99999
 
       # Hard-limit on number of spawned tables (zip files, KMLs and so on)
-      MAX_TABLES_PER_IMPORT = 10
+      MAX_TABLES_PER_IMPORT = 26
 
       # @param options Hash
       # {
       #   :pg Hash { ... }
       #   :downloader CartoDB::Importer2::DatasourceDownloader|CartoDB::Importer2::Downloader
-      #   :log CartoDB::Log|nil
+      #   :log Carto::Log|nil
       #   :job CartoDB::Importer2::Job|nil
       #   :user ::User|nil
       #   :unpacker Unp|nil
@@ -54,8 +54,7 @@ module CartoDB
         @downloader          = options.fetch(:downloader)
 
         @user = options.fetch(:user, nil)
-        @available_quota =
-          !@user.nil? && @user.respond_to?(:remaining_quota) ? @user.remaining_quota : DEFAULT_AVAILABLE_QUOTA
+        @available_quota = @user&.remaining_quota || DEFAULT_AVAILABLE_QUOTA
         @unpacker            = options.fetch(:unpacker, nil) || Unp.new
         @post_import_handler = options.fetch(:post_import_handler, nil)
         @importer_config = options.fetch(:importer_config, nil)
@@ -81,7 +80,7 @@ module CartoDB
       end
 
       def new_logger
-        CartoDB::Log.new(type: CartoDB::Log::TYPE_DATA_IMPORT)
+        Carto::Log.new_data_import
       end
 
       def include_additional_errors_mapping(additional_errors)
@@ -103,7 +102,7 @@ module CartoDB
         tracker.call('uploading')
         @downloader.multi_resource_import_supported? ? multi_resource_import : single_resource_import
         self
-      rescue => exception
+      rescue StandardError => exception
         # Delete job temporary table from cdb_importer schema
         delete_job_table
 
@@ -196,7 +195,7 @@ module CartoDB
 
         @job.success_status = true
         @results.push(result_for(@job, source_file, loader.valid_table_names, loader.additional_support_tables))
-      rescue => exception
+      rescue StandardError => exception
         if loader.nil?
           valid_table_names = []
           additional_support_tables = []
@@ -208,11 +207,10 @@ module CartoDB
         # Delete job temporary table from cdb_importer schema
         delete_job_table
 
-        CartoDB::Logger.warning(exception: exception,
-                                message: "Error importing data",
-                                table_name: @job.table_name,
-                                log: @job.logger.to_s,
-                                path: source_file.fullpath)
+        log_warning(
+          exception: exception, message: "Error importing data", table_name: @job.table_name,
+          error_detail: @job.logger.to_s, path: source_file.fullpath
+        )
 
         @job.log "Errored importing data from #{source_file.fullpath}:"
         @job.log "#{exception.class.to_s}: #{exception.to_s}", truncate=false
@@ -232,7 +230,7 @@ module CartoDB
           loader.streamed_run_continue(downloader.source_file) if got_data
         end while got_data
 
-        loader.streamed_run_finish(@post_import_handler)
+        loader.streamed_run_finish(@post_import_handler, @downloader.datasource.class::DATASOURCE_NAME)
       end
 
       def file_based_loader_run(job, loader)

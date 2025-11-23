@@ -1,7 +1,10 @@
-# encoding: utf-8
+require './app/helpers/logger_helper'
 
 module Carto
   class SamlService
+
+    include ::LoggerHelper
+
     def initialize(organization)
       raise "organization can't be nil" unless organization
 
@@ -24,16 +27,16 @@ module Carto
     end
 
     def logout_url_configured?
-      saml_settings.idp_slo_target_url.present?
+      saml_settings.idp_slo_service_url.present?
     end
 
     # SLO (Single Log Out) request initiated from CARTO
     # Returns the SAML logout request that to be redirected to
-    def sp_logout_request(user)
+    def sp_logout_request(user_email)
       settings = saml_settings
 
       if logout_url_configured?
-        settings.name_identifier_value = user.email
+        settings.name_identifier_value = user_email
         OneLogin::RubySaml::Logoutrequest.new.create(settings)
       else
         raise "SLO IdP Endpoint not found in settings for #{@organization}"
@@ -81,13 +84,15 @@ module Carto
     end
 
     def debug_response(message, response)
-      CartoDB::Logger.debug(
+      Rails.logger.warn(
         message: message,
-        response_settings: response.settings.to_json,
-        response_options: response.options,
-        response_errors: response.errors,
-        response_body: response.response,
-        response_attributes: response.attributes.try(:to_h)
+        response: {
+          settings: response.settings.to_json,
+          options: response.options,
+          errors: response.errors,
+          body: response.response,
+          attributes: response.attributes.try(:to_h)
+        }
       )
       nil
     end

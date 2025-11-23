@@ -27,15 +27,14 @@ module Carto
     end
 
     def process_by_id(id)
-      return nil if !is_uuid?(id)
+      return nil if !uuid?(id)
 
       import = Carto::DataImport.where(id: id).first
 
       if stuck?(import)
         # INFO: failure because of stuck is handled with old model
         ::DataImport[id].mark_as_failed_if_stuck!
-        # INFO: avoiding `reload` usage because of #7718
-        import = Carto::DataImport.where(id: id).first
+        import.reload
       end
       import
     rescue RecordNotFound => e
@@ -43,14 +42,14 @@ module Carto
     end
 
     def validate_synchronization_oauth(user, service)
-      oauth = user.oauth_for_service(service)
+      oauth = user.oauths.select(service)
       return false unless oauth
 
       datasource = oauth.get_service_datasource
 
       begin
         valid = datasource.token_valid?
-      rescue => e
+      rescue StandardError => e
         delete_oauth_if_expired_and_raise(user, e, oauth)
         valid = false
       end
@@ -60,7 +59,7 @@ module Carto
       end
 
       valid
-    rescue => e
+    rescue StandardError => e
       delete_oauth_if_expired_and_raise(user, e, oauth)
     end
 
@@ -69,7 +68,7 @@ module Carto
       raise CartoDB::Datasources::AuthError.new("No oauth set for service #{service}") if oauth.nil?
       datasource = oauth.get_service_datasource
       datasource.get_resources_list(filter)
-    rescue => e
+    rescue StandardError => e
       delete_oauth_if_expired_and_raise(user, e, oauth)
     end
 
@@ -93,7 +92,7 @@ module Carto
         CartoDB.notify_exception(e, { message: "Error while validating code #{code}, it won't be stored", user: user, service: service })
         return false
       end
-    rescue => e
+    rescue StandardError => e
       delete_oauth_if_expired_and_raise(user, e, oauth)
     end
 
@@ -104,10 +103,8 @@ module Carto
 
       token = datasource.validate_callback(params)
 
-      # TODO: workaround for https://github.com/CartoDB/cartodb/issues/4003
-      #user.add_oauth(service, datasource.validate_callback(params))
-      CartoDB::OAuths.new(::User.where(id: user.id).first).add(service, token)
-    rescue => e
+      user.oauths.add(service, token)
+    rescue StandardError => e
       delete_oauth_if_expired_and_raise(user, e, oauth)
     end
 
@@ -123,10 +120,8 @@ module Carto
     end
 
     def delete_oauth(user, oauth)
-      # INFO: this is the straightforward way, but sometimes it fails with "ActiveRecord::StatementInvalid: PG::Error: ERROR:  prepared statement "a1" does not exist" errors
-      # user.synchronization_oauths.delete(oauth)
-      oauth.destroy
-      user.synchronization_oauths.delete(oauth)
+      user.oauths.remove(oauth.service)
+      user.reload
     end
 
     def delete_oauth_if_expired_and_raise(user, e, oauth = nil)

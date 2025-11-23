@@ -1,6 +1,4 @@
-# encoding: utf-8
 require_relative '../../spec_helper'
-require_relative '../visualization_shared_examples'
 require_relative '../../../services/data-repository/backend/sequel'
 require_relative '../../../app/models/visualization/member'
 require_relative '../../../app/models/visualization/collection'
@@ -11,24 +9,27 @@ require_dependency 'cartodb/redis_vizjson_cache'
 include CartoDB
 
 describe Visualization::Member do
+  include Carto::Factories::Visualizations
+  let(:user) { create(:carto_user) }
+
   before(:all) do
     @db = SequelRails.connection
     Sequel.extension(:pagination)
 
     Visualization.repository  = DataRepository::Backend::Sequel.new(@db, :visualizations)
 
-    @user = FactoryGirl.create(:valid_user)
+    @user = create(:valid_user)
   end
 
   after(:all) do
     @user.destroy
   end
 
-  before(:each) do
+  def stub_visualization_member_user
     bypass_named_maps
 
     # For relator->permission
-    user_id = UUIDTools::UUID.timestamp_create.to_s
+    user_id = Carto::UUIDHelper.random_uuid
     user_name = 'whatever'
     user_apikey = '123'
     @user_mock = mock
@@ -44,9 +45,37 @@ describe Visualization::Member do
     Visualization::Relator.any_instance.stubs(:support_tables).returns(support_tables_mock)
   end
 
-  it_behaves_like 'visualization models' do
-    def build_visualization(attrs = {})
-      Visualization::Member.new(attrs)
+  describe '#password' do
+    it 'checks that when using password protected type, encrypted password is generated and stored correctly' do
+      password_value = '000123456'
+      password_second_value = '456789'
+
+      visualization = Visualization::Member.new(type: Visualization::Member::TYPE_DERIVED)
+      visualization.privacy = Visualization::Member::PRIVACY_PROTECTED
+
+      visualization.password = password_value
+      visualization.has_password?.should be_true
+      visualization.password_valid?(password_value).should be_true
+
+      # Shouldn't remove the password, and be equal
+      visualization.password = ''
+      visualization.has_password?.should be_true
+      visualization.password_valid?(password_value).should be_true
+      visualization.password = nil
+      visualization.has_password?.should be_true
+      visualization.password_valid?(password_value).should be_true
+
+      # Modify the password
+      visualization.password = password_second_value
+      visualization.has_password?.should be_true
+      visualization.password_valid?(password_second_value).should be_true
+      visualization.password_valid?(password_value).should be_false
+
+      # Test removing the password, should work
+      # :remove_password doesn't need to be public, so in the new model it's kept private. :send is needed here, then.
+      visualization.send(:remove_password)
+      visualization.has_password?.should be_false
+      visualization.password_valid?(password_value).should be_false
     end
   end
 
@@ -59,6 +88,7 @@ describe Visualization::Member do
   end
 
   describe '#store' do
+    before { stub_visualization_member_user }
 
     it 'should fail if no user_id attribute present' do
       attributes  = random_attributes_for_vis_member(user_id: @user_mock.id)
@@ -109,7 +139,7 @@ describe Visualization::Member do
     end
 
     it 'persists tags as an array if the backend supports it' do
-      Permission.any_instance.stubs(:update_shared_entities).returns(nil)
+      Carto::Permission.any_instance.stubs(:update_shared_entities).returns(nil)
 
       attributes  = random_attributes_for_vis_member(user_id: @user_mock.id, tags: ['tag 1', 'tag 2'])
       member      = Visualization::Member.new(attributes)
@@ -180,6 +210,8 @@ describe Visualization::Member do
   end
 
   describe '#fetch' do
+    before { stub_visualization_member_user }
+
     it 'fetches attributes from the data repository' do
       attributes  = random_attributes_for_vis_member(user_id: @user_mock.id)
       member      = Visualization::Member.new(attributes).store
@@ -191,38 +223,24 @@ describe Visualization::Member do
   end
 
   describe '#delete' do
+    let(:member) { Visualization::Member.new(random_attributes_for_vis_member(user_id: user.id)).store }
+
     it 'fails for viewer users' do
-      CartoDB::Visualization::Relator.any_instance.stubs(:children).returns([])
-
-      member = Visualization::Member.new(random_attributes_for_vis_member(user_id: @user_mock.id)).store
       member.fetch
-
-      @user_mock.stubs(:viewer).returns(true)
+      user.update!(viewer: true)
 
       expect { member.delete }.to raise_error(CartoDB::InvalidMember, /Viewer users can't delete visualizations/)
-
-      @user_mock.stubs(:viewer).returns(false)
     end
 
     it 'deletes this member data from the data repository' do
-      CartoDB::Visualization::Relator.any_instance.stubs(:children).returns([])
-
-      member = Visualization::Member.new(random_attributes_for_vis_member(user_id: @user_mock.id)).store
-      member.fetch
-      member.name.should_not be_nil
-
       member.delete
-      member.name.should be_nil
 
-      lambda { member.fetch }.should raise_error KeyError
+      expect { member.fetch }.to raise_error KeyError
     end
 
     it 'invalidates vizjson cache' do
-      CartoDB::Visualization::Relator.any_instance.stubs(:children).returns([])
-      member      = Visualization::Member.new(random_attributes_for_vis_member(user_id: @user_mock.id))
-      member.store
+      Carto::Visualization.any_instance.stubs(:perform_invalidations).once
 
-      member.expects(:invalidate_cache)
       member.delete
     end
 
@@ -230,8 +248,8 @@ describe Visualization::Member do
       include Carto::Factories::Visualizations
 
       before(:all) do
-        @user = FactoryGirl.create(:carto_user)
-        @other_table = FactoryGirl.create(:carto_user_table, user: @user)
+        @user = create(:carto_user)
+        @other_table = create(:carto_user_table, user: @user)
       end
 
       before(:each) do
@@ -256,7 +274,7 @@ describe Visualization::Member do
 
       it 'destroys maps with join analyses if they are dependent' do
         # First layer uses tables @table, Second layer uses tables @table and @other_table. Map is dependent on @table
-        layer = FactoryGirl.build(:carto_layer, kind: 'carto', maps: [@map])
+        layer = build(:carto_layer, kind: 'carto', maps: [@map])
         layer.options[:query] = "SELECT * FROM #{@other_table.name}"
         layer.save
         layer.user_tables << @table << @other_table
@@ -269,7 +287,7 @@ describe Visualization::Member do
 
       it 'unlinks only dependent data layers' do
         layer_to_be_deleted = @visualization.data_layers.first
-        layer = FactoryGirl.build(:carto_layer, kind: 'carto', maps: [@map])
+        layer = build(:carto_layer, kind: 'carto', maps: [@map])
         layer.options[:query] = "SELECT * FROM #{@other_table.name}"
         layer.save
         layer.user_tables << @other_table
@@ -288,7 +306,7 @@ describe Visualization::Member do
         layer_to_be_deleted.save
         layer_to_be_deleted.user_tables << @table
 
-        layer = FactoryGirl.build(:carto_layer, kind: 'carto', maps: [@map])
+        layer = build(:carto_layer, kind: 'carto', maps: [@map])
         layer.options[:source] = 'b0'
         layer.save
         layer.user_tables << @other_table
@@ -328,6 +346,8 @@ describe Visualization::Member do
   end
 
   describe '#unlink_from' do
+    before { stub_visualization_member_user }
+
     it 'invalidates varnish cache' do
       member = Visualization::Member.new(random_attributes_for_vis_member(user_id: @user_mock.id)).store
       member.expects(:invalidate_cache)
@@ -337,6 +357,8 @@ describe Visualization::Member do
   end
 
   describe '#public?' do
+    before { stub_visualization_member_user }
+
     it 'returns true if privacy set to public' do
       visualization = Visualization::Member.new(privacy: 'public')
       visualization.public?.should == true
@@ -350,20 +372,22 @@ describe Visualization::Member do
   end
 
   describe '#permissions' do
+    before { stub_visualization_member_user }
+
     it 'checks is_owner? permissions' do
-      user_id  = UUIDTools::UUID.timestamp_create.to_s
+      user_id  = Carto::UUIDHelper.random_uuid
       member  = Visualization::Member.new(name: 'foo', user_id: user_id)
 
       user    = OpenStruct.new(id: user_id)
       member.is_owner?(user).should == true
 
-      user    = OpenStruct.new(id: UUIDTools::UUID.timestamp_create.to_s)
+      user    = OpenStruct.new(id: Carto::UUIDHelper.random_uuid)
       member.is_owner?(user).should == false
     end
 
     def mock_user(username, viewer: false)
       user_mock = mock
-      user_mock.stubs(:id).returns(UUIDTools::UUID.timestamp_create.to_s)
+      user_mock.stubs(:id).returns(Carto::UUIDHelper.random_uuid)
       user_mock.stubs(:username).returns(username)
       user_mock.stubs(:organization).returns(nil)
       user_mock.stubs(:viewer).returns(viewer)
@@ -371,90 +395,60 @@ describe Visualization::Member do
     end
 
     it 'checks has_permission? permissions' do
-      Permission.any_instance.stubs(:grant_db_permission).returns(nil)
+      Carto::Permission.any_instance.stubs(:grant_db_permission).returns(nil)
+      Carto::Permission.any_instance.stubs(:notify_permissions_change).returns(nil)
 
-      Permission.any_instance.stubs(:notify_permissions_change).returns(nil)
+      read_user = create(:carto_user)
+      write_user = create(:carto_user)
+      unauthorized_user = create(:carto_user)
 
-      user2_mock = mock_user('user2')
-      user3_mock = mock_user('user3')
-      user4_mock = mock_user('user4')
-      viewer_user = mock_user('user_v', viewer: true)
-
-      visualization = Visualization::Member.new(
-          privacy: Visualization::Member::PRIVACY_PUBLIC,
-          name: 'test',
-          type: Visualization::Member::TYPE_CANONICAL,
-          user_id: @user.id
-      )
-      visualization.store
-
-      permission = Permission.where(id: visualization.permission_id).first
+      _map, _table, visualization, _map_visualization = create_full_visualization(@user)
 
       acl = [
         {
-          type: Permission::TYPE_USER,
-          entity: {
-            id: user2_mock.id,
-            username: user2_mock.username
-          },
-          access: Permission::ACCESS_READONLY
+          type: Carto::Permission::TYPE_USER,
+          entity: { id: read_user.id, username: read_user.username },
+          access: Carto::Permission::ACCESS_READONLY
         },
         {
-          type: Permission::TYPE_USER,
-          entity: {
-            id: user3_mock.id,
-            username: user3_mock.username
-          },
-          access: Permission::ACCESS_READWRITE
-        },
-        {
-          type: Permission::TYPE_USER,
-          entity: {
-            id: viewer_user.id,
-            username: viewer_user.username
-          },
-          access: Permission::ACCESS_READWRITE
+          type: Carto::Permission::TYPE_USER,
+          entity: { id: write_user.id, username: write_user.username },
+          access: Carto::Permission::ACCESS_READWRITE
         }
       ]
       acl_expected = [
         {
-          type: Permission::TYPE_USER,
-          id: user2_mock.id,
-          access: Permission::ACCESS_READONLY
+          type: Carto::Permission::TYPE_USER,
+          id: read_user.id,
+          access: Carto::Permission::ACCESS_READONLY
         },
         {
-          type: Permission::TYPE_USER,
-          id: user3_mock.id,
-          access: Permission::ACCESS_READWRITE
-        },
-        {
-          type: Permission::TYPE_USER,
-          id: viewer_user.id,
-          access: Permission::ACCESS_READWRITE
+          type: Carto::Permission::TYPE_USER,
+          id: write_user.id,
+          access: Carto::Permission::ACCESS_READWRITE
         }
       ]
 
-      permission.acl = acl
-      permission.save
-      visualization.permission.acl.should eq acl_expected
+      visualization.permission.update!(acl: acl)
 
-      visualization.has_permission?(user2_mock, Visualization::Member::PERMISSION_READONLY).should eq true
-      visualization.has_permission?(user2_mock, Visualization::Member::PERMISSION_READWRITE).should eq false
+      expect(visualization.permission.acl).to eq(acl_expected)
 
-      visualization.has_permission?(user3_mock, Visualization::Member::PERMISSION_READONLY).should eq true
-      visualization.has_permission?(user3_mock, Visualization::Member::PERMISSION_READWRITE).should eq true
+      expect(visualization.has_permission?(read_user, Visualization::Member::PERMISSION_READONLY)).to be_true
+      expect(visualization.has_permission?(read_user, Visualization::Member::PERMISSION_READWRITE)).to be_false
 
-      visualization.has_permission?(user4_mock, Visualization::Member::PERMISSION_READONLY).should eq false
-      visualization.has_permission?(user4_mock, Visualization::Member::PERMISSION_READWRITE).should eq false
+      expect(visualization.has_permission?(write_user, Visualization::Member::PERMISSION_READONLY)).to be_true
+      expect(visualization.has_permission?(write_user, Visualization::Member::PERMISSION_READWRITE)).to be_true
 
-      # Viewer users hasn't RW permission even though granted
-      visualization.has_permission?(viewer_user, Visualization::Member::PERMISSION_READWRITE).should eq false
+      expect(visualization.has_permission?(unauthorized_user, Visualization::Member::PERMISSION_READONLY)).to be_false
+      expect(visualization.has_permission?(unauthorized_user, Visualization::Member::PERMISSION_READWRITE)).to be_false
 
       delete_user_data(@user)
     end
   end
 
   describe 'validations' do
+    before { stub_visualization_member_user }
+
     describe '#privacy' do
       it 'must be present' do
         visualization = Visualization::Member.new
@@ -496,6 +490,8 @@ describe Visualization::Member do
   end
 
   describe '#derived?' do
+    before { stub_visualization_member_user }
+
     it 'returns true if type is derived' do
       visualization = Visualization::Member.new(type: Visualization::Member::TYPE_DERIVED)
       visualization.derived?.should be_true
@@ -510,6 +506,8 @@ describe Visualization::Member do
   end
 
   describe '#table?' do
+    before { stub_visualization_member_user }
+
     it "returns true if type is 'table'" do
       visualization = Visualization::Member.new(type: Visualization::Member::TYPE_CANONICAL)
       visualization.derived?.should be_false
@@ -524,6 +522,8 @@ describe Visualization::Member do
   end
 
   describe '#type_slide?' do
+    before { stub_visualization_member_user }
+
     it "returns true if type is 'slide'" do
       visualization = Visualization::Member.new(type: Visualization::Member::TYPE_SLIDE)
       visualization.derived?.should be_false
@@ -538,8 +538,10 @@ describe Visualization::Member do
   end
 
   describe '#privacy_and_exceptions' do
+    before { stub_visualization_member_user }
+
     it 'checks different privacy options to make sure exceptions are raised when they should' do
-      user_id = UUIDTools::UUID.timestamp_create.to_s
+      user_id = Carto::UUIDHelper.random_uuid
 
       visualization = Visualization::Member.new(type: Visualization::Member::TYPE_DERIVED)
       visualization.name = 'test'
@@ -586,8 +588,10 @@ describe Visualization::Member do
   end
 
   describe '#validation_for_link_privacy' do
+    before { stub_visualization_member_user }
+
     it 'checks that only users with private tables enabled can set LINK privacy' do
-      user_id = UUIDTools::UUID.timestamp_create.to_s
+      user_id = Carto::UUIDHelper.random_uuid
       Visualization::Member.any_instance.stubs(:named_maps)
 
       visualization = Visualization::Member.new(
@@ -641,8 +645,10 @@ describe Visualization::Member do
   end
 
   describe '#default_privacy_values' do
+    before { stub_visualization_member_user }
+
     it 'Checks deault privacies for visualizations' do
-      user_id = UUIDTools::UUID.timestamp_create.to_s
+      user_id = Carto::UUIDHelper.random_uuid
       user_mock = mock
       user_mock.stubs(:id).returns(user_id)
 
@@ -669,68 +675,14 @@ describe Visualization::Member do
     member.store
     member = Visualization::Member.new(id: member.id).fetch
     member.permission.should_not be nil
-    member.permission_id = UUIDTools::UUID.timestamp_create.to_s
+    member.permission_id = Carto::UUIDHelper.random_uuid
     member.valid?.should eq false
     delete_user_data(@user)
   end
 
-  describe '#likes' do
-    it 'should properly relate likes to a visualization' do
-      user_id = UUIDTools::UUID.timestamp_create.to_s
-      user_mock = mock
-      user_mock.stubs(:id).returns(user_id)
-
-      user_id_2 = UUIDTools::UUID.timestamp_create.to_s
-      user_id_3 = UUIDTools::UUID.timestamp_create.to_s
-      user_id_4 = UUIDTools::UUID.timestamp_create.to_s
-
-      member = Visualization::Member.new(random_attributes_for_vis_member({user_id: user_id}))
-      member.store.fetch
-
-      member.likes.count.should eq 0
-
-      member.liked_by?(user_id_2).should eq false
-
-      member.add_like_from(user_id_2)
-      member.likes.count.should eq 1
-      member.likes.select.select { |like| like.actor == user_id_2 }.count.should eq 1
-      member.likes.select.select { |like| like.actor == user_id_4 }.count.should eq 0
-
-      member.liked_by?(user_id_2).should eq true
-      member.liked_by?(user_id_3).should eq false
-
-      expect {
-        member.add_like_from(user_id_2)
-      }.to raise_error AlreadyLikedError
-
-      member.add_like_from(user_id_3)
-      member.likes.count.should eq 2
-      member.likes.select.select { |like| like.actor == user_id_2 }.count.should eq 1
-      member.likes.select.select { |like| like.actor == user_id_3 }.count.should eq 1
-      member.likes.select.select { |like| like.actor == user_id_4 }.count.should eq 0
-
-      member.liked_by?(user_id_2).should eq true
-      member.liked_by?(user_id_3).should eq true
-
-      member.remove_like_from(user_id_3)
-
-      member.likes.count.should eq 1
-      member.likes.select.select { |like| like.actor == user_id_3 }.count.should eq 0
-      member.likes.select.select { |like| like.actor == user_id_2 }.count.should eq 1
-      member.likes.select.select { |like| like.actor == user_id_4 }.count.should eq 0
-
-      member.liked_by?(user_id_2).should eq true
-      member.liked_by?(user_id_3).should eq false
-
-      member.remove_like_from(user_id_2)
-      member.likes.count.should eq 0
-
-      member.remove_like_from(user_id_2)
-
-    end
-  end
-
   it 'checks that slides can have a parent_id' do
+    stub_visualization_member_user
+
     Visualization::Member.any_instance.stubs(:supports_private_maps?).returns(true)
 
     expected_errors = { parent_id: 'Type slide must have a parent' }
@@ -787,7 +739,7 @@ describe Visualization::Member do
       random_attributes_for_vis_member({
                                           user_id: @user_mock.id,
                                           type:       Visualization::Member::TYPE_SLIDE,
-                                          parent_id:  UUIDTools::UUID.timestamp_create.to_s
+                                          parent_id:  Carto::UUIDHelper.random_uuid
                                         }))
     expect {
       child_member.store
@@ -805,6 +757,8 @@ describe Visualization::Member do
   end
 
   it 'tests transition_options field jsonification' do
+    stub_visualization_member_user
+
     Visualization::Member.any_instance.stubs(:supports_private_maps?).returns(true)
 
     transition_options = { first: true, second: 6 }
@@ -828,6 +782,8 @@ describe Visualization::Member do
   end
 
   describe '#linked_list_tests' do
+    before { stub_visualization_member_user }
+
     it 'checks set_next! and unlink_self_from_list! on visualizations when set' do
       Visualization::Member.any_instance.stubs(:supports_private_maps?).returns(true)
 
@@ -1053,24 +1009,31 @@ describe Visualization::Member do
 
       starting_collection_count = Visualization::Collection.new.fetch.count
 
-      parent = Visualization::Member.new(random_attributes_for_vis_member({
-                                                             user_id: @user_mock.id,
-                                                             name: 'PARENT',
-                                                             type: Visualization::Member::TYPE_DERIVED
-                                                           })).store
+      parent = Visualization::Member.new(
+        random_attributes_for_vis_member(
+          user_id: @user_mock.id,
+          name: 'PARENT',
+          type: Visualization::Member::TYPE_DERIVED
+        )
+      ).store
 
-      child1 = Visualization::Member.new(random_attributes_for_vis_member({
-                                                             user_id: @user_mock.id,
-                                                             name: 'CHILD 1',
-                                                             type: Visualization::Member::TYPE_SLIDE,
-                                                             parent_id:  parent.id
-                                                           })).store.fetch
-      child2 = Visualization::Member.new(random_attributes_for_vis_member({
-                                                             user_id: @user_mock.id,
-                                                             name: 'CHILD 2',
-                                                             type: Visualization::Member::TYPE_SLIDE,
-                                                             parent_id:  parent.id
-                                                           })).store.fetch
+      child1 = Visualization::Member.new(
+        random_attributes_for_vis_member(
+          user_id: @user_mock.id,
+          name: 'CHILD 1',
+          type: Visualization::Member::TYPE_SLIDE,
+          parent_id: parent.id
+        )
+      ).store.fetch
+
+      child2 = Visualization::Member.new(
+        random_attributes_for_vis_member(
+          user_id: @user_mock.id,
+          name: 'CHILD 2',
+          type: Visualization::Member::TYPE_SLIDE,
+          parent_id: parent.id
+        )
+      ).store.fetch
 
       child2.set_prev_list_item!(child1)
       parent.fetch
@@ -1138,6 +1101,8 @@ describe Visualization::Member do
   end
 
   describe '#to_vizjson' do
+    before { stub_visualization_member_user }
+
     it "calculates and returns the vizjson if not cached" do
       member = Visualization::Member.new(random_attributes_for_vis_member(user_id: @user_mock.id))
       member.store
@@ -1159,6 +1124,8 @@ describe Visualization::Member do
   end
 
   describe '#redis_cached' do
+    before { stub_visualization_member_user }
+
     it "Uses the block given to calculate a hash if there's a cache miss" do
       member = Visualization::Member.new(random_attributes_for_vis_member(user_id: @user_mock.id))
 
@@ -1228,6 +1195,8 @@ describe Visualization::Member do
   end
 
   describe '#invalidate_cache' do
+    before { stub_visualization_member_user }
+
     it "Invalidates the varnish and redis caches" do
       member = Visualization::Member.new(random_attributes_for_vis_member(user_id: @user_mock.id))
       member.expects(:invalidate_varnish_vizjson_cache).once
@@ -1238,6 +1207,8 @@ describe Visualization::Member do
   end
 
   describe '#invalidate_redis_cache' do
+    before { stub_visualization_member_user }
+
     it "Invalidates the vizjson in redis cache" do
       member = Visualization::Member.new(random_attributes_for_vis_member(user_id: @user_mock.id))
       member.store

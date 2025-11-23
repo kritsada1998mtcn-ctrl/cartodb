@@ -1,11 +1,9 @@
-# encoding: utf-8
 require 'virtus'
 require_relative 'adapter'
 require_relative '../../../services/importer/lib/importer'
 require_relative '../visualization/collection'
 require_relative '../../../services/importer/lib/importer/datasource_downloader'
 require_relative '../../../services/datasources/lib/datasources'
-require_relative '../log'
 require_relative '../../../services/importer/lib/importer/unp'
 require_relative '../../../services/importer/lib/importer/post_import_handler'
 require_relative '../../../services/importer/lib/importer/overviews'
@@ -25,6 +23,8 @@ module CartoDB
     end
 
     class Member
+
+      include ::LoggerHelper
       include Carto::Configuration
       include Virtus.model
 
@@ -98,7 +98,7 @@ module CartoDB
       end
 
       def synchronizations_logger
-        @@synchronizations_logger ||= ::Logger.new(log_file_path("synchronizations.log"))
+        @@synchronizations_logger ||= CartoDB.unformatted_logger(log_file_path("synchronizations.log"))
       end
 
       def interval=(seconds=3600)
@@ -168,12 +168,12 @@ module CartoDB
         # First import is a "normal import" so still has no id, then run gets called and will get log first time
         # but we need this to fix old logs
         if log.nil?
-          @log = CartoDB::Log.new(type: CartoDB::Log::TYPE_SYNCHRONIZATION, user_id: user.id)
+          @log = Carto::Log.new_synchronization(user.id)
           @log.store
           self.log_id = @log.id
           store
         else
-          @log.type = CartoDB::Log::TYPE_SYNCHRONIZATION
+          @log.type = Carto::Log::TYPE_SYNCHRONIZATION
           @log.clear
           @log.store
         end
@@ -181,6 +181,8 @@ module CartoDB
         if user.nil?
           raise "Couldn't instantiate synchronization user. Data: #{to_s}"
         end
+
+        raise "Can't run a synchronization for inactive user: #{user.username}" unless user.reload.active?
 
         if !authorize?(user)
           raise CartoDB::Datasources::AuthError.new('User is not authorized to sync tables')
@@ -190,7 +192,7 @@ module CartoDB
 
         database = user.in_database
         overviews_creator = CartoDB::Importer2::Overviews.new(runner, user)
-        importer = CartoDB::Synchronization::Adapter.new(name, runner, database, user, overviews_creator)
+        importer = CartoDB::Synchronization::Adapter.new(name, runner, database, user, overviews_creator, id, @log)
 
         importer.run
         self.ran_at   = Time.now
@@ -206,11 +208,11 @@ module CartoDB
 
         notify
 
-      rescue => exception
+      rescue StandardError => exception
         if exception.is_a? CartoDB::Datasources::NotFoundDownloadError
-          CartoDB::Logger.debug(exception: exception, sync_id: id)
+          log_warning(exception: exception, synchronization_member: { id: id })
         else
-          CartoDB::Logger.error(exception: exception, sync_id: id)
+          log_error(exception: exception, synchronization_member: { id: id })
         end
         log.append_and_store exception.message, truncate = false
         log.append exception.backtrace.join("\n"), truncate = false
@@ -235,7 +237,7 @@ module CartoDB
         if exception.is_a?(TokenExpiredOrInvalidError)
           begin
             user.oauths.remove(exception.service_name)
-          rescue => ex
+          rescue StandardError => ex
             log.append "Exception removing OAuth: #{ex.message}"
             log.append ex.backtrace
           end
@@ -246,6 +248,7 @@ module CartoDB
         CartoDB::PlatformLimits::Importer::UserConcurrentSyncsAmount.new(
           user: user, redis: { db: $users_metadata }
         ).decrement!
+
       end
 
       def get_runner
@@ -286,12 +289,18 @@ module CartoDB
       end
 
       def get_connector
-        CartoDB::Importer2::ConnectorRunner.check_availability!(user)
+        # get_runner passes the synchronization `modified_at` time (which corresponds to the
+        # last-modified time of the external data at the last synchronization) through the
+        # downloader provided to the runner.
+        # For connectors we need to pass it directly to the connector runner.
+        provider_name = get_provider_name_from_id(service_item_id)
+        CartoDB::Importer2::ConnectorRunner.check_availability!(user, provider_name)
         CartoDB::Importer2::ConnectorRunner.new(
           service_item_id,
           user: user,
           pg: pg_options,
-          log: log
+          log: log,
+          previous_last_modified: modified_at
         )
       end
 
@@ -385,11 +394,11 @@ module CartoDB
         self.retried_times  = 0
         self.run_at         = Time.now + interval
         self.modified_at    = importer.last_modified
-        geocode_table
-      rescue => exception
-        CartoDB::Logger.error(exception: exception,
-                                message: 'Error updating state for sync table',
-                                sync_id: self.id)
+      rescue StandardError => exception
+        log_error(
+          exception: exception, message: 'Error updating state for sync table',
+          synchronization_member: { id: id }
+        )
         self
       end
 
@@ -412,6 +421,8 @@ module CartoDB
           ::Resque.enqueue(::Resque::UserJobs::Mail::Sync::MaxRetriesReached, self.user_id,
                            self.visualization_id, self.name, self.error_code, self.error_message)
         end
+
+        track_failure
       end
 
       def set_general_failure_state_from(exception, error_code = 99999, error_message = 'Unknown error, please try again')
@@ -427,7 +438,9 @@ module CartoDB
           ::Resque.enqueue(::Resque::UserJobs::Mail::Sync::MaxRetriesReached, self.user_id,
                            self.visualization_id, self.name, self.error_code, self.error_message)
         end
-      rescue => e
+
+        track_failure
+      rescue StandardError => e
         CartoDB.notify_exception(e,
           {
             error_code: error_code,
@@ -437,14 +450,22 @@ module CartoDB
         )
       end
 
-      # Tries to run automatic geocoding if present
-      def geocode_table
-        return unless table && table.automatic_geocoding
-        log.append 'Running automatic geocoding...'
-        table.automatic_geocoding.run
-      rescue => e
-        log.append "Error while running automatic geocoding: #{e.message}"
-      end # geocode_table
+      def track_failure
+        properties = {
+          user_id: self.user_id,
+          connection: {
+            imported_from: service_name,
+            error_code: self.error_code
+          }
+        }
+
+        if service_name == 'connector'
+          connector_params = JSON.parse(service_item_id)
+          properties[:connection][:provider] = connector_params['provider']
+        end
+
+        Carto::Tracking::Events::FailedSync.new(self.user_id, properties).report
+      end
 
       def to_hash
         attributes.merge({from_external_source: from_external_source?}).to_hash
@@ -500,11 +521,15 @@ module CartoDB
         if options['binary'].nil? || options['csv_guessing'].nil?
           {}
         else
-          {
+          ogr_options = {
             ogr2ogr_binary:         options['binary'],
             ogr2ogr_csv_guessing:   options['csv_guessing'] && @type_guessing,
-            quoted_fields_guessing: @quoted_fields_guessing
+            quoted_fields_guessing: @quoted_fields_guessing,
           }
+          if options['memory_limit'].present?
+            ogr_options.merge!(ogr2ogr_memory_limit: options['memory_limit'])
+          end
+          return ogr_options
         end
       end
 
@@ -528,15 +553,7 @@ module CartoDB
 
         log_attributes.merge(user_id: user.id) if user
 
-        @log = CartoDB::Log.where(log_attributes).first
-      end
-
-      def valid_uuid?(text)
-        !!UUIDTools::UUID.parse(text)
-      rescue TypeError
-        false
-      rescue ArgumentError
-        false
+        @log = Carto::Log.find_by(log_attributes)
       end
 
       def get_datasource(datasource_name)
@@ -548,7 +565,7 @@ module CartoDB
             oauth = user.oauths.select(datasource_name)
             datasource.token = oauth.token unless oauth.nil?
           end
-        rescue => ex
+        rescue StandardError => ex
           log.append "Exception: #{ex.message}"
           log.append ex.backtrace
           datasource = nil
@@ -557,12 +574,23 @@ module CartoDB
       end
 
       def from_external_source?
-        ::ExternalDataImport.where(synchronization_id: self.id).first != nil
+        Carto::ExternalDataImport.where(synchronization_id: self.id).first != nil
       end
 
       attr_reader :repository
 
       attr_accessor :log_trace, :service_name, :service_item_id
+
+      private
+
+      def get_provider_name_from_id(service_item_id)
+        begin
+          connector_params = JSON.parse(service_item_id)
+          return connector_params['provider']
+        rescue StandardError
+          return nil
+        end
+      end
 
     end
   end

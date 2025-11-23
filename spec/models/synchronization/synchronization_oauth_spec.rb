@@ -13,9 +13,12 @@ describe SynchronizationOauth do
   end
 
   after(:each) do
-    @user.synchronization_oauths.map &:destroy
+    # @user.synchronization_oauths.map &:destroy
     @user.reload
   end
+
+  # Skipped because this is being substituted by Connections
+  before { pending }
 
   context '#creation_updating' do
     it 'Tests basic creation operations' do
@@ -57,7 +60,7 @@ describe SynchronizationOauth do
       oauth_entry.service = service_name
 
       expect {
-        oauth_entry.user_id = UUIDTools::UUID.timestamp_create
+        oauth_entry.user_id = Carto::UUIDHelper.random_uuid
         oauth_entry.save
       }.to raise_exception Sequel::ValidationFailed
 
@@ -65,7 +68,7 @@ describe SynchronizationOauth do
         SynchronizationOauth.create(
             user_id: @user.id,
             service: service_name,
-            token: UUIDTools::UUID.timestamp_create
+            token: Carto::UUIDHelper.random_uuid
         )
       }.to raise_exception Sequel::ValidationFailed
 
@@ -89,7 +92,7 @@ describe SynchronizationOauth do
 
   context '#deletion' do
     it 'tests deletion of items' do
-      another_uuid = UUIDTools::UUID.timestamp_create.to_s
+      another_uuid = Carto::UUIDHelper.random_uuid
       service_name = 'testtest'
       service_name_2 = '123456'
       token_value = 'qv2345q235erfaweerfdsdfsds'

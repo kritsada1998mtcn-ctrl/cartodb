@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require 'singleton'
 
 module Hubspot
@@ -13,6 +11,7 @@ module Hubspot
       uri.query = URI.encode_www_form({ _a: token, _n: id }.merge(params))
 
       http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = true
       response = http.request_get(uri.request_uri)
 
       [response.code, response.body]

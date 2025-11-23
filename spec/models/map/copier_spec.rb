@@ -1,11 +1,10 @@
-# encoding: utf-8
 require_relative '../../spec_helper'
 require_relative '../../../app/models/map/copier'
 require_relative '../../../app/models/layer'
 
 describe CartoDB::Map::Copier do
   before do
-    @user_id  = UUIDTools::UUID.timestamp_create.to_s
+    @user_id  = Carto::UUIDHelper.random_uuid
     @map      = Map.new(user_id: @user_id)
     @map.stubs(:layers).returns((1..5).map { Layer.new(kind: 'carto') })
     @copier = CartoDB::Map::Copier.new

@@ -5,17 +5,15 @@ module CartoDB
     include UniqueNamesHelper
 
     def new_organization(attributes = {})
-      organization = Organization.new
+      organization = Carto::Organization.new
 
       organization.name =             attributes[:name] || unique_name('organization')
       organization.seats =            attributes[:seats] || 10
       organization.quota_in_bytes =   attributes[:quota_in_bytes] || 100.megabytes
       organization.geocoding_quota =  attributes[:geocoding_quota] || 1000
       organization.here_isolines_quota =    attributes[:here_isolines_quota] || 1000
-      organization.obs_snapshot_quota = attributes[:obs_snapshot_quota] || 1000
-      organization.obs_general_quota = attributes[:obs_general_quota] || 1000
       organization.mapzen_routing_quota =    attributes[:mapzen_routing_quota] || 1000
-      organization.map_view_quota =   attributes[:map_view_quota] || 100000
+      organization.map_views_quota = attributes[:map_views_quota] || 100_000
       organization.website =          attributes[:website] || 'carto.com'
       organization.description =      attributes[:description] || 'Lorem ipsum dolor sit amet'
       organization.display_name =     attributes[:display_name] || 'Vizzuality Inc'
@@ -26,6 +24,7 @@ module CartoDB
       organization.google_maps_key = attributes[:google_maps_key] || nil
       organization.google_maps_private_key = attributes[:google_maps_private_key] || nil
       organization.builder_enabled = attributes[:builder_enabled] || false
+      organization.password_expiration_in_d = attributes[:password_expiration_in_d]
 
       organization
     end

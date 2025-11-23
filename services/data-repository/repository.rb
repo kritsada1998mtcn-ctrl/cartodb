@@ -1,5 +1,3 @@
-# encoding: utf-8
-require 'uuidtools'
 require_relative 'backend/detector'
 require_relative 'backend/memory'
 
@@ -39,7 +37,7 @@ module DataRepository
     end
 
     def next_id
-      UUIDTools::UUID.timestamp_create     
+      Carto::UUIDHelper.random_uuid
     end
 
     private

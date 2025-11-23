@@ -1,5 +1,3 @@
-# coding: UTF-8
-
 require 'carto/configuration'
 
 CartoDB::Application.configure do
@@ -25,20 +23,17 @@ CartoDB::Application.configure do
   # If you have no front-end server that supports something like X-Sendfile,
   # just comment this out and Rails will serve the files
 
-  # Use a different logger for distributed setups
-  config.logger = Logger.new(STDOUT)
-  # config.logger = ActiveSupport::BufferedLogger.new(Carto::Conf.new.log_file_path('development.log'))
-
-  # Adjust the log level. Note that assigning to `config.log_levl` would
-  # have no effect here, since we have set the logger explicitly.
-  config.logger.level = Logger::DEBUG
+  config.logger = Carto::Common::Logger.new($stdout)
 
   # Use a different cache store in production
   # config.cache_store = :mem_cache_store
 
   # Disable Rails's static asset server
   # In production, Apache or nginx will already do this
-  config.serve_static_assets = true
+  config.serve_static_files = true
+
+  # Setting this to true will enable ActiveController's enforcement of SSL.
+  config.ssl_required = false
 
   # Enable serving of images, stylesheets, and javascripts from an asset server
   # config.action_controller.asset_host = "http://assets.example.com"
@@ -53,7 +48,8 @@ CartoDB::Application.configure do
   # `bundle exec thin start --threaded -p 3000 --threadpool-size 5`.
   # Check your `config/database.yml` has `pool: 50` or higher for `development`.
   # The condition excludes this from resque, since it won't work with it and it doesn't need it.
-  config.threadsafe! unless $rails_rake_task
+  # config.threadsafe! unless $rails_rake_task
+  config.eager_load = false
 
   # Enable locale fallbacks for I18n (makes lookups for any locale fall back to
   # the I18n.default_locale when a translation can not be found)
@@ -80,6 +76,4 @@ CartoDB::Application.configure do
   config.action_controller.asset_host = Proc.new do
     Cartodb.asset_path
   end
-
-  SslRequirement.disable_ssl_check = true
 end

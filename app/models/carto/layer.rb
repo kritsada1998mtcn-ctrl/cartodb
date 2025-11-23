@@ -1,4 +1,5 @@
 require 'active_record'
+require 'active_record/connection_adapters/postgresql/oid/json'
 require_relative './carto_json_serializer'
 require_dependency 'carto/table_utils'
 require_dependency 'carto/query_rewriter'
@@ -35,12 +36,12 @@ module Carto
 
     def tables_from_query(query)
       query.present? ? tables_from_names(affected_table_names(query), user) : []
-    rescue => e
+    rescue StandardError => e
       # INFO: this covers changes that CartoDB can't track, so we must handle it gracefully.
       # For example, if layer SQL contains wrong SQL (uses a table that doesn't exist, or uses an invalid operator).
       # This warning level is checked in tests to ensure that embed view does not need user DB connection,
       # so we need to keep it (or change the tests accordingly)
-      CartoDB::Logger.warning(message: 'Could not retrieve tables from query', exception: e, user: user, layer: self)
+      log_warning(message: 'Could not retrieve tables from query', exception: e, current_user: user, layer: attributes)
       []
     end
 
@@ -59,6 +60,10 @@ module Carto
     include LayerTableDependencies
     include Carto::QueryRewriter
 
+    attribute :options, ActiveRecord::ConnectionAdapters::PostgreSQL::OID::Json.new
+    attribute :infowindow, ActiveRecord::ConnectionAdapters::PostgreSQL::OID::Json.new
+    attribute :tooltip, ActiveRecord::ConnectionAdapters::PostgreSQL::OID::Json.new
+
     serialize :options, CartoJsonSerializer
     serialize :infowindow, CartoJsonSerializer
     serialize :tooltip, CartoJsonSerializer
@@ -72,11 +77,8 @@ module Carto
     has_many :layers_user_tables, dependent: :destroy
     has_many :user_tables, through: :layers_user_tables, class_name: Carto::UserTable
 
-    has_many :widgets, class_name: Carto::Widget, order: '"order"'
-    has_many :legends,
-             class_name: Carto::Legend,
-             dependent: :destroy,
-             order: :created_at
+    has_many :widgets, -> { order(:order) }, class_name: Carto::Widget
+    has_many :legends, -> { order(:created_at) }, class_name: Carto::Legend, dependent: :destroy
 
     has_many :layer_node_styles
 
@@ -86,6 +88,7 @@ module Carto
     after_save :register_table_dependencies, if: :data_layer?
 
     ALLOWED_KINDS = %w{carto tiled background gmapsbase torque wms}.freeze
+
     validates :kind, inclusion: { in: ALLOWED_KINDS }
     validate :validate_not_viewer
 
@@ -213,7 +216,7 @@ module Carto
       @user ||= map.nil? ? nil : map.user
     end
 
-    def default_query(user = nil)
+    def default_query(user = nil, database_schema = nil)
       sym_options = options.symbolize_keys
       query = sym_options[:query]
 
@@ -227,6 +230,8 @@ module Carto
 
         if table_name.present? && !table_name.include?('.') && user_name.present? && qualify
           "SELECT * FROM #{safe_table_name_quoting(user_name)}.#{safe_table_name_quoting(table_name)}"
+        elsif database_schema.present?
+          "SELECT * FROM #{safe_table_name_quoting(database_schema)}.#{safe_table_name_quoting(table_name)}"
         else
           "SELECT * FROM #{qualified_table_name}"
         end
@@ -363,8 +368,11 @@ module Carto
     end
 
     def current_layer_node_style
-      return nil unless source_id
-      layer_node_styles.where(source_id: source_id).first || LayerNodeStyle.new(layer: self, source_id: source_id)
+      return unless source_id
+
+      layer_node_styles.find_by(source_id: source_id) ||
+        Carto::LayerNodeStyle.new(layer: self, source_id: source_id)
     end
+
   end
 end

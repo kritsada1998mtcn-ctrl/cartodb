@@ -1,6 +1,5 @@
-# encoding: utf-8
-
 require_relative 'exceptions'
+require 'active_support'
 require 'active_support/core_ext/numeric'
 
 module CartoDB
@@ -93,7 +92,7 @@ module CartoDB
         ALTER TABLE #{@qualified_table_name} ALTER COLUMN cartodb_georef_status
         TYPE boolean USING cast(cartodb_georef_status as boolean)
       })
-    rescue => e
+    rescue StandardError => e
       raise "Error converting cartodb_georef_status to boolean, please, convert it manually or remove it."
     end
 

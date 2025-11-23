@@ -1,10 +1,10 @@
-# encoding: utf-8
-
 require_relative './presenters/cartocss'
 
 module Carto
   module Styles
     class Style
+      include ::LoggerHelper
+
       CARTOGRAPHY_DEFINITION_LOCATION =
         "#{Rails.root}/lib/assets/javascripts/builder/data/default-cartography.json".freeze
 
@@ -23,9 +23,10 @@ module Carto
           when 'stroke'
             parse_stroke(value)
           else
-            CartoDB::Logger.warning(message: 'Carto::Styles: Tried parsing an unkown attribute',
-                                    attribute: key,
-                                    definition: @definition)
+            log_warning(
+              message: 'Carto::Styles: Tried parsing an unkown attribute',
+              attribute: key, definition: @definition
+            )
           end
         end
 

@@ -20,7 +20,9 @@ module AccountTypesHelper
                                           sql_query_format: Carto::RateLimitValues.new([3, 4, 5]),
                                           sql_job_create: Carto::RateLimitValues.new([6, 7, 8]),
                                           sql_job_get: Carto::RateLimitValues.new([9, 10, 11]),
-                                          sql_job_delete: Carto::RateLimitValues.new([12, 13, 14]))
+                                          sql_job_delete: Carto::RateLimitValues.new([12, 13, 14]),
+                                          sql_copy_from: Carto::RateLimitValues.new([1, 1, 60]),
+                                          sql_copy_to: Carto::RateLimitValues.new([1, 1, 60]))
 
     account_type = Carto::AccountType.new
     account_type.rate_limit_id = rate_limit.id
@@ -43,9 +45,9 @@ module AccountTypesHelper
 
   def new_account_type(account_type)
     if account_type == 'PRO'
-      FactoryGirl.create(:account_type_pro)
+      create(:account_type_pro)
     else
-      FactoryGirl.create(:account_type, account_type: account_type)
+      create(:account_type, account_type: account_type)
     end
   end
 end

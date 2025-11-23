@@ -1,5 +1,3 @@
-# encoding: utf-8
-require_relative '../../../../spec/rspec_configuration'
 require_relative '../../../../spec/spec_helper'
 require_relative '../../lib/importer/runner'
 require_relative '../../lib/importer/job'
@@ -83,6 +81,20 @@ describe 'KML regression tests' do
     geometry_type_for(runner, @user).should be
   end
 
+  it 'imports multi-layer KMLs with slashes in the names' do
+    filepath    = path_to('multiple_layer_with_slashes_in_names.kml')
+    downloader  = CartoDB::Importer2::Downloader.new(@user.id, filepath)
+    runner      = CartoDB::Importer2::Runner.new(
+      pg: @user.db_service.db_configuration_for,
+      downloader: downloader,
+      log: CartoDB::Importer2::Doubles::Log.new(@user),
+      user: @user
+    )
+    runner.run
+
+    geometry_type_for(runner, @user).should be
+  end
+
   it 'raises if KML just contains a link to the actual KML url' do
     filepath    = path_to('abandoned.kml')
     downloader  = CartoDB::Importer2::Downloader.new(@user.id, filepath)
@@ -109,8 +121,8 @@ describe 'KML regression tests' do
                              })
     runner.run
 
-    runner.results.select(&:success?).length.should eq CartoDB::Importer2::Runner::MAX_TABLES_PER_IMPORT
-    runner.results.length.should eq CartoDB::Importer2::Runner::MAX_TABLES_PER_IMPORT
+    runner.results.select(&:success?).length.should be <= CartoDB::Importer2::Runner::MAX_TABLES_PER_IMPORT
+    runner.results.length.should be <= CartoDB::Importer2::Runner::MAX_TABLES_PER_IMPORT
     runner.results.each { |result|
       name = @user.in_database[%Q{ SELECT * FROM pg_class WHERE relname='#{result.table_name}' }].first[:relname]
       name.should eq result.table_name

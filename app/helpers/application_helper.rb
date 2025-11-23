@@ -1,4 +1,3 @@
-# coding: utf-8
 require_dependency 'cartodb_config_utils'
 require_dependency 'carto/configuration'
 
@@ -7,18 +6,21 @@ module ApplicationHelper
   include CartoDB::ConfigUtils
   include SafeJsObject
   include TrackjsHelper
-  include GoogleAnalyticsHelper
   include GoogleTagManagerHelper
-  include HubspotHelper
   include FrontendConfigHelper
   include AppAssetsHelper
   include MapsApiHelper
+  include MapsApiV2Helper
   include SqlApiHelper
   include Carto::HtmlSafe
   include CartoGearsApi::Helpers::PagesHelper
 
   def current_user
     super(CartoDB.extract_subdomain(request))
+  end
+
+  def current_viewer
+    controller.current_viewer
   end
 
   def show_footer?
@@ -62,7 +64,8 @@ module ApplicationHelper
     end
   end
 
-  module_function :maps_api_template
+  module_function :maps_api_template, :maps_api_url
+  module_function :maps_api_v2_template, :maps_api_v2_url
   module_function :sql_api_template, :sql_api_url
   module_function :app_assets_base_url
 
@@ -70,37 +73,41 @@ module ApplicationHelper
     api_type = (options[:https_apis].present? && options[:https_apis]) ? 'private' : 'public'
 
     config = {
+      # region:              Cartodb.get_config(:bigquery_region),
+      # FIXME: debug
+      region: 'US',
       maps_api_template:   maps_api_template(api_type),
+      maps_api_v2_template: maps_api_v2_template,
       user_name:           CartoDB.extract_subdomain(request),
-      cartodb_com_hosted:  Cartodb.config[:cartodb_com_hosted],
+      cartodb_com_hosted:  Cartodb.get_config(:cartodb_com_hosted),
       account_host:        CartoDB.account_host,
-      max_asset_file_size: Cartodb.config[:assets]["max_file_size"],
+      max_asset_file_size: Cartodb.get_config(:assets, 'max_file_size'),
       api_key:             ''
     }
 
     # Assumption: it is safe to expose private SQL API endpoint (or it is the same just using HTTPS)
-    config[:sql_api_template] =  sql_api_template(api_type)
+    config[:sql_api_template] = sql_api_template(api_type)
 
-    if Cartodb.config[:graphite_public].present?
-      config[:statsd_host] = Cartodb.config[:graphite_public]['host']
-      config[:statsd_port] = Cartodb.config[:graphite_public]['port']
+    if Cartodb.get_config(:graphite_public)
+      config[:statsd_host] = Cartodb.get_config(:graphite_public, 'host')
+      config[:statsd_port] = Cartodb.get_config(:graphite_public, 'port')
     end
 
-    if Cartodb.config[:error_track].present?
-      config[:error_track_url] = Cartodb.config[:error_track]["url"]
-      config[:error_track_percent_users] = Cartodb.config[:error_track]["percent_users"]
+    if Cartodb.get_config(:error_track)
+      config[:error_track_url] = Cartodb.get_config(:error_track, 'url')
+      config[:error_track_percent_users] = Cartodb.get_config(:error_track, 'percent_users')
     end
 
-    if Cartodb.config[:cdn_url].present?
-      config[:cdn_url] = Cartodb.config[:cdn_url]
+    if Cartodb.get_config(:cdn_url)
+      config[:cdn_url] = Cartodb.get_config(:cdn_url)
     end
 
-    if Cartodb.config[:explore_api].present?
-      config[:explore_user] = Cartodb.config[:explore_api]['username']
+    if Cartodb.get_config(:explore_api)
+      config[:explore_user] = Cartodb.get_config(:explore_api, 'username')
     end
 
-    if Cartodb.config[:common_data].present?
-      config[:common_data_user] = Cartodb.config[:common_data]['username']
+    if Cartodb.get_config(:common_data)
+      config[:common_data_user] = Cartodb.get_config(:common_data, 'username')
     end
 
     config.to_json
@@ -122,17 +129,67 @@ module ApplicationHelper
     render(partial: 'shared/google_maps', locals: { query_string: query_string })
   end
 
+  def sources_with_path(asset_type, sources)
+    path = if sources.first == :editor
+             sources.shift
+             "editor/#{editor_assets_version}"
+           else
+             frontend_version
+           end
+
+    # raise_on_asset_absence sources
+
+    sources_with_prefix("/#{path}/#{asset_type}/", sources)
+  end
+
+  def sources_with_prefix(path, sources)
+    options = sources.extract_options!.stringify_keys
+    with_full_path = []
+    sources.each do |source|
+      with_full_path << path + source
+    end
+
+    with_full_path << options
+  end
+
   ##
   # Checks that the precompile list contains this file or raises an error, in dev only
   # Note: You will need to move config.assets.precompile to application.rb from production.rb
-  def javascript_include_tag *sources
-    raise_on_asset_absence sources
-    super *sources
+
+  def javascript_include_tag(*sources)
+    super *sources_with_path('javascripts', sources)
   end
 
-  def stylesheet_link_tag *sources
-    raise_on_asset_absence sources
-    super *sources
+  def stylesheet_link_tag(*sources)
+    super *sources_with_path('stylesheets', sources)
+  end
+
+  def image_path(source, editor = false)
+    if editor
+      super "/editor/#{editor_assets_version}/images/#{source}"
+    else
+      super "/#{frontend_version}/images/#{source}"
+    end
+  end
+
+  def image_tag(source, options={})
+    super "/#{frontend_version}/images/#{source}", options
+  end
+
+  def editor_image_path(source)
+    image_path(source, true)
+  end
+
+  def favicon_link_tag(source)
+    super "/#{frontend_version}/#{source}"
+  end
+
+  def editor_stylesheet_link_tag(*sources)
+    stylesheet_link_tag *([:editor] + sources)
+  end
+
+  def editor_javascript_include_tag(*sources)
+    javascript_include_tag *([:editor] + sources)
   end
 
   def raise_on_asset_absence *sources
@@ -185,12 +242,14 @@ module ApplicationHelper
     'https://carto.com/privacy'
   end
 
-  def vis_json_url(vis_id, context, user=nil)
-    "#{ CartoDB.url(context, 'api_v2_visualizations_vizjson', { id: vis_id }, user).sub(/(http:|https:)/i, '') }.json"
+  def vis_json_url(vis_id, context, user = nil)
+    "#{CartoDB.url(context, 'api_v2_visualizations_vizjson',
+                   params: { id: vis_id }, user: user).sub(/(http:|https:)/i, '')}.json"
   end
 
-  def vis_json_v3_url(vis_id, context, user=nil)
-    "#{ CartoDB.url(context, 'api_v3_visualizations_vizjson', { id: vis_id }, user).sub(/(http:|https:)/i, '') }.json"
+  def vis_json_v3_url(vis_id, context, user = nil)
+    "#{CartoDB.url(context, 'api_v3_visualizations_vizjson',
+                   params: { id: vis_id }, user: user).sub(/(http:|https:)/i, '')}.json"
   end
 
   def model_errors(model)

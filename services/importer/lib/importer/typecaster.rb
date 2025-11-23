@@ -1,4 +1,3 @@
-# encoding: utf-8
 require_relative './job'
 
 module CartoDB
@@ -31,7 +30,7 @@ module CartoDB
         db.schema(table_name, reload: true, schema: schema)
           .map(&:first)
           .select { |column_name|
-            column_name =~ /_at/  || 
+            column_name =~ /_at/  ||
             column_name =~ /date/ ||
             column_name =~ /time/
           }
@@ -54,7 +53,7 @@ module CartoDB
           FROM "#{schema}"."#{table_name}"
           AS convertible
         )).empty?
-      rescue
+      rescue StandardError
         false
       end
 
@@ -74,4 +73,3 @@ module CartoDB
     end
   end
 end
-

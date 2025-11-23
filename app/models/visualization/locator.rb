@@ -1,13 +1,14 @@
-# encoding: utf-8
 require_relative '../visualization'
 require_relative './member'
 require_relative '../user'
 require_relative '../table'
-require 'uuidtools'
+
+require_dependency 'carto/uuidhelper'
 
 module CartoDB
   module Visualization
     class Locator
+      include Carto::UUIDHelper
 
       def initialize(user_model=nil)
         @user_model   = user_model  || ::User
@@ -44,16 +45,12 @@ module CartoDB
         table = ::Table.get_by_id(id_or_name, user)
         return false unless table && table.table_visualization
         [table.table_visualization, table]
-      rescue
+      rescue StandardError
         false
       end
-        
+
       def get_by_id(uuid, filters)
-        begin
-          ::UUIDTools::UUID.parse(uuid)
-        rescue ArgumentError
-          return nil
-        end
+        return nil unless uuid?(uuid)
 
         params = {
           id: uuid
@@ -81,4 +78,3 @@ module CartoDB
     end
   end
 end
-

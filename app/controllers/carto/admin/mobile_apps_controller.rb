@@ -1,10 +1,8 @@
-# coding: utf-8
 require_dependency 'helpers/avatar_helper'
 require_dependency 'cartodb/central'
 require_dependency 'helpers/organization_notifications_helper'
 
 class Carto::Admin::MobileAppsController < Admin::AdminController
-  include Carto::ControllerHelper
   include MobileAppsHelper
   include AvatarHelper
   include OrganizationNotificationsHelper
@@ -29,19 +27,16 @@ class Carto::Admin::MobileAppsController < Admin::AdminController
     @mobile_apps = response[:mobile_apps].map { |a| Carto::MobileApp.new(a) }
     @open_monthly_users = response[:monthly_users][:open]
     @private_monthly_users = response[:monthly_users][:private]
-    @has_new_dashboard = check_new_dashboard
   rescue CartoDB::CentralCommunicationFailure => e
     @mobile_apps = []
-    CartoDB::Logger.error(message: 'Error loading mobile apps from Central', exception: e)
+    log_error(message: 'Error loading mobile apps from Central', exception: e)
     flash.now[:error] = 'Unable to connect to license server. Try again in a moment.'
   end
 
   def show
-    @has_new_dashboard = check_new_dashboard
   end
 
   def new
-    @has_new_dashboard = check_new_dashboard
     @mobile_app = Carto::MobileApp.new
   end
 
@@ -69,7 +64,7 @@ class Carto::Admin::MobileAppsController < Admin::AdminController
         flash.now[:error] = e.errors.join('. ')
       end
     else
-      CartoDB::Logger.error(message: 'Error creating mobile_app in Central', exception: e)
+      log_error(message: 'Error creating mobile_app in Central', exception: e)
       flash.now[:error] = 'Unable to connect to license server. Try again in a moment.'
     end
     render :new
@@ -89,27 +84,30 @@ class Carto::Admin::MobileAppsController < Admin::AdminController
 
     @cartodb_central_client.update_mobile_app(current_user.username, @app_id, updated_attributes)
 
-    redirect_to(CartoDB.url(self, 'mobile_app', id: @app_id),
+    redirect_to(CartoDB.url(self, 'mobile_app', params: { id: @app_id }),
                 flash: { success: 'Your app has been updated succesfully!' })
 
   rescue CartoDB::CentralCommunicationFailure => e
     if e.response_code == 422
       flash.now[:error] = e.errors
     else
-      CartoDB::Logger.error(message: 'Error updating mobile_app in Central', exception: e)
+      log_error(message: 'Error updating mobile_app in Central', exception: e)
       flash.now[:error] = 'Unable to connect to license server. Try again in a moment.'
     end
     render :show
   end
 
   def destroy
+    valid_password_confirmation
     @cartodb_central_client.delete_mobile_app(current_user.username, @app_id)
     redirect_to CartoDB.url(self, 'mobile_apps'), flash: { success: 'Your app has been deleted succesfully!' }
-
+  rescue Carto::PasswordConfirmationError => e
+    flash[:error] = e.message
+    redirect_to(CartoDB.url(self, 'mobile_app', params: { id: @app_id }))
   rescue CartoDB::CentralCommunicationFailure => e
     raise Carto::LoadError.new('Mobile app not found') if e.response_code == 404
-    CartoDB::Logger.error(message: 'Error deleting mobile app from Central', exception: e, app_id: @app_id)
-    redirect_to(CartoDB.url(self, 'mobile_app', id: @app_id),
+    log_error(message: 'Error deleting mobile app from Central', exception: e, app_id: @app_id)
+    redirect_to(CartoDB.url(self, 'mobile_app', params: { id: @app_id }),
                 flash: { error: 'Unable to connect to license server. Try again in a moment.' })
   end
 
@@ -120,7 +118,8 @@ class Carto::Admin::MobileAppsController < Admin::AdminController
   end
 
   def initialize_cartodb_central_client
-    raise Carto::LoadError.new('Mobile apps disabled') unless Cartodb::Central.sync_data_with_cartodb_central?
+    raise(Carto::LoadError, 'Mobile apps disabled') unless Cartodb::Central.api_sync_enabled?
+
     @cartodb_central_client ||= Cartodb::Central.new
   end
 
@@ -137,7 +136,7 @@ class Carto::Admin::MobileAppsController < Admin::AdminController
 
   rescue CartoDB::CentralCommunicationFailure => e
     raise Carto::LoadError.new('Mobile app not found') if e.response_code == 404
-    CartoDB::Logger.error(message: 'Error loading mobile app from Central', exception: e, app_id: @app_id)
+    log_error(message: 'Error loading mobile app from Central', exception: e, app_id: @app_id)
 
     redirect_to(CartoDB.url(self, 'mobile_apps'),
                 flash: { error: 'Unable to connect to license server. Try again in a moment.' })
@@ -147,11 +146,7 @@ class Carto::Admin::MobileAppsController < Admin::AdminController
     if Cartodb.asset_path
       "#{Cartodb.asset_path}/assets/unversioned/images/avatars/mobile_app_default_avatar.png"
     else
-      "#{relative_url_root}/images/avatars/mobile_app_default_avatar.png"
+      "#{relative_url_root}/#{frontend_version}/images/avatars/mobile_app_default_avatar.png"
     end
-  end
-
-  def check_new_dashboard
-    current_user.builder_enabled? && current_user.has_feature_flag?('dashboard_migration')
   end
 end

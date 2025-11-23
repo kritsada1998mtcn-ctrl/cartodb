@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require 'factories/carto_visualizations'
 require 'spec_helper_min'
 
@@ -10,8 +8,8 @@ module Carto
         include Carto::Factories::Visualizations
 
         before(:all) do
-          @user = FactoryGirl.create(:carto_user, private_maps_enabled: true)
-          @intruder = FactoryGirl.create(:carto_user)
+          @user = create(:carto_user, private_maps_enabled: true)
+          @intruder = create(:carto_user)
           @map, @table, @table_visualization, @visualization = create_full_visualization(@user)
           @visualization.privacy = 'private'
           @visualization.save!
@@ -1110,7 +1108,24 @@ module Carto
         end
 
         describe VisitedPrivatePage do
+          before (:all) { @event_class = self.class.description.constantize }
+          after  (:all) { @event_class = nil }
 
+          it 'reports' do
+            event = @event_class.new(@user.id, user_id: @user.id, page: 'dashboard')
+
+            expect { event.report! }.to_not raise_error
+          end
+
+          it 'updates dashboard_viewed_at for dashboard visits' do
+            event = @event_class.new(@user.id, user_id: @user.id, page: 'dashboard')
+            expect { event.report! }.to(change { @user.reload.dashboard_viewed_at })
+          end
+
+          it 'does not update dashboard_viewed_at for other visits' do
+            event = @event_class.new(@user.id, user_id: @user.id, page: 'dataset')
+            expect { event.report! }.to_not(change { @user.reload.dashboard_viewed_at })
+          end
         end
 
         describe CreatedDataset do
@@ -1564,7 +1579,7 @@ module Carto
 
         describe CreatedWidget do
           before(:all) do
-            @widget = FactoryGirl.create(:widget, layer: @visualization.data_layers.first)
+            @widget = create(:widget, layer: @visualization.data_layers.first)
           end
 
           after(:all) do

@@ -1,5 +1,3 @@
-# encoding: UTF-8
-
 # See http://www.rubydoc.info/gems/net-ldap/0.11
 require 'net/ldap'
 
@@ -66,6 +64,7 @@ class Carto::Ldap::Configuration < ActiveRecord::Base
   # @param String username. No full CN, just the username, e.g. 'administrator1'
   # @param String password
   def authenticate(username, password)
+    return false if username.blank? || password.blank?
     ldap_connection = Net::LDAP.new(connect_timeout: CONNECTION_TIMEOUT)
     ldap_connection.host = self.host
     ldap_connection.port = self.port
@@ -86,7 +85,8 @@ class Carto::Ldap::Configuration < ActiveRecord::Base
 
     Carto::Ldap::Entry.new(valid_ldap_entry.first, self)
   rescue Net::LDAP::Error => e
-    CartoDB::Logger.error(exception: e, message: 'Error authenticating against LDAP', username: username)
+    log_error(exception: e, message: 'Error authenticating against LDAP', current_user: username)
+    nil
   end
 
   # INFO: Resets connection if already made
@@ -97,7 +97,7 @@ class Carto::Ldap::Configuration < ActiveRecord::Base
     else
       { success: false, error: last_operation_result.to_hash }
     end
-  rescue => exception
+  rescue StandardError => exception
     { success: false, error: { message: exception.message } }
   end
 

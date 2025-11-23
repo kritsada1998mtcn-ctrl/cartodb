@@ -59,7 +59,7 @@ module CartoDB
       response = get_events("/v1/event/?_a=#{@token}&_n=#{event_id}&email=#{payload[:email]}")
 
       unless (!response.nil? && response.code == 200)
-        CartoDB::Logger.error(message: 'Hubspot error tracking event', payload: payload, event_id: event_id)
+        Rails.logger.error(message: 'Hubspot error tracking event', payload: payload, event: { id: event_id })
       end
 
       self
@@ -89,8 +89,8 @@ module CartoDB
       end
 
       response
-    rescue => e
-      CartoDB::Logger.error(exception: e, url: url, content: content, response: response)
+    rescue StandardError => e
+      Rails.logger.error(exception: e, request: { url: url, body: content }, error_detail: response.inspect)
       nil
     end
 

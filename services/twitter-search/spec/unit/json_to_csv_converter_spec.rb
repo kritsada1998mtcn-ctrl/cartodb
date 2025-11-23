@@ -1,6 +1,5 @@
-# encoding: utf-8
+require 'spec_helper_min'
 require_relative '../../twitter-search'
-require_relative '../../../../spec/rspec_configuration'
 
 include CartoDB::TwitterSearch
 

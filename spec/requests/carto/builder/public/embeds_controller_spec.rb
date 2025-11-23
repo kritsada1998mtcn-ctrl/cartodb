@@ -8,10 +8,10 @@ describe Carto::Builder::Public::EmbedsController do
 
   before(:all) do
     bypass_named_maps
-    @user = FactoryGirl.create(:valid_user, private_maps_enabled: true)
+    @user = create(:valid_user, private_maps_enabled: true)
     @carto_user = Carto::User.find(@user.id)
-    @map = FactoryGirl.create(:map, user_id: @user.id)
-    @visualization = FactoryGirl.create(:carto_visualization, user: @carto_user, map_id: @map.id, version: 3)
+    @map = create(:map, user_id: @user.id)
+    @visualization = create(:carto_visualization, user: @carto_user, map_id: @map.id, version: 3)
     # Only mapcapped visualizations are presented by default
     Carto::Mapcap.create!(visualization_id: @visualization.id)
   end
@@ -39,7 +39,7 @@ describe Carto::Builder::Public::EmbedsController do
 
   describe '#show' do
     it 'does not display public visualizations without mapcaps' do
-      unpublished_visualization = FactoryGirl.create(:carto_visualization, user: @carto_user, map_id: @map.id, version: 3, privacy: Carto::Visualization::PRIVACY_PUBLIC)
+      unpublished_visualization = create(:carto_visualization, user: @carto_user, map_id: @map.id, version: 3, privacy: Carto::Visualization::PRIVACY_PUBLIC)
       get builder_visualization_public_embed_url(visualization_id: unpublished_visualization.id)
       response.status.should == 404
 
@@ -48,7 +48,7 @@ describe Carto::Builder::Public::EmbedsController do
     end
 
     it 'does not display link visualizations without mapcaps' do
-      unpublished_visualization = FactoryGirl.create(:carto_visualization, user: @carto_user, map_id: @map.id, version: 3, privacy: Carto::Visualization::PRIVACY_LINK)
+      unpublished_visualization = create(:carto_visualization, user: @carto_user, map_id: @map.id, version: 3, privacy: Carto::Visualization::PRIVACY_LINK)
       get builder_visualization_public_embed_url(visualization_id: unpublished_visualization.id)
       response.status.should == 404
 
@@ -57,7 +57,7 @@ describe Carto::Builder::Public::EmbedsController do
     end
 
     it 'does not display visualizations without mapcaps' do
-      unpublished_visualization = FactoryGirl.create(:carto_visualization, user: @carto_user, map_id: @map.id, version: 3)
+      unpublished_visualization = create(:carto_visualization, user: @carto_user, map_id: @map.id, version: 3)
       get builder_visualization_public_embed_url(visualization_id: unpublished_visualization.id)
       response.status.should == 404
 
@@ -66,23 +66,23 @@ describe Carto::Builder::Public::EmbedsController do
     end
 
     it 'displays published layers, not ("live") visualization layers' do
-      @map, @table, @table_visualization, @visualization = create_full_builder_vis(@carto_user)
-      Carto::Mapcap.create!(visualization_id: @visualization.id)
+      map, table, table_visualization, visualization = create_full_builder_vis(@carto_user)
+      Carto::Mapcap.create!(visualization_id: visualization.id)
 
-      layer = @visualization.layers[1]
+      layer = visualization.layers[1]
       old_tile_style = layer.options['tile_style']
 
       new_layer_style = '#layer { marker-width: 7; }'
       layer.options['tile_style'] = new_layer_style
       layer.save
 
-      get builder_visualization_public_embed_url(visualization_id: @visualization.id)
+      get builder_visualization_public_embed_url(visualization_id: visualization.id)
 
       response.status.should == 200
       response.body.should_not include(new_layer_style)
       response.body.should include(old_tile_style)
 
-      destroy_full_visualization(@map, @table, @table_visualization, @visualization)
+      destroy_full_visualization(map, table, table_visualization, visualization)
     end
 
     it 'embeds visualizations' do
@@ -92,20 +92,29 @@ describe Carto::Builder::Public::EmbedsController do
       response.body.include?(@visualization.name).should be true
     end
 
+    it 'sends caching headers' do
+      get builder_visualization_public_embed_url(visualization_id: @visualization.id)
+
+      response.status.should == 200
+      response.headers['X-Cache-Channel'].should eq "#{@visualization.varnish_key}:vizjson"
+      response.headers['Surrogate-Key'].should eq "#{CartoDB::SURROGATE_NAMESPACE_PUBLIC_PAGES} #{@visualization.surrogate_key}"
+      response.headers['Cache-Control'].should eq "no-cache,max-age=86400,must-revalidate,public"
+    end
+
     describe 'connectivity issues' do
       it 'does not need connection to the user db' do
-        @map, @table, @table_visualization, @visualization = create_full_builder_vis(@carto_user)
-        Carto::Mapcap.create!(visualization_id: @visualization.id)
+        map, table, table_visualization, visualization = create_full_builder_vis(@carto_user)
+        Carto::Mapcap.create!(visualization_id: visualization.id)
 
-        @actual_database_name = @visualization.user.database_name
-        @visualization.user.update_attribute(:database_name, 'wadus')
+        actual_database_name = visualization.user.database_name
+        visualization.user.update_attribute(:database_name, 'wadus')
 
-        CartoDB::Logger.expects(:warning).never
-        get builder_visualization_public_embed_url(visualization_id: @visualization.id)
+        Rails.logger.expects(:warning).never
+        get builder_visualization_public_embed_url(visualization_id: visualization.id)
         response.status.should == 200
 
-        @visualization.user.update_attribute(:database_name, @actual_database_name)
-        destroy_full_visualization(@map, @table, @table_visualization, @visualization)
+        visualization.user.update_attribute(:database_name, actual_database_name)
+        destroy_full_visualization(map, table, table_visualization, visualization)
       end
     end
 
@@ -144,7 +153,7 @@ describe Carto::Builder::Public::EmbedsController do
       get builder_visualization_public_embed_url(visualization_id: @visualization.id)
 
       response.status.should == 200
-      response.body.should include("maps.googleapis.com/maps/api/js?v=3.30&client=wadus_cid")
+      response.body.should include("maps.googleapis.com/maps/api/js?v=3.32&client=wadus_cid")
     end
 
     it 'does not includes google maps if the maps does not need it' do
@@ -162,7 +171,8 @@ describe Carto::Builder::Public::EmbedsController do
     it 'includes 3rd party scripts for analytics' do
       Cartodb.with_config(
         trackjs: {
-          'customer' => 'fake_trackjs_customer'
+          'customer' => 'fake_trackjs_customer',
+          'frequency' => 1
         },
         metrics: {
           'hubspot': {
@@ -170,14 +180,10 @@ describe Carto::Builder::Public::EmbedsController do
             'token' => 'fake_hubspot_token'
           }
         },
-        google_analytics: {
-          'embeds' => 'fake_embed_id',
-          'domain' => 'carto-test.com'
-        }
+        google_tag_manager_id: 'google_tag_manager_id'
       ) do
         get builder_visualization_public_embed_url(visualization_id: @visualization.id)
 
-        response.body.should include("www.google-analytics.com/analytics")
         response.body.should include("d2zah9y47r7bi2.cloudfront.net/releases/current/tracker.js")
       end
     end
@@ -185,7 +191,8 @@ describe Carto::Builder::Public::EmbedsController do
     it 'does not include 3rd party scripts if cookies=0 query param is present' do
       Cartodb.with_config(
         trackjs: {
-          'customer' => 'fake_trackjs_customer'
+          'customer' => 'fake_trackjs_customer',
+          'frequency' => 1
         },
         metrics: {
           'hubspot': {
@@ -193,14 +200,10 @@ describe Carto::Builder::Public::EmbedsController do
             'token' => 'fake_hubspot_token'
           }
         },
-        google_analytics: {
-          'embeds' => 'fake_embed_id',
-          'domain' => 'carto-test.com'
-        }
+        google_tag_manager_id: 'google_tag_manager_id'
       ) do
         get builder_visualization_public_embed_url(visualization_id: @visualization.id, cookies: '0')
 
-        response.body.should_not include("www.google-analytics.com/analytics")
         response.body.should_not include("d2zah9y47r7bi2.cloudfront.net/releases/current/tracker.js")
       end
     end
@@ -217,7 +220,7 @@ describe Carto::Builder::Public::EmbedsController do
     end
 
     it 'returns 404 for inexistent visualizations' do
-      get builder_visualization_public_embed_url(visualization_id: UUIDTools::UUID.timestamp_create.to_s)
+      get builder_visualization_public_embed_url(visualization_id: Carto::UUIDHelper.random_uuid)
 
       response.status.should == 404
     end
@@ -264,8 +267,8 @@ describe Carto::Builder::Public::EmbedsController do
       include_context 'organization with users helper'
 
       before(:each) do
-        @org_map = FactoryGirl.create(:map, user_id: @org_user_owner.id)
-        @org_visualization = FactoryGirl.create(:carto_visualization, user: @carto_org_user_owner, map_id: @org_map.id, version: 3)
+        @org_map = create(:map, user_id: @org_user_owner.id)
+        @org_visualization = create(:carto_visualization, user: @carto_org_user_owner, map_id: @org_map.id, version: 3)
         @org_visualization.privacy = Carto::Visualization::PRIVACY_PRIVATE
         @org_visualization.save
 
@@ -276,9 +279,9 @@ describe Carto::Builder::Public::EmbedsController do
         Carto::Visualization.any_instance.unstub(:organization?)
         Carto::Visualization.any_instance.stubs(:needed_auth_tokens).returns([])
 
-        @org_map2 = FactoryGirl.create(:map, user_id: @org_user_owner.id)
+        @org_map2 = create(:map, user_id: @org_user_owner.id)
 
-        @org_protected_visualization = FactoryGirl.create(
+        @org_protected_visualization = create(
           :carto_visualization,
           user: @carto_org_user_owner,
           map_id: @org_map2.id,
@@ -345,7 +348,7 @@ describe Carto::Builder::Public::EmbedsController do
         get builder_visualization_public_embed_url(visualization_id: @org_visualization.id)
 
         response.status.should == 200
-        response.body.should include("maps.googleapis.com/maps/api/js?v=3.30&client=wadus_org_cid")
+        response.body.should include("maps.googleapis.com/maps/api/js?v=3.32&client=wadus_org_cid")
       end
     end
   end
@@ -353,9 +356,8 @@ describe Carto::Builder::Public::EmbedsController do
   describe '#show_protected' do
     it 'does not display visualizations without mapcaps' do
       stub_passwords(TEST_PASSWORD)
-      unpublished_visualization = FactoryGirl.create(:carto_visualization, user: @carto_user, map_id: @map.id, version: 3, privacy: Carto::Visualization::PRIVACY_PROTECTED)
+      unpublished_visualization = create(:carto_visualization, user: @carto_user, map_id: @map.id, version: 3, privacy: Carto::Visualization::PRIVACY_PROTECTED)
       unpublished_visualization.published?.should be_false
-
 
       post builder_visualization_public_embed_protected_url(visualization_id: unpublished_visualization.id, password: TEST_PASSWORD)
 
@@ -368,10 +370,9 @@ describe Carto::Builder::Public::EmbedsController do
 
     it 'does display published visualizations' do
       stub_passwords(TEST_PASSWORD)
-      published_visualization = FactoryGirl.create(:carto_visualization, user: @carto_user, map_id: @map.id, version: 3, privacy: Carto::Visualization::PRIVACY_PROTECTED)
+      published_visualization = create(:carto_visualization, user: @carto_user, map_id: @map.id, version: 3, privacy: Carto::Visualization::PRIVACY_PROTECTED)
       Carto::Mapcap.create!(visualization_id: published_visualization.id)
       published_visualization.published?.should be_true
-
 
       post builder_visualization_public_embed_protected_url(visualization_id: published_visualization.id, password: TEST_PASSWORD)
 
@@ -386,7 +387,6 @@ describe Carto::Builder::Public::EmbedsController do
       @visualization.privacy = Carto::Visualization::PRIVACY_PROTECTED
       @visualization.save
 
-
       post builder_visualization_public_embed_protected_url(visualization_id: @visualization.id, password: "${TEST_PASSWORD}NO!")
 
       response.body.include?('Invalid password').should be true
@@ -397,7 +397,6 @@ describe Carto::Builder::Public::EmbedsController do
       stub_passwords(TEST_PASSWORD)
       @visualization.privacy = Carto::Visualization::PRIVACY_PROTECTED
       @visualization.save
-
 
       post builder_visualization_public_embed_protected_url(visualization_id: @visualization.id, password: TEST_PASSWORD)
 
@@ -410,7 +409,6 @@ describe Carto::Builder::Public::EmbedsController do
       stub_passwords(TEST_PASSWORD)
       @visualization.privacy = Carto::Visualization::PRIVACY_PROTECTED
       @visualization.save
-
 
       post builder_visualization_public_embed_protected_url(visualization_id: @visualization.id, password: TEST_PASSWORD)
 

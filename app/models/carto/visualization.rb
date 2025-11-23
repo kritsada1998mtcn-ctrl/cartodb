@@ -1,9 +1,12 @@
 require 'active_record'
+require 'cartodb-common'
 require_relative '../visualization/stats'
+require_relative '../quota_checker'
 require_dependency 'carto/named_maps/api'
 require_dependency 'carto/helpers/auth_token_generator'
 require_dependency 'carto/uuidhelper'
 require_dependency 'carto/visualization_invalidation_service'
+require_dependency 'carto/visualization_backup_service'
 
 module Carto::VisualizationDependencies
   def fully_dependent_on?(user_table)
@@ -30,13 +33,17 @@ class Carto::Visualization < ActiveRecord::Base
   include Carto::UUIDHelper
   include Carto::AuthTokenGenerator
   include Carto::VisualizationDependencies
-
-  AUTH_DIGEST = '1211b3e77138f6e1724721f1ab740c9c70e66ba6fec5e989bb6640c4541ed15d06dbd5fdcbd3052b'.freeze
+  include Carto::VisualizationBackupService
 
   TYPE_CANONICAL = 'table'.freeze
   TYPE_DERIVED = 'derived'.freeze
   TYPE_SLIDE = 'slide'.freeze
   TYPE_REMOTE = 'remote'.freeze
+  TYPE_KUVIZ = 'kuviz'.freeze
+  TYPE_APP = 'app'.freeze
+
+  VALID_TYPES = [TYPE_CANONICAL, TYPE_DERIVED, TYPE_SLIDE, TYPE_REMOTE, TYPE_KUVIZ, TYPE_APP].freeze
+  MAP_TYPES = [TYPE_DERIVED, TYPE_KUVIZ].freeze
 
   KIND_GEOM   = 'geom'.freeze
   KIND_RASTER = 'raster'.freeze
@@ -51,42 +58,38 @@ class Carto::Visualization < ActiveRecord::Base
 
   V2_VISUALIZATIONS_REDIS_KEY = 'vizjson2_visualizations'.freeze
 
-  scope :remotes, where(type: TYPE_REMOTE)
+  scope :remotes, -> { where(type: TYPE_REMOTE) }
 
   # INFO: disable ActiveRecord inheritance column
   self.inheritance_column = :_type
 
-  belongs_to :user, inverse_of: :visualizations, select: Carto::User::DEFAULT_SELECT
-  belongs_to :full_user, class_name: Carto::User, foreign_key: :user_id, primary_key: :id, inverse_of: :visualizations, readonly: true
-
+  belongs_to :user, -> { select(Carto::User::DEFAULT_SELECT) }, inverse_of: :visualizations
+  belongs_to :full_user, -> { readonly(true) }, class_name: Carto::User, inverse_of: :visualizations,
+                                                primary_key: :id, foreign_key: :user_id
   belongs_to :permission, inverse_of: :visualization, dependent: :destroy
+  belongs_to :active_layer, class_name: Carto::Layer
+  belongs_to :map, class_name: Carto::Map, inverse_of: :visualization, dependent: :destroy
+
+  has_one :external_source, class_name: Carto::ExternalSource, dependent: :destroy, inverse_of: :visualization
+  has_one :asset, class_name: Carto::Asset, inverse_of: :visualization, dependent: :destroy
+  has_one :synchronization, class_name: Carto::Synchronization, dependent: :destroy
+  has_one :state, class_name: Carto::State, autosave: true
 
   has_many :likes, foreign_key: :subject
   has_many :shared_entities, foreign_key: :entity_id, inverse_of: :visualization, dependent: :destroy
-
-  has_one :external_source, class_name: Carto::ExternalSource, dependent: :destroy, inverse_of: :visualization
   has_many :unordered_children, class_name: Carto::Visualization, foreign_key: :parent_id
-
-  has_many :overlays, order: '"order"', dependent: :destroy
-
-  belongs_to :active_layer, class_name: Carto::Layer
-
-  belongs_to :map, class_name: Carto::Map, inverse_of: :visualization, dependent: :destroy
-
+  has_many :overlays, -> { order(:order) }, dependent: :destroy, inverse_of: :visualization
   has_many :related_templates, class_name: Carto::Template, foreign_key: :source_visualization_id
-
-  has_one :synchronization, class_name: Carto::Synchronization, dependent: :destroy
   has_many :external_sources, class_name: Carto::ExternalSource
-
   has_many :analyses, class_name: Carto::Analysis
-  has_many :mapcaps, class_name: Carto::Mapcap, dependent: :destroy, order: 'created_at DESC'
-
-  has_one :state, class_name: Carto::State, autosave: true
-
+  has_many :mapcaps, -> { order('created_at DESC') }, class_name: Carto::Mapcap, dependent: :destroy
   has_many :snapshots, class_name: Carto::Snapshot, dependent: :destroy
+  has_many :backups, class_name: Carto::VisualizationBackup
 
   validates :name, :privacy, :type, :user_id, :version, presence: true
   validates :privacy, inclusion: { in: PRIVACIES }
+  validates :type, inclusion: { in: VALID_TYPES }
+  validates :name, uniqueness: { scope: [:user_id, :type] }, if: -> { kuviz? || app? }
   validate :validate_password_presence
   validate :validate_privacy_changes
   validate :validate_user_not_viewer, on: :create
@@ -98,17 +101,26 @@ class Carto::Visualization < ActiveRecord::Base
   after_save :propagate_attribution_change
   after_save :propagate_privacy_and_name_to, if: :table
 
+  before_destroy :before_destroy_hooks
   before_destroy :backup_visualization
-
-  # INFO: workaround for array saves not working. There is a bug in `activerecord-postgresql-array` which
-  # makes inserting including array fields to save, but updates work. Wo se insert without tags and add them
-  # with an update after creation. This is fixed in Rails 4.
-  before_create :delay_saving_tags
-  after_create :save_tags
-
+  before_destroy :check_destroy_permissions!
   after_commit :perform_invalidations
 
   attr_accessor :register_table_only
+
+  # NASTY HACK: previously, the user was updated to viewer: false for the destroy hooks to pass. As the Sequel
+  # migration advanced, that wasn't possible anymore since the ::User changes were not visible from the ActiveRecord
+  # transaction.
+  def destroy_without_checking_permissions!
+    Carto::Visualization.skip_callback(:destroy, :before, :check_destroy_permissions!)
+    Carto::Overlay.skip_callback(:destroy, :before, :validate_user_not_viewer)
+    Carto::UserTable.skip_callback(:destroy, :before, :ensure_not_viewer)
+    destroy!
+  ensure
+    Carto::Visualization.set_callback(:destroy, :before, :check_destroy_permissions!)
+    Carto::Overlay.set_callback(:destroy, :before, :validate_user_not_viewer)
+    Carto::UserTable.set_callback(:destroy, :before, :ensure_not_viewer)
+  end
 
   def set_register_table_only
     self.register_table_only = false
@@ -201,24 +213,32 @@ class Carto::Visualization < ActiveRecord::Base
   end
 
   # TODO: refactor next methods, all have similar naming but some receive user and some others user_id
-  def liked_by?(user_id)
-    likes_by_user_id(user_id).any?
+  def liked_by?(user)
+    likes_by_user(user).any?
   end
 
-  def likes_by_user_id(user_id)
-    likes.where(actor: user_id)
+  def likes_by_user(user)
+    likes.where(actor: user.id)
   end
 
-  def add_like_from(user_id)
-    likes.create!(actor: user_id)
+  def add_like_from(user)
+    unless has_read_permission?(user)
+      raise UnauthorizedLikeError
+    end
+
+    likes.create!(actor: user.id)
 
     self
   rescue ActiveRecord::RecordNotUnique
     raise AlreadyLikedError
   end
 
-  def remove_like_from(user_id)
-    item = likes.where(actor: user_id)
+  def remove_like_from(user)
+    unless has_read_permission?(user)
+      raise UnauthorizedLikeError
+    end
+
+    item = likes.where(actor: user.id)
     item.first.destroy unless item.first.nil?
 
     self
@@ -294,12 +314,24 @@ class Carto::Visualization < ActiveRecord::Base
     type == TYPE_CANONICAL
   end
 
+  def map?
+    kuviz? || derived?
+  end
+
   def derived?
     type == TYPE_DERIVED
   end
 
   def remote?
     type == TYPE_REMOTE
+  end
+
+  def kuviz?
+    type == TYPE_KUVIZ
+  end
+
+  def app?
+    type == TYPE_APP
   end
 
   def layers
@@ -335,7 +367,9 @@ class Carto::Visualization < ActiveRecord::Base
   end
 
   def password_valid?(password)
-    password_protected? && has_password? && (password_digest(password, password_salt) == encrypted_password)
+    password_protected? &&
+      Carto::Common::EncryptionService.verify(password: password, secure_password: encrypted_password,
+                                              salt: password_salt, secret: Cartodb.config[:password_secret])
   end
 
   def organization?
@@ -392,11 +426,11 @@ class Carto::Visualization < ActiveRecord::Base
   alias :can_view_private_info? :has_read_permission?
 
   def estimated_row_count
-    table_service.nil? ? nil : table_service.estimated_row_count
+    user_table.try(:row_count)
   end
 
   def actual_row_count
-    table_service.nil? ? nil : table_service.actual_row_count
+    user_table.try(:actual_row_count)
   end
 
   def license_info
@@ -409,13 +443,9 @@ class Carto::Visualization < ActiveRecord::Base
     !is_privacy_private?
   end
 
-  def likes_count
-    likes.size
-  end
-
   def widgets
     # Preload widgets for all layers
-    ActiveRecord::Associations::Preloader.new(layers, :widgets).run
+    ActiveRecord::Associations::Preloader.new.preload(layers, :widgets)
     layers.map(&:widgets).flatten
   end
 
@@ -481,7 +511,7 @@ class Carto::Visualization < ActiveRecord::Base
         layer.options[:letter] = analysis.natural_id.first
         layer.save
       else
-        CartoDB::Logger.warning(message: 'Couldn\'t add source analysis for layer', user: user, layer: layer)
+        log_warning(message: "Couldn't add source analysis for layer", current_user: user, layer: layer.attributes)
       end
     end
   end
@@ -576,7 +606,9 @@ class Carto::Visualization < ActiveRecord::Base
   def invalidate_after_commit
     # This marks this visualization as affected by this transaction, so AR will call its `after_commit` hook, which
     # performs the actual invalidations. This takes this operation outside of the DB transaction to avoid long locks
-    raise 'invalidate_after_commit should be called within a transaction' if connection.open_transactions.zero?
+    if self.class.connection.open_transactions.zero?
+      raise 'invalidate_after_commit should be called within a transaction'
+    end
     add_to_transaction
     true
   end
@@ -604,8 +636,9 @@ class Carto::Visualization < ActiveRecord::Base
 
   def password=(value)
     if value.present?
-      self.password_salt = generate_salt if password_salt.nil?
-      self.encrypted_password = password_digest(value, password_salt)
+      self.password_salt = ""
+      self.encrypted_password = Carto::Common::EncryptionService.encrypt(password: value,
+                                                                         secret: Cartodb.config[:password_secret])
     end
   end
 
@@ -613,11 +646,43 @@ class Carto::Visualization < ActiveRecord::Base
     synchronization.present?
   end
 
-  private
-
-  def generate_salt
-    secure_digest(Time.now, (1..10).map { rand.to_s })
+  def dependent_visualizations
+    user_table&.dependent_visualizations || []
   end
+
+  def faster_dependent_visualizations(limit: nil)
+    @faster_dependent_visualizations ||= user_table&.faster_dependent_visualizations(limit: limit)
+  end
+
+  def dependent_visualizations_count
+    user_table&.dependent_visualizations_count.to_i
+  end
+
+  def backup_visualization(category = Carto::VisualizationBackup::CATEGORY_VISUALIZATION)
+    return true if remote?
+
+    if map && !destroyed?
+      create_visualization_backup(visualization: self, category: category)
+    end
+  end
+
+  def subscription
+    table = user_table || related_tables.try(:first)
+    @subscription ||= if table
+      doss = Carto::DoSyncServiceFactory.get_for_user(user)
+      doss&.subscription_from_sync_table(table)
+    end
+  end
+
+  def sample
+    table = user_table || related_tables.try(:first)
+    @sample ||= if table
+      doss = Carto::DoSampleServiceFactory.get_for_user(user)
+      doss&.dataset_from_sample_table(table)
+    end
+  end
+
+  private
 
   def remove_password
     self.password_salt = nil
@@ -626,13 +691,13 @@ class Carto::Visualization < ActiveRecord::Base
 
   def perform_invalidations
     invalidation_service.invalidate
-  rescue => e
+  rescue StandardError => e
     # This is called at an after_commit. If there's any error, we won't notice
     # but the after_commit chain stops.
     # This was discovered during #12844, because "Updates changes even if named maps communication fails" test
     # begun failing because Overlay#invalidate_cache invokes this method directly.
     # We chose to log and continue to keep coherence on calls to this outside the callback.
-    CartoDB::Logger.error(message: "Error on visualization invalidation", exception: e, visualization_id: id)
+    log_error(message: "Error on visualization invalidation", exception: e, visualization: { id: id })
   end
 
   def propagate_privacy_and_name_to
@@ -663,7 +728,7 @@ class Carto::Visualization < ActiveRecord::Base
       support_tables.rename(name_was, name, true, name_was)
     end
     self
-  rescue => exception
+  rescue StandardError => exception
     if name_changed? && !(exception.to_s =~ /relation.*does not exist/)
       revert_name_change(name_was)
     end
@@ -673,7 +738,7 @@ class Carto::Visualization < ActiveRecord::Base
   def revert_name_change(previous_name)
     self.name = previous_name
     store
-  rescue => exception
+  rescue StandardError => exception
     raise CartoDB::InvalidMember.new(exception.to_s)
   end
 
@@ -701,27 +766,6 @@ class Carto::Visualization < ActiveRecord::Base
 
   def set_default_permission
     self.permission ||= Carto::Permission.create(owner: user, owner_username: user.username)
-  end
-
-  def delay_saving_tags
-    @cached_tags = tags
-    self.tags = nil
-  end
-
-  def save_tags
-    update_attribute(:tags, @cached_tags)
-  end
-
-  def password_digest(password, salt)
-    digest = AUTH_DIGEST
-    10.times do
-      digest = secure_digest(digest, salt, password, AUTH_DIGEST)
-    end
-    digest
-  end
-
-  def secure_digest(*args)
-    Digest::SHA256.hexdigest(args.flatten.join)
   end
 
   def has_private_tables?
@@ -765,8 +809,32 @@ class Carto::Visualization < ActiveRecord::Base
   end
 
   def validate_privacy_changes
-    if derived? && is_privacy_private? && privacy_changed? && !user.try(:private_maps_enabled?)
+    return unless privacy_changed? && (map? || table?)
+
+    is_privacy_private? ? validate_change_to_private : validate_change_to_public
+  end
+
+  def validate_change_to_private
+    if (!user&.private_tables_enabled? && table?) || (!user&.private_maps_enabled? && map?)
       errors.add(:privacy, 'cannot be set to private')
+    end
+
+    return unless !privacy_was || privacy_was != Carto::Visualization::PRIVACY_PRIVATE
+
+    if map? && CartoDB::QuotaChecker.new(user).will_be_over_private_map_quota?
+      errors.add(:privacy, 'over account private map quota')
+    end
+  end
+
+  def validate_change_to_public
+    return unless !privacy_was || privacy_was == Carto::Visualization::PRIVACY_PRIVATE
+
+    if map? && CartoDB::QuotaChecker.new(user).will_be_over_public_map_quota?
+      errors.add(:privacy, 'over account public map quota')
+    end
+
+    if table? && CartoDB::QuotaChecker.new(user).will_be_over_public_dataset_quota?
+      errors.add(:privacy, 'over account public dataset quota')
     end
   end
 
@@ -776,23 +844,38 @@ class Carto::Visualization < ActiveRecord::Base
     end
   end
 
-  def backup_visualization
-    return true if remote?
-
-    if user.has_feature_flag?(Carto::VisualizationsExportService::FEATURE_FLAG_NAME) && map
-      Carto::VisualizationsExportService.new.export(id)
-    end
-  rescue => exception
-    # Don't break deletion flow
-    CartoDB::Logger.error(
-      message: 'Error backing up visualization',
-      exception: exception,
-      visualization_id: id
-    )
-  end
-
   def invalidation_service
     @invalidation_service ||= Carto::VisualizationInvalidationService.new(self)
+  end
+
+  def check_destroy_permissions!
+    raise CartoDB::InvalidMember.new(user: "Viewer users can't delete visualizations") if user&.reload&.viewer
+  end
+
+  def prev_list_item
+    Carto::Visualization.find_by(id: prev_id)
+  end
+
+  def next_list_item
+    Carto::Visualization.find_by(id: next_id)
+  end
+
+  def unlink_self_from_list!
+    ActiveRecord::Base.transaction do
+      prev_list_item&.update!(next_id: next_id)
+      next_list_item&.update!(prev_id: prev_id)
+
+      unless destroyed?
+        self.prev_id = nil
+        self.next_id = nil
+      end
+    end
+  end
+
+  def before_destroy_hooks
+    unlink_self_from_list!
+    children.each(&:destroy)
+    Carto::NamedMaps::Api.new(self).destroy
   end
 
   class Watcher
@@ -807,7 +890,7 @@ class Carto::Visualization < ActiveRecord::Base
       @user = user
       @visualization = visualization
 
-      default_ttl = Cartodb.config[:watcher].present? ? Cartodb.config[:watcher].try("fetch", 'ttl', 60) : 60
+      default_ttl = Cartodb.get_config(:watcher, 'ttl') || 60
       @notification_ttl = notification_ttl.nil? ? default_ttl : notification_ttl
     end
 
@@ -838,4 +921,5 @@ class Carto::Visualization < ActiveRecord::Base
 
   class WatcherError < CartoDB::BaseCartoDBError; end
   class AlreadyLikedError < StandardError; end
+  class UnauthorizedLikeError < StandardError; end
 end

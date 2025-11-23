@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 module Carto
   module Styles
     module Presenters
@@ -40,7 +38,7 @@ module Carto
 
             formatted_cartocss_property.join("\n")
           else
-            CartoDB::Logger.error(message: "Unrecognized property class given to CartoCSS: #{property_class}")
+            log_error(message: 'Unrecognized CartoCSS property', error_detail: property_class)
             ""
           end
         end

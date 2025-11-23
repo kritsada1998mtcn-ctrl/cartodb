@@ -1,11 +1,8 @@
-# encoding: utf-8
 require_dependency 'carto/uuidhelper'
 
 module Carto
   module Api
     class StaticNotificationsController < ::Api::ApplicationController
-      include Carto::ControllerHelper
-
       ssl_required :update
       before_filter :load_static_notifications, only: [:update]
 

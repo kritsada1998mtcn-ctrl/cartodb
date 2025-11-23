@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require 'addressable/uri'
 require 'set'
 require 'json'
@@ -14,6 +12,8 @@ module Carto
     # The responsibility of this class is to perform requests to gme
     # taking care of sigining requests, usage limits, errors, retries, etc.
     class Client
+
+      include ::LoggerHelper
 
       BASE_URL = 'https://maps.googleapis.com'
 
@@ -90,10 +90,11 @@ module Carto
         if resp.code != 200
           # Remove temporarily from rollbar because it's flooding the logs
           if resp.code != 400
-            CartoDB::Logger.warning(message: 'Error response from GME client',
-                                    client_id: @client_id,
-                                    code: resp.code,
-                                    response_body: resp.response_body)
+            log_warning(
+              message: 'Error response from GME client',
+              client: { id: @client_id },
+              response: { code: resp.code, body: resp.response_body }
+            )
           end
           raise HttpError.new(resp.code)
         end

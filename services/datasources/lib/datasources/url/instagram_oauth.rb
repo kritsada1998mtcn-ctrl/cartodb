@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require "instagram"
 
 module CartoDB
@@ -32,7 +30,7 @@ module CartoDB
           raise ServiceDisabledError.new(DATASOURCE_NAME, @user.username) unless @user.has_feature_flag?('instagram_import')
 
           service_name = service_name_for_user(DATASOURCE_NAME, @user)
-          placeholder = CALLBACK_STATE_DATA_PLACEHOLDER.sub('user', @user.username).sub('service', service_name)
+          placeholder = CALLBACK_STATE_DATA_PLACEHOLDER.sub('service', service_name).sub('user', @user.username)
           @callback_url = "#{config.fetch('callback_url')}?state=#{placeholder}"
 
           self.filter   = []
@@ -65,7 +63,7 @@ module CartoDB
             response_type:  'code',
             redirect_uri:   @callback_url
           })
-        rescue => ex
+        rescue StandardError => ex
           raise AuthError.new("get_auth_url(#{use_callback_flow}): #{ex.message}", DATASOURCE_NAME)
         end
 
@@ -80,7 +78,7 @@ module CartoDB
           @access_token = response.access_token
           @client = Instagram.client(access_token: @access_token)
           @access_token
-        rescue => ex
+        rescue StandardError => ex
           raise AuthError.new("validate_callback(#{params.inspect}): #{ex.message}", DATASOURCE_NAME)
         end
 
@@ -91,7 +89,7 @@ module CartoDB
         def token=(token)
           @access_token = token
           @client = Instagram.client(access_token: @access_token)
-        rescue => ex
+        rescue StandardError => ex
           handle_error(ex, "token= : #{ex.message}")
         end
 
@@ -165,7 +163,7 @@ module CartoDB
             filename: "#{DATASOURCE_NAME}_#{@client.user.username}.csv",
             size:     NO_CONTENT_SIZE_PROVIDED
           }
-        rescue => ex
+        rescue StandardError => ex
           handle_error(ex, "get_resource_metadata() #{id}: #{ex.message}")
         end
 
@@ -209,7 +207,7 @@ module CartoDB
           if response[:id]
             true
           end
-        rescue => ex
+        rescue StandardError => ex
           false
         end
 
@@ -217,7 +215,7 @@ module CartoDB
         def revoke_token
           # TODO: See how to check this
           true
-        rescue => ex
+        rescue StandardError => ex
           raise AuthError.new("revoke_token: #{ex.message}", DATASOURCE_NAME)
         end
 
@@ -268,7 +266,7 @@ module CartoDB
           end
 
           [ contents, new_max_id ]
-        rescue => ex
+        rescue StandardError => ex
           handle_error(ex, "get_resource() #{resource_id}: #{ex.message}")
         end
 

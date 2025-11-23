@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require 'dropbox_api'
 require_relative '../base_oauth'
 require_relative '../../../../../lib/dropbox_api/endpoints/auth/token/revoke'
@@ -18,6 +16,8 @@ module CartoDB
       #    This obviously will work for a single user.
       class Dropbox < BaseOAuth
 
+        include ::LoggerHelper
+
         # Required for all datasources
         DATASOURCE_NAME = 'dropbox'
 
@@ -29,6 +29,8 @@ module CartoDB
             FORMAT_KML =>         %W( .kml ),
             FORMAT_COMPRESSED =>  %W( .zip )
         }
+
+        START_LIMIT = 9999
 
         # Constructor
         # @param config Array
@@ -73,7 +75,7 @@ module CartoDB
         # @throws AuthError
         def get_auth_url
           authenticator.authorize_url redirect_uri: @callback_url, state: state
-        rescue => ex
+        rescue StandardError => ex
           raise AuthError.new("get_auth_url(#{use_callback_flow}): #{ex.message}", DATASOURCE_NAME)
         end
 
@@ -86,7 +88,7 @@ module CartoDB
 
           @client = DropboxApi::Client.new(@access_token)
           @access_token
-        rescue => ex
+        rescue StandardError => ex
           raise AuthError.new("validate_callback(#{params.inspect}): #{ex.message}", DATASOURCE_NAME)
         end
 
@@ -97,7 +99,7 @@ module CartoDB
         def token=(token)
           @access_token = token
           @client = DropboxApi::Client.new(@access_token)
-        rescue => ex
+        rescue StandardError => ex
           handle_error(ex, "token= : #{ex.message}")
         end
 
@@ -124,12 +126,15 @@ module CartoDB
               response.matches.select { |item| item.resource.is_a?(DropboxApi::Metadata::File) }.each do |item|
                 all_results.push(format_item_data(item.resource))
               end
-              break unless response.has_more?
+              no_more_results = start == START_LIMIT || !response.has_more?
+              break if no_more_results
+
               start += SEARCH_BATCH_SIZE
+              start = START_LIMIT if start > START_LIMIT
             end
           end
           all_results
-        rescue => ex
+        rescue StandardError => ex
           handle_error(ex, "get_resources_list(): #{ex.message}")
         end
 
@@ -145,7 +150,7 @@ module CartoDB
             file_contents << chunk
           end
           file_contents
-        rescue => ex
+        rescue StandardError => ex
           handle_error(ex, "get_resource() #{id}: #{ex.message}")
         end
 
@@ -161,7 +166,7 @@ module CartoDB
           item_data = format_item_data(response)
 
           item_data.to_hash
-        rescue => ex
+        rescue StandardError => ex
           handle_error(ex, "get_resource_metadata() #{id}: #{ex.message}")
         end
 
@@ -209,8 +214,7 @@ module CartoDB
           # Any call would do, we just want to see if communicates or refuses the token
           @client.get_current_account
           true
-        rescue DropboxApi::Errors::HttpError => ex
-          CartoDB::Logger.debug(message: 'Invalid Dropbox token', exception: ex, user: @user)
+        rescue DropboxApi::Errors::HttpError
           false
         end
 
@@ -219,9 +223,9 @@ module CartoDB
           @client.revoke
           true
         rescue DropboxApi::Errors::HttpError => ex
-          CartoDB::Logger.debug(message: 'Error revoking Dropbox token', exception: ex, user: @user)
+          log_info(message: 'Error revoking Dropbox token: already invalid', exception: ex, current_user: @user)
           true
-        rescue => ex
+        rescue StandardError => ex
           raise AuthError.new("revoke_token: #{ex.message}", DATASOURCE_NAME)
         end
 
@@ -275,7 +279,7 @@ module CartoDB
 
         def state
           service_name = service_name_for_user(DATASOURCE_NAME, @user)
-          CALLBACK_STATE_DATA_PLACEHOLDER.sub('user', @user.username).sub('service', service_name)
+          CALLBACK_STATE_DATA_PLACEHOLDER.sub('service', service_name).sub('user', @user.username)
         end
       end
     end

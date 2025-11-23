@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require_relative '../../../spec_helper'
 require 'helpers/unique_names_helper'
 
@@ -9,7 +7,7 @@ describe Carto::Api::TablesController do
   describe '#show legacy tests' do
 
     before(:all) do
-      @user = FactoryGirl.create(:valid_user, private_tables_enabled: true)
+      @user = create(:valid_user, private_tables_enabled: true)
       @carto_user = Carto::User.find(@user.id)
 
       CartoDB::Varnish.any_instance.stubs(:send_command).returns(true)
@@ -45,10 +43,10 @@ describe Carto::Api::TablesController do
 
     it 'returns dependent visualizations' do
       table = create_table(user_id: @user.id)
-      visualization = FactoryGirl.create(:carto_visualization, user: @carto_user)
-      visualization.map = FactoryGirl.create(:carto_map, user: @carto_user)
+      visualization = create(:carto_visualization, user: @carto_user)
+      visualization.map = create(:carto_map, user: @carto_user)
       visualization.save!
-      layer = FactoryGirl.build(:carto_layer)
+      layer = build(:carto_layer)
       layer.options[:table_name] = table.name
       layer.save
       visualization.layers << layer
@@ -56,7 +54,7 @@ describe Carto::Api::TablesController do
       get_json api_v1_tables_show_url(params.merge(id: table.id)) do |response|
         response.status.should == 200
         expect(response.body[:dependent_visualizations]).not_to be_empty
-        expect(response.body[:dependent_visualizations][0]['id']).to eq visualization.id
+        expect(response.body[:dependent_visualizations][0][:id]).to eq visualization.id
       end
     end
 
@@ -170,7 +168,7 @@ describe Carto::Api::TablesController do
     it 'loads my table if other user has shared a table with the same name with me' do
       table_name = unique_name('table')
       his_table = create_table(privacy: UserTable::PRIVACY_PRIVATE, name: table_name, user_id: @org_user_2.id)
-      share_table(his_table, @org_user_2, @org_user_1)
+      http_share_table(his_table, @org_user_2, @org_user_1)
       my_table = create_table(privacy: UserTable::PRIVACY_PRIVATE, name: table_name, user_id: @org_user_1.id)
       login(@org_user_1)
       get api_v1_tables_show_url(id: my_table.id) do |response|

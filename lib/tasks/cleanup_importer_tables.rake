@@ -1,4 +1,3 @@
-# encoding: utf-8
 namespace :cartodb do
   namespace :db do
     desc 'Moves left-over tables from failed imports from the public to the cdb_importer schema'
@@ -24,7 +23,7 @@ namespace :cartodb do
             puts "------ moved #{@table_name} from user #{user.username}"
           }
           printf "OK %-#{20}s (%-#{4}s/%-#{4}s)\n", user.username, index, count
-        rescue => exception
+        rescue StandardError => exception
           printf "FAIL %-#{20}s (%-#{4}s/%-#{4}s) #{exception.message}\n", user.username, index, count
         end
         sleep(1.0/5.0)

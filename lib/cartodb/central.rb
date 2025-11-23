@@ -1,12 +1,31 @@
 require_relative '../carto/http/client'
+require './app/helpers/message_broker_helper'
 
-# encoding: utf-8
 module Cartodb
   class Central
 
-    def self.sync_data_with_cartodb_central?
+    include ::MessageBrokerHelper
+
+    def self.message_broker_sync_enabled?
+      Cartodb.get_config(:message_broker, 'project_id').present? &&
+        Cartodb.get_config(:message_broker, 'central_subscription_name').present?
+    end
+
+    def self.message_broker_sync_disabled?
+      !message_broker_sync_enabled?
+    end
+
+    def self.api_sync_enabled?
       Cartodb.get_config(:cartodb_central_api, 'username').present? &&
         Cartodb.get_config(:cartodb_central_api, 'password').present?
+    end
+
+    def self.api_sync_disabled?
+      !api_sync_enabled?
+    end
+
+    class << self
+      alias login_redirection_enabled? api_sync_enabled?
     end
 
     def initialize
@@ -32,12 +51,16 @@ module Cartodb
       URI.join(host, 'login').to_s
     end
 
+    def unverified_url
+      URI.join(host, 'unverified').to_s
+    end
+
     def build_request(path, body, method, timeout = 200)
       http_client = Carto::Http::Client.get('central', log_requests: true)
       http_client.request(
         "#{@host}/#{path}",
         method: method,
-        body: body.to_json,
+        body: body.nil? ? nil: body.to_json,
         userpwd: "#{@auth[:username]}:#{@auth[:password]}",
         headers: { "Content-Type" => "application/json" },
         ssl_verifypeer: Rails.env.production?,
@@ -57,68 +80,97 @@ module Cartodb
     end
 
     def get_user(username_or_email)
-      return send_request("api/users/#{username_or_email}", nil, :get, [200,404])
-    end # get_organization_users
+      send_request("api/users/#{username_or_email}", nil, :get, [200, 404])
+    end
 
     def get_organization_users(organization_name)
-      return send_request("api/organizations/#{ organization_name }/users", nil, :get, [200], 600)
-    end # get_organization_users
+      send_request("api/organizations/#{ organization_name }/users", nil, :get, [200], 600)
+    end
 
     def get_organization_user(organization_name, username)
-      return send_request("api/organizations/#{ organization_name }/users/#{ username }", nil, :get, [200])
-    end # get_organization_user
+      send_request("api/organizations/#{ organization_name }/users/#{ username }", nil, :get, [200])
+    end
+
+    def validate_new_organization_user(username:, email:)
+      send_request(
+        'api/organizations/users/validate_new',
+        { user: { username: username, email: email } },
+        :post,
+        [200, 400]
+      )
+    end
 
     def create_organization_user(organization_name, user_attributes)
-      body = {user: user_attributes}
-      return send_request("api/organizations/#{ organization_name }/users", body, :post, [201])
-    end # create_organization_user
+      payload = {
+        organization_name: organization_name
+      }.merge(user_attributes)
+      cartodb_central_topic.publish(:create_org_user, payload)
+    end
 
     def update_organization_user(organization_name, username, user_attributes)
-      body = {user: user_attributes}
-      return send_request("api/organizations/#{ organization_name }/users/#{ username }", body, :put, [204])
+      payload = {
+        organization_name: organization_name,
+        username: username
+      }.merge(user_attributes)
+      cartodb_central_topic.publish(:update_org_user, payload)
     end
 
     def delete_organization_user(organization_name, username)
-      send_request("api/organizations/#{organization_name}/users/#{username}", nil, :delete, [204, 404])
-    end # delete_organization_user
+      payload = {
+        organization_name: organization_name,
+        username: username
+      }
+      cartodb_central_topic.publish(:delete_org_user, payload)
+    end
 
     def update_user(username, user_attributes)
-      body = {user: user_attributes}
-      return send_request("api/users/#{username}", body, :put, [204])
+      payload = {
+        username: username
+      }.merge(user_attributes)
+      cartodb_central_topic.publish(:update_user, payload)
     end
 
     def delete_user(username)
-      send_request("api/users/#{username}", nil, :delete, [204, 404])
+      remote_data = Carto::User.where(username: username).first
+      payload = {
+        username: username,
+        remote_data: remote_data
+      }
+      cartodb_central_topic.publish(:delete_user, payload)
+    end
+
+    def check_do_enabled(username)
+      send_request("api/users/#{username}/do_status", nil, :get, [200])
+    end
+
+    def get_do_token(username)
+      send_request("api/users/#{username}/do_token", nil, :get, [200])
+    end
+
+    def create_do_datasets(username:, datasets:)
+      body = { datasets: datasets }
+      send_request("api/users/#{username}/do/datasets", body, :post, [201])
+    end
+
+    def update_do_subscription(username:, subscription_id:, subscription_params:)
+      body = { subscription_params: subscription_params }
+      send_request("api/users/#{username}/do/datasets/#{subscription_id}", body, :put, [204])
+    end
+
+    def remove_do_dataset(username:, id:)
+      send_request("api/users/#{username}/do/datasets/#{id}", nil, :delete, [204])
     end
 
     ############################################################################
     # Organizations
 
     def get_organizations
-      return send_request("api/organizations", nil, :get, [200], 600)
-    end # get_organizations
+      send_request("api/organizations", nil, :get, [200], 600)
+    end
 
     def get_organization(organization_name)
-      return send_request("api/organizations/#{ organization_name }", nil, :get, [200])
-    end # get_organization
-
-    # Returns remote organization attributes if response code is 201
-    # otherwise returns nil
-    # luisico asks: Not sure why organization_name is passed to this method. It's not used
-    # rilla answers: That's right, but this methods is just a stub: org creation from the editor is still unsupported
-    def create_organization(organization_name, organization_attributes)
-      body = {organization: organization_attributes}
-      return send_request("api/organizations", body, :post, [201])
-    end # create_organization
-
-    def update_organization(organization_name, organization_attributes)
-      body = {organization: organization_attributes}
-      return send_request("api/organizations/#{ organization_name }", body, :put, [204])
-    end # update_organization
-
-    def delete_organization(organization_name)
-      send_request("api/organizations/#{organization_name}", nil, :delete, [204, 404])
-    end # delete_organization
+      send_request("api/organizations/#{ organization_name }", nil, :get, [200])
+    end
 
     ############################################################################
     # Mobile apps
@@ -144,5 +196,23 @@ module Cartodb
     def delete_mobile_app(username, app_id)
       send_request("api/users/#{username}/mobile_apps/#{app_id}", nil, :delete, [204])
     end
+
+    ############################################################################
+    # OAuth apps
+
+    def create_oauth_app(username, oauth_app_attributes)
+      body = { oauth_app: oauth_app_attributes }
+      send_request("api/users/#{username}/oauth_apps", body, :post, [201])
+    end
+
+    def update_oauth_app(username, app_id, oauth_app_attributes)
+      body = { oauth_app: oauth_app_attributes }
+      send_request("api/users/#{username}/oauth_apps/#{app_id}", body, :put, [204])
+    end
+
+    def delete_oauth_app(username, app_id)
+      send_request("api/users/#{username}/oauth_apps/#{app_id}", nil, :delete, [204])
+    end
+
   end
 end

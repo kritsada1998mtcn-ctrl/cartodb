@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 require 'json'
 require 'gibbon'
 require 'addressable/uri'
@@ -42,7 +40,7 @@ module CartoDB
           @http_connect_timeout = config.fetch(:http_connect_timeout, 60)
 
           service_name = service_name_for_user(DATASOURCE_NAME, @user)
-          placeholder = CALLBACK_STATE_DATA_PLACEHOLDER.sub('user', @user.username).sub('service', service_name)
+          placeholder = CALLBACK_STATE_DATA_PLACEHOLDER.sub('service', service_name).sub('user', @user.username)
           @callback_url = "#{config.fetch('callback_url')}?state=#{placeholder}"
 
           Gibbon::API.timeout = API_TIMEOUT_SECS
@@ -131,7 +129,7 @@ module CartoDB
 
           # This specially formed token behaves as an API Key for client calls using API
           @access_token = "#{partial_access_token}-#{metadata_data['dc']}"
-        rescue => ex
+        rescue StandardError => ex
           raise AuthError.new("validate_callback(#{params.inspect}): #{ex.message}", DATASOURCE_NAME)
         end
 
@@ -144,7 +142,7 @@ module CartoDB
         rescue Gibbon::MailChimpError => exception
           raise TokenExpiredOrInvalidError.new("token=() : #{exception.message} (API code: #{exception.code})",
                                                DATASOURCE_NAME)
-        rescue => exception
+        rescue StandardError => exception
           raise TokenExpiredOrInvalidError.new("token=() : #{exception.inspect}", DATASOURCE_NAME)
         end
 
@@ -192,7 +190,7 @@ module CartoDB
         rescue Gibbon::MailChimpError => exception
           raise DataDownloadError.new("get_resources_list(): #{exception.message} (API code: #{exception.code}",
                                       DATASOURCE_NAME)
-        rescue => exception
+        rescue StandardError => exception
           raise DataDownloadError.new("get_resources_list(): #{exception.inspect}", DATASOURCE_NAME)
         end
 
@@ -232,7 +230,7 @@ module CartoDB
         rescue Gibbon::MailChimpError => exception
           raise DataDownloadError.new("get_resource(): #{exception.message} (API code: #{exception.code}",
                                       DATASOURCE_NAME)
-        rescue => exception
+        rescue StandardError => exception
           raise DataDownloadError.new("get_resource(): #{exception.inspect}", DATASOURCE_NAME)
         end
 
@@ -265,7 +263,7 @@ module CartoDB
         rescue Gibbon::MailChimpError => exception
           raise DataDownloadError.new("get_resource_metadata(): #{exception.message} (API code: #{exception.code}",
                                       DATASOURCE_NAME)
-        rescue => exception
+        rescue StandardError => exception
           raise DataDownloadError.new("get_resource_metadata(): #{exception.inspect}", DATASOURCE_NAME)
         end
 
@@ -309,7 +307,7 @@ module CartoDB
           response = @api_client.users.profile
           # 'errors' only appears in failure scenarios, while 'username' only if went ok
           response.fetch('errors', nil).nil? && !response.fetch('username', nil).nil?
-        rescue => ex
+        rescue StandardError => ex
           CartoDB.notify_exception(ex)
           false
         end

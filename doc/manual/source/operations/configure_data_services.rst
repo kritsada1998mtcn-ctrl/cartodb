@@ -46,8 +46,6 @@ Valid services are:
 
 * ``geocoding`` for street-level (hi-res) geocoding services.
 * ``here_isolines`` for general isolines/isochrones zoning services (despite the name, this does not only applies to Here-provided services).
-* ``obs_snapshot`` for Data Observatory *snapshot* services.
-* ``obs_general`` for Data Observatory general services.
 * ``mapzen_routing`` for general routing services (again, not necessarily provided by Mapzen).
 
 
@@ -77,8 +75,6 @@ Valid services are, as for the quota configuration:
 
 * ``geocoding`` for street-level (hi-res) geocoding services.
 * ``here_isolines`` for general isolines/isochrones zoning services (despite the name, this does not only applies to Here-provided services).
-* ``obs_snapshot`` for Data Observatory *snapshot* services.
-* ``obs_general`` for Data Observatory general services.
 * ``mapzen_routing`` for general routing services (again, not necessarily provided by Mapzen).
 
 Examples:
@@ -103,7 +99,7 @@ Add the following entry to the `geocoder` entry of the `cartodb/config/app_confi
       host: 'localhost'
       port: '5432'
       user: 'dataservices_user'
-      dbname: 'dataservices_db'`
+      dbname: 'dataservices_db'
 
 
 In the `cartodb/config/app_config.yml` file, enable the desired dataservices:

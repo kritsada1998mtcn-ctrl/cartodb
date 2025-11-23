@@ -10,9 +10,6 @@ module Carto
     end
 
     def create_overviews(table_name, tolerance_px)
-      @database.run %{
-        SELECT cartodb.CDB_CreateOverviewsWithToleranceInPixels('#{table_name}'::REGCLASS, '#{tolerance_px}'::float8);
-      }
     end
 
     def rename_overviews(table_name, new_table_name)
@@ -26,11 +23,9 @@ module Carto
     end
 
     def delete_overviews(table_name)
-      # TODO: this is not very elegant, we could detect the existence of the
-      # table some otherway or have a CDB_DropOverviews(text)  function...
-      @database.run(%{SELECT cartodb.CDB_DropOverviews('#{table_name}'::REGCLASS)})
-    rescue Carto::Db::SqlInterface::Error => e
-      raise unless e.to_s.match /relation .+ does not exist/
+      if @database.fetch(%{SELECT cartodb._CDB_Table_Exists('#{table_name}')}).first[:_cdb_table_exists]
+        @database.run(%{SELECT cartodb.CDB_DropOverviews('#{table_name}')})
+      end
     end
 
     def overview_tables(table_name)

@@ -1,8 +1,7 @@
-# encoding: UTF-8
+require 'cartodb-common'
 require_dependency 'carto/user_authenticator'
 
 class Carto::UserCreation < ActiveRecord::Base
-  include Carto::UserAuthenticator
 
   # Synced with CartoGearsApi::Events::UserCreationEvent
   CREATED_VIA_SAML = 'saml'.freeze
@@ -19,8 +18,8 @@ class Carto::UserCreation < ActiveRecord::Base
   IN_PROGRESS_STATES = [:initial, :enqueuing, :creating_user, :validating_user, :saving_user, :promoting_user, :load_common_data, :creating_user_in_central]
   FINAL_STATES = [:success, :failure]
 
-  scope :http_authentication, where(created_via: CREATED_VIA_HTTP_AUTENTICATION)
-  scope :in_progress, where(state: IN_PROGRESS_STATES)
+  scope :http_authentication, -> { where(created_via: CREATED_VIA_HTTP_AUTENTICATION) }
+  scope :in_progress, -> { where(state: IN_PROGRESS_STATES) }
 
   belongs_to :log, class_name: Carto::Log
   belongs_to :user, class_name: Carto::User
@@ -37,13 +36,11 @@ class Carto::UserCreation < ActiveRecord::Base
     user_creation.username = user.username
     user_creation.email = user.email
     user_creation.crypted_password = user.crypted_password
-    user_creation.salt = user.salt
+    user_creation.session_salt = user.session_salt
     user_creation.organization_id = user.organization.nil? ? nil : user.organization.id
     user_creation.quota_in_bytes = user.quota_in_bytes
     user_creation.soft_geocoding_limit = user.soft_geocoding_limit
     user_creation.soft_here_isolines_limit = user.soft_here_isolines_limit
-    user_creation.soft_obs_snapshot_limit = user.soft_obs_snapshot_limit
-    user_creation.soft_obs_general_limit = user.soft_obs_general_limit
     user_creation.soft_twitter_datasource_limit = user.soft_twitter_datasource_limit.nil? ? false : user.soft_twitter_datasource_limit
     user_creation.soft_mapzen_routing_limit = user.soft_mapzen_routing_limit
     user_creation.google_sign_in = user.google_sign_in
@@ -52,6 +49,7 @@ class Carto::UserCreation < ActiveRecord::Base
     user_creation.created_via = created_via
     user_creation.viewer = user.viewer || false
     user_creation.org_admin = user.org_admin || false
+    user_creation.last_password_change_date = user.last_password_change_date
 
     user_creation
   end
@@ -85,7 +83,7 @@ class Carto::UserCreation < ActiveRecord::Base
       # promoting_user -> creating_user_in_central -> load_common_data -> success
       #   creating_user_in_central is skipped if central is not configured
       #   load_common_data is skipped for viewers
-      transition promoting_user: :creating_user_in_central, if: :sync_data_with_cartodb_central?
+      transition promoting_user: :creating_user_in_central, if: -> { Cartodb::Central.message_broker_sync_enabled? }
       transition promoting_user: :load_common_data, unless: :viewer?
       transition promoting_user: :success
 
@@ -166,14 +164,14 @@ class Carto::UserCreation < ActiveRecord::Base
     @pertinent_invitation ||= select_valid_invitation_token(Carto::Invitation.query_with_unused_email(email).all)
   end
 
+  def valid_invitation
+    @valid_invitation ||= select_valid_invitation_token(Carto::Invitation.query_with_valid_email(email).all)
+  end
+
   private
 
   def enabled?
     cartodb_user.enable_account_token.nil? && cartodb_user.enabled
-  end
-
-  def valid_invitation
-    select_valid_invitation_token(Carto::Invitation.query_with_valid_email(email).all)
   end
 
   # Returns the first matching token invitation, and raises error if none is found
@@ -204,7 +202,7 @@ class Carto::UserCreation < ActiveRecord::Base
   end
 
   def log_transition(prefix)
-    self.log.append("#{prefix}: State: #{self.state}")
+    log.append("#{prefix}: State: #{state}")
   end
 
   def initialize_user
@@ -212,35 +210,34 @@ class Carto::UserCreation < ActiveRecord::Base
     @cartodb_user.username = username
     @cartodb_user.email = email
     @cartodb_user.crypted_password = crypted_password
-    @cartodb_user.salt = salt
+    @cartodb_user.session_salt = session_salt
     @cartodb_user.google_sign_in = google_sign_in
     @cartodb_user.github_user_id = github_user_id
     @cartodb_user.invitation_token = invitation_token
-    @cartodb_user.enable_account_token = make_token if requires_validation_email?
+    @cartodb_user.enable_account_token = Carto::Common::EncryptionService.make_token if requires_validation_email?
 
     unless organization_id.nil? || @promote_to_organization_owner
-      organization = ::Organization.where(id: organization_id).first
+      organization = Carto::Organization.find_by(id: organization_id)
       raise "Trying to copy organization settings from one without owner" if organization.owner.nil?
       @cartodb_user.organization = organization
-      @cartodb_user.organization.owner.copy_account_features(@cartodb_user)
+      @cartodb_user.organization.owner.sequel_user.copy_account_features(@cartodb_user)
     end
 
     @cartodb_user.quota_in_bytes = quota_in_bytes unless quota_in_bytes.nil?
     @cartodb_user.soft_geocoding_limit = soft_geocoding_limit unless soft_geocoding_limit.nil?
     @cartodb_user.soft_here_isolines_limit = soft_here_isolines_limit unless soft_here_isolines_limit.nil?
-    @cartodb_user.soft_obs_snapshot_limit = soft_obs_snapshot_limit unless soft_obs_snapshot_limit.nil?
-    @cartodb_user.soft_obs_general_limit = soft_obs_general_limit unless soft_obs_general_limit.nil?
     @cartodb_user.soft_twitter_datasource_limit = soft_twitter_datasource_limit unless soft_twitter_datasource_limit.nil?
     @cartodb_user.soft_mapzen_routing_limit = soft_mapzen_routing_limit unless soft_mapzen_routing_limit.nil?
     @cartodb_user.viewer = viewer if viewer
     @cartodb_user.org_admin = org_admin if org_admin
+    @cartodb_user.last_password_change_date = last_password_change_date unless last_password_change_date.nil?
 
-    if pertinent_invitation
-      @cartodb_user.viewer = pertinent_invitation.viewer
+    if valid_invitation
+      @cartodb_user.viewer = valid_invitation.viewer
     end
 
     @cartodb_user
-  rescue => e
+  rescue StandardError => e
     handle_failure(e, mark_as_failure = true)
     nil
   end
@@ -249,7 +246,7 @@ class Carto::UserCreation < ActiveRecord::Base
   def validate_user
     @cartodb_user.validate_credentials_not_taken_in_central
     raise "Credentials already used" unless @cartodb_user.errors.empty?
-  rescue => e
+  rescue StandardError => e
     handle_failure(e, mark_as_failure = true)
   end
 
@@ -260,7 +257,7 @@ class Carto::UserCreation < ActiveRecord::Base
     @cartodb_user.save(raise_on_failure: true)
     self.user_id = @cartodb_user.id
     self.save
-  rescue => e
+  rescue StandardError => e
     handle_failure(e, mark_as_failure = true)
   end
 
@@ -275,42 +272,42 @@ class Carto::UserCreation < ActiveRecord::Base
   def promote_user
     return unless @promote_to_organization_owner
 
-    organization = ::Organization.where(id: self.organization_id).first
+    organization = Carto::Organization.find_by(id: organization_id)
     raise "Trying to set organization owner when there's already one" unless organization.owner.nil?
 
     user_organization = CartoDB::UserOrganization.new(organization_id, @cartodb_user.id)
     user_organization.promote_user_to_admin
     @cartodb_user.reload
-  rescue => e
+  rescue StandardError => e
     handle_failure(e, mark_as_failure = true)
   end
 
   def load_common_data
     @cartodb_user.load_common_data(@common_data_url) unless @common_data_url.nil?
-  rescue => e
+  rescue StandardError => e
     handle_failure(e, mark_as_failure = false)
   end
 
   def create_in_central
     cartodb_user.create_in_central
-  rescue => e
+  rescue StandardError => e
     handle_failure(e, mark_as_failure = true)
   end
 
   def close_creation
     clean_password
     cartodb_user.notify_new_organization_user unless has_valid_invitation?
-    cartodb_user.organization.notify_if_disk_quota_limit_reached if cartodb_user.organization
-    cartodb_user.organization.notify_if_seat_limit_reached if cartodb_user.organization
+    cartodb_user.organization.notify_if_disk_quota_limit_reached if cartodb_user.organization && !cartodb_user.viewer?
+    cartodb_user.organization.notify_if_seat_limit_reached if cartodb_user.organization && !cartodb_user.viewer?
     CartoGearsApi::Events::EventManager.instance.notify(
       CartoGearsApi::Events::UserCreationEvent.new(created_via, cartodb_user)
     )
-  rescue => e
+  rescue StandardError => e
     handle_failure(e, mark_as_failure = false)
   end
 
   def handle_failure(e, mark_as_failure)
-    CartoDB.notify_exception(e, { user_creation: self, mark_as_failure: mark_as_failure })
+    log_error(exception: e, user_creation_id: id, mark_as_failure: mark_as_failure)
     self.log.append("Error on state #{self.state}, mark_as_failure: #{mark_as_failure}. Error: #{e.message}")
     self.log.append(e.backtrace.join("\n"))
 
@@ -328,11 +325,11 @@ class Carto::UserCreation < ActiveRecord::Base
 
     begin
       cartodb_user.destroy
-    rescue => e
+    rescue StandardError => e
       CartoDB.notify_exception(e, action: 'safe user destruction', user: cartodb_user)
       begin
         cartodb_user.delete
-      rescue => ee
+      rescue StandardError => ee
         CartoDB.notify_exception(ee, action: 'safe user deletion', user: cartodb_user)
       end
 
@@ -341,12 +338,6 @@ class Carto::UserCreation < ActiveRecord::Base
 
   def clean_password
     self.crypted_password = ''
-    self.salt = ''
     self.save
-  end
-
-  # INFO: state_machine needs guard methods to be instance methods
-  def sync_data_with_cartodb_central?
-    Cartodb::Central.sync_data_with_cartodb_central?
   end
 end

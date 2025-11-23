@@ -1,10 +1,12 @@
-# encoding: UTF-8
 require 'rollbar'
+require './app/helpers/logger_helper'
 
 module CartoDB
   module Importer2
 
     class QueryBatcher
+
+      include ::LoggerHelper
 
       DEFAULT_BATCH_SIZE = 20000
       DEFAULT_SEQUENCE_FIELD = 'cartodb_id'
@@ -44,10 +46,10 @@ module CartoDB
         if @create_seq_field
           remove_id_column(column_name, qualified_table_name, table_schema)
         end
-        
+
         @logger.log("Finished batched query by '#{column_name}' in #{qualified_table_name}: query")
-      rescue => e
-        CartoDB::Logger.error(exception: e)
+      rescue StandardError => e
+        log_error(exception: e)
         @logger.log "Error running batched query by '#{column_name}': #{query} #{e.to_s} #{e.backtrace}"
         raise e
       end
@@ -56,7 +58,7 @@ module CartoDB
 
       def batched_query(query, min, max, column_name)
         contains_where = !query.match(/\swhere\s/i).nil?
-        batched_query = query 
+        batched_query = query
         batched_query += (contains_where ? ' AND ' : ' WHERE ')
         batched_query += " #{column_name} >= #{min} AND #{column_name} < #{max}"
         batched_query

@@ -1,5 +1,3 @@
-# encoding: UTF-8
-
 require 'active_record'
 require 'fileutils'
 require_relative '../../../services/user-mover/export_user'
@@ -29,6 +27,7 @@ module Carto
     def run_export
       check_valid_user(user) if user && export_metadata
       check_valid_organization(organization) if organization && export_metadata
+      check_custom_plpython2_functions
 
       log.append("=== Exporting #{organization ? 'user' : 'org'} data ===")
       update_attributes(state: STATE_EXPORTING)
@@ -55,13 +54,14 @@ module Carto
       update_attributes(state: state, exported_file: uploaded_path)
 
       true
-    rescue => e
+    rescue StandardError => e
       log.append_exception('Exporting', exception: e)
-      CartoDB::Logger.error(exception: e, message: 'Error exporting user data', job: inspect)
+      log_error(exception: e, message: 'Error exporting user data', error_detail: inspect)
       update_attributes(state: STATE_FAILURE)
 
       false
     ensure
+      log.store
       package.try(:cleanup)
     end
 
@@ -70,6 +70,26 @@ module Carto
     end
 
     private
+
+    # TODO: delete this once migration to plpython3 is completed
+    def check_custom_plpython2_functions
+      target_user = user || organization.owner
+
+      pg_result = target_user.in_database(as: :superuser).execute(%{
+        select
+          nspname, proname
+        from
+          pg_catalog.pg_proc p
+          join pg_catalog.pg_language l on p.prolang = l.oid
+          join pg_namespace on p.pronamespace = pg_namespace.oid
+        where
+          lanname in ('plpythonu', 'plpython2u') and
+          nspname not in ('cartodb', 'cdb_dataservices_client', 'cdb_crankshaft') and
+          (nspname = 'public' and proname not in ('cdb_invalidate_varnish', 'update_timestamp'))
+      })
+
+      raise "Can't migrate custom plpython2 functions" if pg_result.ntuples > 0
+    end
 
     def check_valid_user(user)
       Carto::GhostTablesManager.new(user.id).link_ghost_tables_synchronously
@@ -126,7 +146,9 @@ module Carto
     end
 
     def set_defaults
-      self.log = Carto::Log.create(type: 'user_migration_export') unless log
+      self.log ||= Carto::Log.new_user_migration_export
+      log.save
+
       self.state = STATE_PENDING unless state
       save
     end

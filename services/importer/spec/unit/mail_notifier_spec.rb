@@ -1,8 +1,5 @@
-# encoding: UTF-8
-
 require 'spec_helper_min'
 require_relative '../../lib/importer/mail_notifier'
-require_relative '../../../../spec/rspec_configuration.rb'
 require          'active_support/core_ext' # Needed for string.blank?
 
 describe CartoDB::Importer2::MailNotifier do
@@ -10,7 +7,7 @@ describe CartoDB::Importer2::MailNotifier do
   START_TIME = 0
 
   before(:each) do
-    @data_import = FactoryGirl.build(:data_import)
+    @data_import = build(:data_import)
     @resque = mock
     @result = mock
     results = [@result]

@@ -1,4 +1,3 @@
-# encoding: utf-8
 require 'open3'
 require_relative './source_file'
 require_relative './unp'
@@ -7,8 +6,9 @@ require_relative './exceptions'
 module CartoDB
   module Importer2
     class KmlSplitter
+
       MAX_LAYERS = 50
-      OGRINFO_BINARY = 'ogrinfo'
+      OGRINFO_BINARY = 'ogrinfo'.freeze
       DEFAULT_OGR2OGR_BINARY = 'ogr2ogr'.freeze
 
       def self.support?(source_file)
@@ -64,7 +64,7 @@ module CartoDB
       def path_for(layer_name)
         File.join(
           temporary_directory,
-          Unp.new.underscore(layer_name) + '.kml'
+          "#{Unp.new.underscore(Carto::FileSystem::Sanitize.sanitize_identifier(layer_name))}.kml"
         )
       end
 
@@ -74,6 +74,7 @@ module CartoDB
 
       attr_reader :temporary_directory
       attr_writer :source_file
+
     end
   end
 end

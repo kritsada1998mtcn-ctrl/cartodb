@@ -1,6 +1,4 @@
-# encoding: utf-8
-
-require_relative '../../../spec_helper'
+require 'spec_helper_unit'
 require_relative '../../../../app/models/layer/presenter'
 require_relative 'layer_presenter_shared_examples'
 

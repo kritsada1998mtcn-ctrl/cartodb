@@ -1,7 +1,14 @@
+# [DEPRECATED]
+
+Hey! This content applies only to previous CARTO products.
+
+Please check if it's relevant to your use case. On October 2021 we released the current version of our platform.
+You can learn more and read the latest documentation at docs.carto.com
+
 # What is CARTO?
 
 [![Code Climate](https://codeclimate.com/github/CartoDB/cartodb20.png)](https://codeclimate.com/github/CartoDB/cartodb20)
-[![Build Status](http://travis-ci.org/CartoDB/cartodb.png?branch=master)](http://travis-ci.org/CartoDB/cartodb)
+![Build Status](https://github.com/CartoDB/cartodb/workflows/Node.js%20Tests/badge.svg)
 
 CARTO is an open, powerful, and intuitive platform for discovering and predicting the key insights underlying the location data in our world.
 
@@ -48,7 +55,7 @@ documentation.
 
 ## Developing & Contributing to CARTO
 
-See [our contributing doc](CONTRIBUTING.md) for how you can improve CARTO, but you will need to sign a Contributor License Agreement (CLA) before making a submission, [learn more here](https://carto.com/contributing).
+See [our contributing doc](CONTRIBUTING.md) for how you can improve CARTO, but you will need to sign a Contributor License Agreement (CLA) before making a submission, [learn more here](https://carto.com/contributions).
 
 ## Testing
 

@@ -1,4 +1,3 @@
-# encoding: utf-8
 require_relative './job'
 
 module CartoDB
@@ -19,7 +18,7 @@ module CartoDB
         File.open(converted_filepath, 'w') { |file| file.write csv_from(data) }
         job.log 'Converting JSON to CSV'
         self
-      rescue
+      rescue StandardError
         raise InvalidGeoJSONError.new(@job.logger)
       end
 
@@ -66,4 +65,3 @@ module CartoDB
     end
   end
 end
-

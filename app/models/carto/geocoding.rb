@@ -1,5 +1,3 @@
-# encoding: UTF-8
-
 require 'active_record'
 require_relative '../../../services/table-geocoder/lib/exceptions'
 
@@ -11,6 +9,8 @@ module Carto
                         :real_rows, :price, :used_credits, :remaining_quota, :country_column, :region_column,
                         :data_import_id, :error_code]
 
+    GEOCODING_BLOCK_SIZE = 1000.0
+
     def self.processable_rows(table_service, force_all_rows=false)
       dataset = table_service.owner.in_database.select.from(table_service.sequel_qualified_table_name)
       if !force_all_rows && dataset.columns.include?(:cartodb_georef_status)
@@ -20,7 +20,6 @@ module Carto
     end
 
     belongs_to :user
-    belongs_to :automatic_geocoding
 
     def public_values
       Hash[PUBLIC_ATTRIBUTES.map{ |k| [k, (self.send(k) rescue self[k].to_s)] }]
@@ -36,17 +35,18 @@ module Carto
     end
 
     def price
-      return 0 unless used_credits.to_i > 0
-      (user.geocoding_block_price * used_credits) / Carto::User::GEOCODING_BLOCK_SIZE.to_f
+      return 0 unless used_credits&.positive?
+
+      (user.geocoding_block_price * used_credits) / GEOCODING_BLOCK_SIZE
     end
 
     def remaining_quota
       user.remaining_geocoding_quota
     end
 
-    # TODO: Properly migrate log to AR and remove this
     def log
-      CartoDB::Log[log_id]
+      Carto::Log.find(log_id)
     end
+
   end
 end

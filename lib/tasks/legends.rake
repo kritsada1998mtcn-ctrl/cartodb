@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 namespace :carto do
   namespace :legends do
     namespace :migration do
@@ -89,13 +87,13 @@ namespace :carto do
             end
 
             raise 'MapcappedVisualizationUpdater returned false' unless success
-          rescue => e
+          rescue StandardError => e
             errors += 1
             STDERR.puts "Error updating layer #{layer.id}: #{e.inspect}. #{e.backtrace.join(',')}"
           end
         end
 
-        puts "Finished. Total: #{total}. Errors: #{errors}"
+        puts "Finished. Total: #{total}. Errors: #{errors}" unless Rails.env.test?
       end
     end
   end

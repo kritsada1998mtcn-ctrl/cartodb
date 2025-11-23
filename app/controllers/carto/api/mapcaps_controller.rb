@@ -1,4 +1,3 @@
-# encoding: utf-8
 require_relative '../builder/builder_users_module'
 
 require_dependency 'carto/tracking/events'
@@ -6,7 +5,6 @@ require_dependency 'carto/tracking/events'
 module Carto
   module Api
     class MapcapsController < ::Api::ApplicationController
-      include Carto::ControllerHelper
       include Carto::Builder::BuilderUsersModule
 
       ssl_required :show, :create, :destroy, :index
@@ -71,7 +69,7 @@ module Carto
       end
 
       def track_published_map
-        current_viewer_id = current_viewer.id
+        current_viewer_id = current_viewer&.id
         Carto::Tracking::Events::PublishedMap.new(current_viewer_id,
                                                   user_id: current_viewer_id,
                                                   visualization_id: @visualization.id).report

@@ -12,7 +12,6 @@
 }
 
 .Editor-formInner.Editor-formInner--NoTabs {
-  align-items: center;
   margin-top: $baseSize;
   padding: 0;
 
@@ -28,6 +27,10 @@
 .Editor-formInner.Editor-formInner--Size {
   align-items: baseline;
   padding-top: $baseSize;
+}
+
+.Editor-formInner.Editor-formInner--Size.Editor-formInner--NoTabs {
+  align-items: center;
 }
 
 .Editor-formInner.Editor-formInner--FillColor {
@@ -232,14 +235,16 @@
   justify-content: space-between;
 
   .by-column-name {
-    padding-right: 2px;
+    padding-right: 4px;
   }
 
   .by-column-range {
     width: 100%;
     max-width: 40px;
+    padding-left: 8px;
     border-left: 1px #CCC solid;
     text-align: right;
+    text-align: center;
   }
 }
 

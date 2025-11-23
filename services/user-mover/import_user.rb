@@ -25,8 +25,6 @@ module CartoDB
         @logger = @options[:logger] || default_logger
         @@importjob_logger = @options[:import_job_logger]
 
-        @user_import_jobs = Array.new
-
         @start = Time.now
         @logger.debug "Starting import job with options: #{@options}"
 
@@ -39,7 +37,7 @@ module CartoDB
 
         @path = File.expand_path(File.dirname(@options[:file])) + "/"
 
-        job_uuid = @options[:job_uuid] || SecureRandom.uuid
+        job_uuid = @options[:job_uuid] || Carto::UUIDHelper.random_uuid
         @import_log = { job_uuid:     job_uuid,
                         id:           nil,
                         type:         'import',
@@ -90,6 +88,19 @@ module CartoDB
       end
 
       private
+
+      def for_each_oauth_app_user(user_id)
+        Carto::User.find(user_id).oauth_app_users.each do |oau|
+          yield superuser_user_pg_conn, oau
+        end
+      rescue PG::Error => e
+        # Ignore role already exists errors
+        if e.message =~ /already exists/
+          @logger.warn "Warning: Oauth app user role already exists"
+        else
+          raise
+        end
+      end
 
       def process_user
         @target_username = @pack_config['user']['username']
@@ -154,11 +165,11 @@ module CartoDB
             check_user_exists_redis
             check_user_exists_postgres
           end
-        rescue => e
+        rescue StandardError => e
           @logger.error "Error in sanity checks: #{e}"
           log_error(e)
           remove_user_mover_banner(@pack_config['user']['id']) if @options[:set_banner]
-          throw e
+          raise
         end
 
         if @options[:data]
@@ -179,25 +190,23 @@ module CartoDB
             roles.each { |role| grant_user_role(user, role) }
           end
 
-          begin
-            if @target_org_id && @target_is_owner && File.exists?("#{@path}org_#{@target_org_id}.dump")
-              create_db(@target_dbname, true)
-              import_pgdump("org_#{@target_org_id}.dump")
-            elsif File.exists? "#{@path}user_#{@target_userid}.dump"
-              create_db(@target_dbname, true)
-              import_pgdump("user_#{@target_userid}.dump")
-            elsif File.exists? "#{@path}#{@target_username}.schema.sql"
-              create_db(@target_dbname, false)
-              run_file_restore_schema("#{@target_username}.schema.sql")
-            end
-
-          rescue => e
-            begin
-              remove_user_mover_banner(@pack_config['user']['id'])
-            ensure
-              log_error(e)
-              throw e
-            end
+          if @target_org_id && @target_is_owner && File.exists?(org_dump_path)
+            setup_db_for_dump_load
+            create_org_oauth_app_user_roles(@target_org_id)
+            create_org_api_key_roles(@target_org_id)
+            import_pgdump("org_#{@target_org_id}.dump")
+            grant_org_oauth_app_user_roles(@target_org_id)
+            grant_org_api_key_roles(@target_org_id)
+          elsif File.exists?(user_dump_path)
+            setup_db_for_dump_load
+            create_user_oauth_app_user_roles(@target_userid)
+            create_user_api_key_roles(@target_userid)
+            import_pgdump("user_#{@target_userid}.dump")
+            grant_user_oauth_app_user_roles(@target_userid)
+            grant_user_api_key_roles(@target_userid)
+          elsif File.exists? "#{@path}#{@target_username}.schema.sql"
+            setup_db_for_schema_load
+            run_file_restore_schema("#{@target_username}.schema.sql")
           end
         end
 
@@ -205,17 +214,18 @@ module CartoDB
           begin
             import_redis("user_#{@target_userid}_metadata.redis")
             import_metadata("user_#{@target_userid}_metadata.sql")
-          rescue => e
+          rescue StandardError => e
             rollback_metadata("user_#{@target_userid}_metadata_undo.sql")
             rollback_redis("user_#{@target_userid}_metadata_undo.redis")
             log_error(e)
             remove_user_mover_banner(@pack_config['user']['id']) if @options[:set_banner]
-            throw e
+            raise
           end
         end
 
         if @options[:data]
           configure_database(@target_dbhost)
+          drop_deprecated_extensions
         end
 
         if @options[:update_metadata]
@@ -223,6 +233,10 @@ module CartoDB
         end
 
         log_success
+      rescue StandardError => e
+        log_error(e)
+        raise
+      ensure
         remove_user_mover_banner(@pack_config['user']['id']) if @options[:set_banner]
       end
 
@@ -252,9 +266,8 @@ module CartoDB
                             logger: @logger, data: @options[:data], metadata: @options[:metadata],
                             update_metadata: @options[:update_metadata])
           i.run!
-          @user_import_jobs << i
         end
-      rescue => e
+      rescue StandardError => e
         rollback_metadata("org_#{@organization_id}_metadata_undo.sql") if @options[:metadata]
         log_error(e)
         raise e
@@ -388,7 +401,7 @@ module CartoDB
 
       def run_file_restore_postgres(file, sections = nil)
         file_path = "#{@path}#{file}"
-        command = "#{pg_restore_bin_path(file_path)} -e --verbose -j4 --disable-triggers -Fc #{file_path} #{conn_string(
+        command = "#{pg_restore_bin_path} -e --verbose -j4 --disable-triggers -Fc #{file_path} #{conn_string(
           @config[:dbuser],
           @target_dbhost,
           @config[:user_dbport],
@@ -426,11 +439,6 @@ module CartoDB
         run_file_metadata_postgres(file)
       end
 
-      def remove_line?(line)
-        stripped = line.gsub(/(public|postgres|\"|\*)/, "").gsub(/\s{2,}/, "\s").gsub(/\,\s+/, ',').strip
-        (LEGACY_FUNCTIONS + LEGACY_ACLS).find { |l| stripped.scan(l).any? }
-      end
-
       def clean_toc_file(file)
         tmp = Tempfile.new("extract_#{@target_username}.txt")
         File.open(file, 'r').each do |l|
@@ -445,7 +453,7 @@ module CartoDB
 
       def toc_file(file)
         toc_file = "#{@path}user_#{@target_username}.list"
-        command = "pg_restore -l #{file} --file='#{toc_file}'"
+        command = "#{pg_restore_bin_path} -l #{file} --file='#{toc_file}'"
         run_command(command)
         clean_toc_file(toc_file)
         toc_file
@@ -456,19 +464,9 @@ module CartoDB
       # in the old database while the process is ongoing
       # Disabling it may be hard. Maybe it's easier to just exclude it in the export.
       def import_pgdump(dump)
-        @logger.info("Creating roles for regular API Keys")
-        begin
-          Carto::User.find(@pack_config['user']['id']).api_keys.select(&:regular?).each do |k|
-            k.role_creation_queries.each { |q| superuser_pg_conn.query(q) }
-          end
-        rescue ActiveRecord::RecordNotFound => e
-          CartoDB::Logger.error(exception: e,
-                                message: 'This should not be happening. Trying import a dump for a non-existing DB')
-          @logger.error("Unable to create roles for user's api keys, User id: #{@pack_config['user']['id']}")
-        end
-
         @logger.info("Importing dump from #{dump} using pg_restore..")
         @toc_file = toc_file("#{@path}#{dump}")
+
         run_file_restore_postgres(dump, 'pre-data')
         run_file_restore_postgres(dump, 'data')
         run_file_restore_postgres(dump, 'post-data')
@@ -483,6 +481,70 @@ module CartoDB
           superuser_pg_conn.query("ALTER ROLE #{username} WITH PASSWORD '#{password}'") unless password.nil?
         rescue PG::Error => e
           @logger.info "Target Postgres role already exists: #{e.inspect}"
+        end
+      end
+
+      def create_org_api_key_roles(org_id)
+        Carto::Organization.find(org_id).users.each { |u| create_user_api_key_roles(u.id) }
+      end
+
+      def create_user_api_key_roles(user_id)
+        Carto::User.find(user_id).api_keys.select(&:needs_setup?).each do |k|
+          begin
+            k.role_creation_queries.each { |q| superuser_user_pg_conn.query(q) }
+          rescue PG::Error => e
+            # Ignore role already exists errors
+            raise unless e.message =~ /already exists/
+          end
+        end
+      end
+
+      def grant_org_api_key_roles(org_id)
+        Carto::Organization.find(org_id).users.each { |u| grant_user_api_key_roles(u.id) }
+      end
+
+      def grant_user_api_key_roles(user_id)
+        Carto::User.find(user_id).api_keys.select(&:needs_setup?).each do |k|
+          k.role_permission_queries.each { |q| superuser_user_pg_conn.query(q) }
+          k.grant_ownership_role_privileges
+          k.save_cdb_conf_info
+        end
+      end
+
+      def create_org_oauth_app_user_roles(org_id)
+        Carto::Organization.find(org_id).users.each { |u| create_user_oauth_app_user_roles(u.id) }
+      end
+
+      def create_user_oauth_app_user_roles(user_id)
+        for_each_oauth_app_user(user_id) do |conn, oau|
+          conn.query(oau.create_dataset_role_query)
+        end
+
+        # different loops to avoid failing to create ownership role due to an error in the dataset role
+        for_each_oauth_app_user(user_id) do |conn, oau|
+          conn.query(oau.create_ownership_role_query)
+        end
+      end
+
+      def grant_org_oauth_app_user_roles(org_id)
+        Carto::Organization.find(org_id).users.each { |u| grant_user_oauth_app_user_roles(u.id) }
+      end
+
+      def grant_user_oauth_app_user_roles(user_id)
+        Carto::User.find(user_id).oauth_app_users.each do |oau|
+          begin
+            oau.grant_dataset_role_privileges
+          rescue Carto::OauthProvider::Errors::InvalidScope => e
+            # Ignore managed oauth_app_user errors
+            @logger.error "Error granting permissions to dataset role: #{e}"
+          end
+
+          begin
+            oau.grant_ownership_role_privileges
+          rescue Carto::OauthProvider::Errors::InvalidScope => e
+            # Ignore managed oauth_app_user errors
+            @logger.error "Error granting permissions to ownership role: #{e}"
+          end
         end
       end
 
@@ -531,57 +593,42 @@ module CartoDB
         superuser_pg_conn.query("ALTER USER \"#{user}\" SET search_path= #{search_path}")
       end
 
-      def create_db(dbname, blank)
-        # Blank is when the database should be created empty (will receive a pg_dump).
-        # blank = false: it should have postgis, cartodb/cdb_importer/cdb schemas
-        # connect as superuser (postgres)
-        @logger.info "Creating user DB #{dbname}..."
+      def setup_db_for_schema_load
         begin
-          if blank
-            superuser_pg_conn.query("CREATE DATABASE \"#{dbname}\"")
-          else
-            superuser_pg_conn.query("CREATE DATABASE \"#{dbname}\" WITH TEMPLATE template_postgis")
-          end
-        # This rescue can be improved a little bit. The way it is it assumes that the error
-        # will always be that the db already exists
-        rescue PG::Error => e
-          if blank
-            @logger.error "Error: Database already exists"
-            raise e
-          else
-            @logger.warn "Warning: Database already exists"
-          end
+          superuser_pg_conn.query("CREATE DATABASE \"#{@target_dbname}\" WITH TEMPLATE template_postgis")
+        rescue PG::DuplicateDatabase
+          @logger.warn "Warning: Database already exists"
         end
-
-        setup_db(dbname) unless blank
-      end
-
-      def setup_db(_dbname)
-        ['plpythonu', 'postgis'].each do |extension|
-          superuser_user_pg_conn.query("CREATE EXTENSION IF NOT EXISTS #{extension}")
-        end
+        superuser_user_pg_conn.query("CREATE EXTENSION IF NOT EXISTS postgis")
         cartodb_schema = superuser_user_pg_conn.query("SELECT nspname FROM pg_catalog.pg_namespace where nspname = 'cartodb'")
         superuser_user_pg_conn.query("CREATE SCHEMA cartodb") if cartodb_schema.count == 0
         cdb_importer_schema = superuser_user_pg_conn.query("SELECT nspname FROM pg_catalog.pg_namespace where nspname = 'cdb_importer'")
         superuser_user_pg_conn.query("CREATE SCHEMA cdb_importer") if cdb_importer_schema.count == 0
         cdb_schema = superuser_user_pg_conn.query("SELECT nspname FROM pg_catalog.pg_namespace where nspname = 'cdb'")
         superuser_user_pg_conn.query("CREATE SCHEMA cdb") if cdb_schema.count == 0
-        superuser_user_pg_conn.query("CREATE EXTENSION IF NOT EXISTS cartodb WITH SCHEMA cartodb")
-      rescue PG::Error => e
-        @logger.error "Error: Cannot setup DB"
-        raise e
+        superuser_user_pg_conn.query("CREATE EXTENSION IF NOT EXISTS cartodb WITH SCHEMA cartodb CASCADE")
+      end
+
+      def setup_db_for_dump_load
+        superuser_pg_conn.query("CREATE DATABASE \"#{@target_dbname}\"")
+
+        return if destination_db_major_version != 12
+
+        superuser_user_pg_conn.query("CREATE EXTENSION IF NOT EXISTS postgis")
+        superuser_user_pg_conn.query("CREATE EXTENSION IF NOT EXISTS postgis_raster")
+        superuser_user_pg_conn.query("CREATE EXTENSION IF NOT EXISTS plpython3u")
       end
 
       def update_database_retries(userid, username, db_host, db_name, retries = 1)
         update_database(userid, username, db_host, db_name)
-      rescue => e
+      rescue StandardError => e
         @logger.error "Error updating database"
         if retries > 0
           @logger.info "Retrying..."
           update_database_retries(userid, username, db_host, db_name, retries - 1)
         else
           @logger.info "No more retries"
-          throw e
+          raise
         end
       end
 
@@ -648,32 +695,18 @@ module CartoDB
             changed_metadata = true
             user_model.reload
           end
-        rescue => e
+        rescue StandardError => e
           if changed_metadata
             update_database_retries(@target_userid, @target_username, orig_dbhost, @target_dbname, 1)
           end
           log_error(e)
           remove_user_mover_banner(@pack_config['user']['id']) if @options[:set_banner]
-          throw e
-        end
-      end
-
-      def update_metadata_org(target_dbhost)
-        @user_import_jobs.each do |instance|
-          instance.update_metadata_user(target_dbhost)
-        end
-      end
-
-      def update_metadata(target_dbhost = @target_dbhost)
-        if organization_import?
-          update_metadata_org(target_dbhost)
-        else
-          update_metadata_user(target_dbhost)
+          raise
         end
       end
 
       def importjob_logger
-        @@importjob_logger ||= ::Logger.new("#{Rails.root}/log/datamover.log")
+        @@importjob_logger ||= CartoDB.unformatted_logger("#{Rails.root}/log/datamover.log")
       end
 
       def log_error(e)
@@ -692,8 +725,8 @@ module CartoDB
         importjob_logger.info(@import_log.to_json)
       end
 
-      def pg_restore_bin_path(dump)
-        get_pg_restore_bin_path(superuser_pg_conn, dump)
+      def pg_restore_bin_path
+        get_pg_restore_bin_path(superuser_pg_conn)
       end
 
       def target_dbname
@@ -723,6 +756,28 @@ module CartoDB
 
       def organization_import?
         @pack_config['organization'] != nil
+      end
+
+      def org_dump_path
+        "#{@path}org_#{@target_org_id}.dump"
+      end
+
+      def user_dump_path
+        "#{@path}user_#{@target_userid}.dump"
+      end
+
+      def drop_deprecated_extensions
+        return if destination_db_major_version != 12
+
+        %w(plpythonu plpython2u).each do |deprecated_extension|
+          sql_command = "DROP EXTENSION IF EXISTS #{deprecated_extension}"
+          logger.info(sql_command)
+          superuser_user_pg_conn.query(sql_command)
+        end
+      end
+
+      def destination_db_major_version
+        get_database_version_for_binaries(superuser_pg_conn).split('.').first.to_i
       end
     end
   end

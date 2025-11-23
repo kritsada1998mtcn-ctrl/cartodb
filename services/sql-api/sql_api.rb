@@ -1,4 +1,3 @@
-# encoding: utf-8
 require 'open-uri'
 require 'json'
 require_relative '../../lib/carto/http/client'
@@ -44,7 +43,7 @@ module CartoDB
       build_request(query, format, filename, :get, :public).url
     end
 
-    def export_table_url(table, format = 'shp', filename = table)
+    def export_table_url(table, format = 'gpkg', filename = table)
       query = %{select * from "#{table}"}
       url(query, format, filename)
     end
@@ -78,7 +77,7 @@ module CartoDB
     end
 
     def build_base_url(sql_api_config_type)
-      config = ::Cartodb.config[:sql_api][sql_api_config_type.to_s]
+      config = ::Cartodb.get_config(:sql_api, sql_api_config_type.to_s)
       if self.base_url.nil?
         %Q[#{config["protocol"]}://#{username}.#{config["domain"]}#{config["endpoint"]}]
       else

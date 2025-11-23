@@ -1,5 +1,3 @@
-# encoding: utf-8
-
 module Carto
   class RateLimit < ActiveRecord::Base
 
@@ -23,14 +21,25 @@ module Carto
                              :sql_query_format,
                              :sql_job_create,
                              :sql_job_get,
-                             :sql_job_delete].freeze
+                             :sql_job_delete,
+                             :sql_copy_from,
+                             :sql_copy_to].freeze
 
-    RATE_LIMIT_ATTRIBUTES.each { |attr| serialize attr, RateLimitValues }
-    RATE_LIMIT_ATTRIBUTES.each { |attr| validates attr, presence: true }
+    RATE_LIMIT_ATTRIBUTES.each do |attr|
+      serialize attr, Carto::RateLimitValues
+      validates attr, presence: true
+    end
+
+    # FIXME remove this after syncing rate_limits
+    RATE_LIMIT_DEFAULTS = {
+      sql_copy_from: [1, 1, 60],
+      sql_copy_to: [1, 1, 60]
+    }.freeze
+    ###
 
     def self.from_api_attributes(attributes)
-      rate_limit = RateLimit.new
-      rate_limit.rate_limit_attributes(attributes).each { |k, v| rate_limit[k] = RateLimitValues.new(v) }
+      rate_limit = new
+      rate_limit.rate_limit_attributes(attributes).each { |k, v| rate_limit[k] = Carto::RateLimitValues.new(v) }
       rate_limit
     end
 
@@ -66,7 +75,8 @@ module Carto
     end
 
     def rate_limit_attributes(attrs = attributes)
-      attrs.with_indifferent_access.slice(*Carto::RateLimit::RATE_LIMIT_ATTRIBUTES)
+      attrs.with_indifferent_access.slice(*RATE_LIMIT_ATTRIBUTES)
+           .reverse_merge!(RATE_LIMIT_DEFAULTS) # FIXME remove this after syncing rate_limits
     end
 
     def ==(rate_limit)
